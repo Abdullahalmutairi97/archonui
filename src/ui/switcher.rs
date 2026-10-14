@@ -1,5 +1,5 @@
 //! The session switcher (Ctrl+K): a palette over every session, searched by title and message text.
-//! Enter opens a session in the focused tile and Alt+Enter in a new split, as a sidebar click does.
+//! Enter opens a session in the focused tile and Ctrl+Shift+Enter in a new split, as a sidebar click does.
 
 use super::{
     shell::Shell,
@@ -148,7 +148,7 @@ impl Shell {
             "up" => self.switcher_move(current.saturating_sub(1), cx),
             "enter" => {
                 if let Some(row) = rows.get(current).cloned() {
-                    self.switcher_activate(row, keystroke.modifiers.alt, window, cx);
+                    self.switcher_activate(row, keystroke.modifiers.control && keystroke.modifiers.shift, window, cx);
                 }
             }
             _ => {}
@@ -360,7 +360,7 @@ impl Shell {
             .text_color(theme.muted.to_hsla())
             .child("↑↓ move")
             .child("⏎ open")
-            .child("alt ⏎ new split")
+            .child("ctrl ⇧ ⏎ new split")
             .child("esc close");
         let dialog = div()
             .flex()

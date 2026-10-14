@@ -28,11 +28,51 @@ const CHANNELS: [UpdateChannel; 3] = [UpdateChannel::Stable, UpdateChannel::Beta
 fn redact_secrets(mut settings: AppSettings) -> AppSettings {
     for server in &mut settings.mcp_servers {
         match &mut server.transport {
-            McpTransport::Stdio { env, .. } => redact_values(env),
-            McpTransport::Http { headers, .. } => redact_values(headers),
+            McpTransport::Stdio { env, args, .. } => {
+                redact_values(env);
+                redact_args(args);
+            }
+            McpTransport::Http { headers, url } => {
+                redact_values(headers);
+                *url = redact_url(url);
+            }
         }
     }
     settings
+}
+
+/// `url` without credentials (`user:pass@`), query string or fragment, which often carry API keys.
+fn redact_url(url: &str) -> String {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    let base = &url[..end];
+    match base.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+            format!("{scheme}://{host}{path}")
+        }
+        None => base.to_string(),
+    }
+}
+
+/// Blanks the value of command-line arguments that look like secrets: `--api-key=abc` and `--token abc`.
+fn redact_args(args: &mut [String]) {
+    let secret = |a: &str| {
+        let a = a.to_ascii_lowercase();
+        ["token", "key", "secret", "password", "passwd", "auth", "bearer"].iter().any(|w| a.contains(w))
+    };
+    let mut hide_next = false;
+    for arg in args.iter_mut() {
+        if std::mem::take(&mut hide_next) {
+            *arg = "<redacted>".into();
+        } else if arg.starts_with('-') {
+            match arg.split_once('=') {
+                Some((flag, _)) if secret(flag) => *arg = format!("{flag}=<redacted>"),
+                None if secret(arg) => hide_next = true,
+                _ => {}
+            }
+        }
+    }
 }
 
 fn redact_values(values: &mut std::collections::BTreeMap<String, String>) {
@@ -134,7 +174,12 @@ impl Shell {
                 .child(path_text(&data_text, &theme))
                 .child(
                     Button::new("data-open", "Open", &theme).style(ButtonStyle::Outline).on_click(listen(cx, move |_this, _cx| {
-                        let _ = std::process::Command::new("xdg-open").arg(&data_dir).spawn();
+                        // Reaped on a thread, so the launcher doesn't linger as a zombie.
+                        if let Ok(mut child) = std::process::Command::new("xdg-open").arg(&data_dir).spawn() {
+                            std::thread::spawn(move || {
+                                let _ = child.wait();
+                            });
+                        }
                     })),
                 ),
         );
@@ -378,13 +423,20 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn urls_lose_credentials_query_and_fragment() {
+        assert_eq!(redact_url("https://u:p@h.test:8080/mcp?key=abc#x"), "https://h.test:8080/mcp");
+        assert_eq!(redact_url("https://h.test?token=1"), "https://h.test");
+        assert_eq!(redact_url("https://h.test/a/b"), "https://h.test/a/b");
+    }
+
+    #[test]
     fn an_export_blanks_mcp_credentials() {
         let mut settings = AppSettings::default();
         settings.mcp_servers.push(McpServer {
             id: "docs".into(),
             name: "docs".into(),
             transport: McpTransport::Http {
-                url: "https://d.test/mcp".into(),
+                url: "https://d.test/mcp?key=abc".into(),
                 headers: BTreeMap::from([("Authorization".to_string(), "Bearer secret".to_string())]),
             },
             enabled: true,
@@ -394,7 +446,7 @@ mod tests {
             name: "gh".into(),
             transport: McpTransport::Stdio {
                 command: "gh".into(),
-                args: vec![],
+                args: ["--port=1", "--api-key=abc", "--token", "xyz", "serve"].map(String::from).to_vec(),
                 env: BTreeMap::from([("GITHUB_TOKEN".to_string(), "ghp_secret".to_string())]),
             },
             enabled: true,
@@ -411,7 +463,10 @@ mod tests {
             other => panic!("unexpected transport: {other:?}"),
         }
         match &exported.mcp_servers[1].transport {
-            McpTransport::Stdio { env, .. } => assert_eq!(env["GITHUB_TOKEN"], "<redacted>"),
+            McpTransport::Stdio { env, args, .. } => {
+                assert_eq!(env["GITHUB_TOKEN"], "<redacted>");
+                assert_eq!(args, &["--port=1", "--api-key=<redacted>", "--token", "<redacted>", "serve"]);
+            }
             other => panic!("unexpected transport: {other:?}"),
         }
     }

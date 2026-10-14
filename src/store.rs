@@ -68,6 +68,8 @@ pub enum ToolKind {
     Web,
     Fetch,
     Task,
+    /// Also any kind a newer build wrote, so its chats still load.
+    #[serde(other)]
     Other,
 }
 
@@ -432,7 +434,9 @@ pub fn store_bytes(session: &str, name: &str, bytes: &[u8]) -> io::Result<PathBu
 fn free_path(session: &str, name: &str) -> io::Result<PathBuf> {
     let dir = attachments_dir(session);
     create_private_dir(&dir)?;
-    let mut dest = dir.join(name);
+    // Only the last component, so a name like `../x` or `/x` can't land outside the session's folder.
+    let name = Path::new(name).file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+    let mut dest = dir.join(&name);
     let mut n = 2;
     while dest.exists() {
         dest = dir.join(format!("{n}-{name}"));
@@ -449,10 +453,12 @@ fn load_from(dir: &Path) -> Vec<Session> {
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
         .filter_map(|p| {
             let mut s: Session = serde_json::from_slice(&fs::read(&p).ok()?).ok()?;
-            // The file name is the id; never trust a path-like id from contents.
-            s.id = p.file_stem()?.to_str()?.to_string();
-            // A reply cut off by quitting mid-turn may have been saved empty.
-            s.messages.retain(|m| m.role != Role::Agent || !m.text.is_empty());
+            // The file name is the id; never trust a path-like id from contents. A dot id (`..json`)
+            // would make the attachments dir the parent of every chat's, which `delete` removes.
+            s.id = p.file_stem()?.to_str().filter(|id| !id.starts_with('.'))?.to_string();
+            // A reply cut off by quitting mid-turn may have been saved empty. One with tool rows is kept,
+            // as `AppState` keeps it at the end of a turn.
+            s.messages.retain(|m| m.role != Role::Agent || !m.text.is_empty() || !m.tools.is_empty());
             (!s.messages.is_empty() || s.terminal).then_some(s)
         })
         .collect();
@@ -461,10 +467,8 @@ fn load_from(dir: &Path) -> Vec<Session> {
 }
 
 fn save_to(dir: &Path, s: &Session) -> io::Result<()> {
-    create_private_dir(dir)?;
-    let tmp = dir.join(format!("{}.json.tmp", s.id));
-    write_private(&tmp, &serde_json::to_vec_pretty(s)?)?;
-    fs::rename(tmp, dir.join(format!("{}.json", s.id)))
+    // Synced before the rename, so a crash can't leave an empty file that hides the chat on the next load.
+    crate::app::persist::write_atomic(&dir.join(format!("{}.json", s.id)), &serde_json::to_vec_pretty(s)?)
 }
 
 pub fn now() -> u64 {
@@ -662,6 +666,47 @@ mod tests {
         assert_eq!(loaded[0].mode, Mode::Plan);
         assert_eq!(loaded[0].messages[1].tools.len(), 1);
         assert_eq!(loaded[0].messages[1].thought_secs, Some(5));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn tool_only_replies_and_unknown_tool_kinds_survive_a_reload() {
+        let dir = std::env::temp_dir().join(format!("archonui-test-{}", new_id()));
+        let mut s = Session::new("opencode", "/tmp".into());
+        s.push(Role::User, "list");
+        s.push(Role::Agent, "");
+        s.messages[1].tools.push(ToolCall { kind: ToolKind::Grep, target: "x".into(), detail: None, ok: Some(true) });
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["messages"][1]["tools"][0]["kind"] = "from-the-future".into();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{}.json", s.id)), v.to_string()).unwrap();
+
+        let loaded = load_from(&dir);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].messages.len(), 2, "the tool-only reply is kept");
+        assert_eq!(loaded[0].messages[1].tools[0].kind, ToolKind::Other);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn dot_ids_are_not_loaded() {
+        let dir = std::env::temp_dir().join(format!("archonui-test-{}", new_id()));
+        let mut s = Session::new("pi", "/tmp".into());
+        s.push(Role::User, "hi");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("..json"), serde_json::to_vec(&s).unwrap()).unwrap();
+        assert!(load_from(&dir).is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_leaves_no_temp_files() {
+        let dir = std::env::temp_dir().join(format!("archonui-test-{}", new_id()));
+        let mut s = Session::new("pi", "/tmp".into());
+        s.push(Role::User, "hi");
+        save_to(&dir, &s).unwrap();
+        save_to(&dir, &s).unwrap();
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
     }
 

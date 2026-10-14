@@ -28,6 +28,17 @@ fn working_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// The harness settings detection uses: the binaries and on/off the settings page saved, as the
+/// window uses them, not the old UI's settings file.
+fn harness_settings() -> store::Settings {
+    let config = app::persist::Paths::current().config;
+    let settings = app::persist::load(&config, &store::settings_path()).settings;
+    store::Settings { harnesses: settings.harnesses, ..Default::default() }
+}
+
+/// Flags `main` handles after `headless`; any other `--` argument is a mistake, not a file.
+const UI_FLAGS: [&str; 4] = ["--old-ui", "--new-ui", "--stream-demo", "--widgets-demo"];
+
 /// Headless use: `--detect` lists agents, `--discover` their commands and
 /// models; `--ask [--model <id>] [--effort <level>] [--file <path>]... <agent>
 /// <prompt>...` sends each prompt in turn within one session and prints the
@@ -35,7 +46,7 @@ fn working_dir() -> PathBuf {
 fn headless(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
         Some("--detect") => {
-            for a in engine::detect(&store::load_settings()) {
+            for a in engine::detect(&harness_settings()) {
                 println!("{:<10} {:<12} {:<9} {}", a.harness.id(), a.version, a.auth.label(), a.path.display());
             }
         }
@@ -60,7 +71,7 @@ fn headless(args: &[String]) -> bool {
         }
         // `--test <agent>`: one "Reply with exactly: ok" turn with the agent's defaults.
         Some("--test") => {
-            let agents = engine::detect(&store::load_settings());
+            let agents = engine::detect(&harness_settings());
             let Some(agent) = args.get(1).and_then(|id| agents.iter().find(|a| a.harness.id() == id)) else {
                 eprintln!("usage: --test <agent>, an installed agent id");
                 std::process::exit(2);
@@ -88,7 +99,7 @@ fn headless(args: &[String]) -> bool {
             }
         }
         Some("--discover") => {
-            for a in engine::detect(&store::load_settings()) {
+            for a in engine::detect(&harness_settings()) {
                 let caps = engine::discover(&a, &working_dir());
                 println!(
                     "{}: {} commands, {} models, default {}",
@@ -141,10 +152,14 @@ fn headless(args: &[String]) -> bool {
                 rest = tail;
             }
             let (Some(id), prompts) = (rest.first(), &rest[1.min(rest.len())..]) else {
-                eprintln!("usage: --ask [--model <id>] [--effort <level>] [--file <path>]... <agent> <prompt>...");
+                eprintln!("usage: --ask [--model <id>] [--effort <level>] [--mode <mode>] [--file <path>]... <agent> <prompt>...");
                 std::process::exit(2);
             };
-            let agents = engine::detect(&store::load_settings());
+            if prompts.is_empty() {
+                eprintln!("usage: --ask [--model <id>] [--effort <level>] [--mode <mode>] [--file <path>]... <agent> <prompt>...");
+                std::process::exit(2);
+            }
+            let agents = engine::detect(&harness_settings());
             let Some(agent) = agents.iter().find(|a| a.harness.id() == id) else {
                 eprintln!("agent '{id}' not found");
                 std::process::exit(1);
@@ -154,9 +169,13 @@ fn headless(args: &[String]) -> bool {
                 println!("> {prompt}");
                 let last = std::ptr::eq(prompt, prompts.last().unwrap());
                 let opts = engine::TurnOptions { files: if last { &files } else { &[] }, ..opts };
-                let turn =
-                    engine::start_turn(agent, &working_dir(), prompt, session.as_deref(), opts)
-                        .expect("start agent");
+                let turn = match engine::start_turn(agent, &working_dir(), prompt, session.as_deref(), opts) {
+                    Ok(turn) => turn,
+                    Err(e) => {
+                        eprintln!("could not start {}: {e}", agent.harness.name());
+                        std::process::exit(1);
+                    }
+                };
                 let mut streamed = false;
                 while let Ok(ev) = smol::block_on(turn.events.recv()) {
                     match ev {
@@ -174,6 +193,11 @@ fn headless(args: &[String]) -> bool {
                     }
                 }
             }
+        }
+        // A mistyped headless flag would otherwise open the window with it attached as a file.
+        Some(flag) if flag.starts_with("--") && flag != "--" && !UI_FLAGS.contains(&flag) => {
+            eprintln!("unknown option {flag}; use -- before a file whose name starts with --");
+            std::process::exit(2);
         }
         _ => return false,
     }
@@ -429,7 +453,7 @@ fn main() {
     // for scripts written while the new UI was opt-in.
     let files: Vec<PathBuf> = args
         .iter()
-        .filter(|a| !matches!(a.as_str(), "--old-ui" | "--new-ui"))
+        .filter(|a| !matches!(a.as_str(), "--old-ui" | "--new-ui" | "--"))
         .filter_map(|a| std::path::absolute(a).ok())
         .collect();
     if !old_ui {

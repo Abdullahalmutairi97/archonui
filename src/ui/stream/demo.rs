@@ -47,6 +47,7 @@ impl Render for DemoView {
             text_size: 15.,
             session: &self.session,
             busy: false,
+            show_tools: true,
         };
         let stream = self.stream.render(cx.entity(), env, cx);
         let lightbox = self.stream.lightbox_overlay(cx.entity(), &self.theme);

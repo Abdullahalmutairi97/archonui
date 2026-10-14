@@ -79,7 +79,8 @@ pub fn palette(input: &str, ctx: &PaletteContext) -> Option<Vec<PaletteEntry>> {
         tags: vec!["ArchonUI"],
         action: Action::Command,
     });
-    let agent = ctx.caps.map(|c| &c.commands[..]).unwrap_or_default().iter().map(|c| PaletteEntry {
+    // An agent command named like a local one is never reached (local commands run first), so it is not listed twice.
+    let agent = ctx.caps.map(|c| &c.commands[..]).unwrap_or_default().iter().filter(|c| !LOCAL_COMMANDS.iter().any(|(name, _)| *name == c.name)).map(|c| PaletteEntry {
         name: c.name.clone(),
         hint: c.hint.clone(),
         description: c.description.clone(),
@@ -215,6 +216,8 @@ impl Shell {
             "rescan" => self.rescan(cx),
             "settings" => self.open_settings(cx),
             // `/model <id>` sets an id directly, including ones not listed.
+            // A value starting with `-` would read as a flag on the agent's command line.
+            "model" | "effort" if arg.starts_with('-') => self.toast(format!("'{arg}' isn't a valid {name}."), cx),
             "model" if !arg.is_empty() => self.set_model(id, Some(arg.to_string()), cx),
             "model" => self.open_popover(id, Pop::Model, cx),
             "effort" if !arg.is_empty() => self.set_effort(id, Some(arg.to_string()), cx),

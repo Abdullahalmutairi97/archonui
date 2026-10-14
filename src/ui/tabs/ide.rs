@@ -3,7 +3,7 @@
 
 use super::{
     browser::WebView,
-    files::{file_match_row, search, FolderWatch, SEARCH},
+    files::{file_match_row, no_project, search, FolderWatch, SEARCH},
 };
 use crate::{
     app::workspace::RightTab,
@@ -40,7 +40,6 @@ use gpui::{
 use crate::ui::scale::{design, px};
 use std::{
     collections::HashMap,
-    fs,
     io,
     ops::Range,
     path::{Path, PathBuf},
@@ -220,6 +219,32 @@ impl Doc {
     }
 }
 
+/// The active tab and the tab asking "Save changes?", by path, so they still point at the same files
+/// after other tabs are dropped.
+struct TabMarks {
+    active: Option<PathBuf>,
+    closing: Option<PathBuf>,
+}
+
+impl TabMarks {
+    fn take(ide: &IdeUi) -> Self {
+        let path = |ix: usize| ide.docs.get(ix).map(|doc| doc.path.clone());
+        Self { active: path(ide.active), closing: ide.closing.and_then(path) }
+    }
+
+    /// Points `active` and `closing` back at their files, whose paths are now `moved(path)`. A closed
+    /// active tab leaves the one at its place active; a closed asking tab ends the question.
+    fn restore(self, ide: &mut IdeUi, moved: impl Fn(&Path) -> PathBuf) {
+        let find = |path: Option<PathBuf>| {
+            let path = moved(&path?);
+            ide.docs.iter().position(|doc| doc.path == path)
+        };
+        let active = find(self.active);
+        ide.closing = find(self.closing);
+        ide.active = active.unwrap_or(ide.active).min(ide.docs.len().saturating_sub(1));
+    }
+}
+
 /// How code rows are drawn: the theme, one column's width, and the first column shown.
 struct RowStyle<'a> {
     theme: &'a Theme,
@@ -233,6 +258,9 @@ impl Shell {
         if self.state.settings.ide == IdeKind::VsCode {
             return self.ide_vscode_view(&theme, cx);
         }
+        let Some(root) = self.tool_root() else {
+            return no_project(&theme);
+        };
         let focus = self.tabs.ide.focus.get_or_insert_with(|| cx.focus_handle()).clone();
         if std::mem::take(&mut self.tabs.ide.want_focus) {
             window.focus(&focus);
@@ -255,7 +283,6 @@ impl Shell {
                 .into_any_element();
         }
         self.tabs.ide.active = self.tabs.ide.active.min(self.tabs.ide.docs.len() - 1);
-        let root = self.tool_root();
         let branch = self.tabs.git.snapshot.as_ref().and_then(|snap| snap.status.branch.clone());
         let focused = focus.is_focused(window);
         let tabs = self.ide_tab_strip(&theme, cx);
@@ -377,12 +404,13 @@ impl Shell {
                 self.ide_vscode_start(cx);
             }
             let folder = self.tool_root();
-            if self.tabs.ide.vscode.server.is_some() && self.tabs.ide.vscode.folder.as_ref() != Some(&folder) {
+            if self.tabs.ide.vscode.server.is_some() && folder.is_some() && self.tabs.ide.vscode.folder != folder {
                 self.ide_vscode_load(cx);
             }
         }
         self.tabs.ide.vscode.view.sync(visible, window);
-        let root = self.tool_root();
+        // No project folder in focus: nothing to watch until one is.
+        let Some(root) = self.tool_root() else { return };
         if self.tabs.ide.watch.as_ref().is_some_and(|watch| watch.root == root) {
             return;
         }
@@ -470,7 +498,7 @@ impl Shell {
     /// Loads the tool folder in code-server's page unless it shows it, then opens the file waiting for the window.
     /// Does nothing until code-server runs.
     fn ide_vscode_load(&mut self, cx: &mut Context<Self>) {
-        let root = self.tool_root();
+        let Some(root) = self.tool_root() else { return };
         let vscode = &mut self.tabs.ide.vscode;
         let Some(server) = &vscode.server else { return };
         if vscode.folder.as_ref() != Some(&root) {
@@ -577,6 +605,19 @@ impl Shell {
     /// Opens `path` in the Ide tab, shows the tab and focuses the code area. Opening a file that is
     /// already open activates its tab.
     pub(in crate::ui) fn ide_open(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Some(root) = self.tool_root() else {
+            self.toast("Pick a project to open its files.", cx);
+            return;
+        };
+        // Only files inside the project folder open; a symlink out of it is followed and refused here.
+        let path = match workspace::resolve(&root, path) {
+            Ok(real) => real,
+            Err(e) => {
+                self.toast(format!("Could not open {}: {e}", path.display()), cx);
+                return;
+            }
+        };
+        let path = path.as_path();
         if self.state.settings.ide == IdeKind::VsCode {
             self.show_tool_tab(RightTab::Ide, cx);
             self.tabs.ide.vscode.open = Some(path.to_path_buf());
@@ -614,6 +655,7 @@ impl Shell {
     /// Points the open files under `old` at `new` after a rename. A file that no longer opens is closed.
     pub(super) fn ide_moved(&mut self, old: &Path, new: &Path) {
         let ide = &mut self.tabs.ide;
+        let marks = TabMarks::take(ide);
         let docs = std::mem::take(&mut ide.docs);
         ide.docs = docs
             .into_iter()
@@ -622,20 +664,22 @@ impl Shell {
                 Err(_) => Some(doc),
             })
             .collect();
-        ide.active = ide.active.min(ide.docs.len().saturating_sub(1));
+        marks.restore(ide, |path| path.strip_prefix(old).map_or_else(|_| path.to_path_buf(), |rest| new.join(rest)));
     }
 
     /// Closes the open files under `path`, after they were deleted or renamed.
     pub(super) fn ide_closed_under(&mut self, path: &Path) {
         let ide = &mut self.tabs.ide;
+        let marks = TabMarks::take(ide);
         ide.docs.retain(|doc| !doc.path.starts_with(path));
-        ide.active = ide.active.min(ide.docs.len().saturating_sub(1));
+        marks.restore(ide, Path::to_path_buf);
     }
 
     /// Applies one change from the tool folder's watcher: records it in the agent-changes list, reloads a
     /// clean open file, flags a dirty one, and with Follow agent on opens a file the agent creates or
     /// changes.
     fn ide_change(&mut self, change: Change, cx: &mut Context<Self>) {
+        let root = self.tool_root().unwrap_or_default();
         let ide = &mut self.tabs.ide;
         if !is_scratch(&change.path) {
             record_change(&mut ide.changes, &change.path, change.kind);
@@ -647,14 +691,14 @@ impl Shell {
                     ChangeKind::Removed => doc.deleted = true,
                     _ if doc.buffer.is_dirty() => doc.changed_on_disk = true,
                     _ => {
-                        if let Ok(text) = fs::read_to_string(&doc.path) {
+                        if let Ok(text) = workspace::read_to_string(&root, &doc.path) {
                             doc.reload(&text);
                         }
                     }
                 }
             }
             None if ide.follow && change.kind != ChangeKind::Removed => {
-                if let Ok(doc) = Doc::open(&change.path) {
+                if let Some(doc) = workspace::resolve(&root, &change.path).ok().and_then(|real| Doc::open(&real).ok()) {
                     ide.docs.push(doc);
                     ide.active = ide.docs.len() - 1;
                 }
@@ -718,8 +762,9 @@ impl Shell {
 
     /// Replaces tab `ix` with the file on disk, dropping its unsaved edits.
     fn ide_reload(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let root = self.tool_root().unwrap_or_default();
         let Some(doc) = self.tabs.ide.docs.get_mut(ix) else { return };
-        let failed = match fs::read_to_string(&doc.path) {
+        let failed = match workspace::read_to_string(&root, &doc.path) {
             Ok(text) => {
                 doc.reload(&text);
                 None
@@ -749,6 +794,11 @@ impl Shell {
     /// kept on screen as a toast.
     fn ide_save_doc(&mut self, ix: usize, cx: &mut Context<Self>) -> bool {
         let Some(path) = self.tabs.ide.docs.get(ix).map(|d| d.path.clone()) else { return false };
+        let root = self.tool_root().unwrap_or_default();
+        if let Err(e) = workspace::resolve(&root, &path) {
+            self.toast(format!("Could not save {}: {e}", path.display()), cx);
+            return false;
+        }
         if let Some(watch) = &self.tabs.ide.watch {
             watch.ignore_own_write(&path);
         }
@@ -1067,7 +1117,10 @@ impl Shell {
 
     /// Opens the Open file… picker on the tool folder.
     fn ide_picker_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.tool_root();
+        let Some(root) = self.tool_root() else {
+            self.toast("Pick a project to open its files.", cx);
+            return;
+        };
         let input = cx.new(|cx| TextInput::new(picker_config(), window, cx));
         let changed = cx.subscribe(&input, |this, _, event: &TextInputEvent, cx| match event {
             TextInputEvent::Changed => this.ide_picker_filter(cx),
@@ -1349,7 +1402,7 @@ pub(super) fn is_scratch(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".archonui-tmp"))
 }
 
-fn placeholder(text: &str, theme: &Theme) -> AnyElement {
+pub(super) fn placeholder(text: &str, theme: &Theme) -> AnyElement {
     div()
         .flex_1()
         .p(px(14.))
@@ -1509,6 +1562,7 @@ fn selected_cols(selection: Option<(Pos, Pos)>, line: usize, raw: &str) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn changes_are_recorded_once_with_their_newest_kind() {
@@ -1569,6 +1623,36 @@ mod tests {
         assert_eq!(doc.buffer.text(), "new content\n");
         assert!(!doc.changed_on_disk);
         assert!(!doc.deleted);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dropping_a_tab_keeps_the_active_and_asking_tabs_on_their_files() {
+        let dir = std::env::temp_dir().join(format!("archonui-test-marks-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let paths: Vec<PathBuf> = ["a.rs", "b.rs", "c.rs"].iter().map(|name| dir.join(name)).collect();
+        for path in &paths {
+            fs::write(path, "x\n").unwrap();
+        }
+        let mut ide = IdeUi::default();
+        ide.docs = paths.iter().map(|path| Doc::open(path).unwrap()).collect();
+        ide.active = 2;
+        ide.closing = Some(1);
+
+        // The first tab goes, as when its file is deleted from the Files tab.
+        let marks = TabMarks::take(&ide);
+        ide.docs.retain(|doc| doc.path != paths[0]);
+        marks.restore(&mut ide, Path::to_path_buf);
+        assert_eq!(ide.docs[ide.active].path, paths[2]);
+        assert_eq!(ide.closing.map(|ix| ide.docs[ix].path.clone()), Some(paths[1].clone()));
+
+        // The asking tab goes: the question ends rather than moving to another file.
+        let marks = TabMarks::take(&ide);
+        ide.docs.retain(|doc| doc.path != paths[1]);
+        marks.restore(&mut ide, Path::to_path_buf);
+        assert_eq!(ide.closing, None);
+        assert_eq!(ide.docs[ide.active].path, paths[2]);
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -28,12 +28,14 @@ pub struct SliderRange {
 impl SliderRange {
     /// Clamps `value` to the range, then snaps it to the nearest step.
     pub fn snap(&self, value: f32) -> f32 {
-        let clamped = value.clamp(self.min, self.max);
-        if self.step <= 0. {
+        // `f32::clamp` panics when min > max, and passes NaN through; a bad range or value falls back to `min`.
+        let (min, max) = if self.max >= self.min { (self.min, self.max) } else { (self.min, self.min) };
+        let clamped = if value.is_nan() { min } else { value.clamp(min, max) };
+        if !(self.step > 0.) || !self.step.is_finite() {
             return clamped;
         }
-        let steps = ((clamped - self.min) / self.step).round();
-        (self.min + steps * self.step).min(self.max)
+        let steps = ((clamped - min) / self.step).round();
+        (min + steps * self.step).min(max)
     }
 
     /// Position of `value` along the track, from 0 at `min` to 1 at `max`.
@@ -52,7 +54,7 @@ impl SliderRange {
 
 /// The track position under `x`, given the track's left edge and width. Clamped to 0 to 1.
 pub fn fraction_at(x: f32, left: f32, width: f32) -> f32 {
-    if width <= 0. {
+    if !(width > 0.) || x.is_nan() || left.is_nan() {
         return 0.;
     }
     ((x - left) / width).clamp(0., 1.)
@@ -77,6 +79,10 @@ pub struct Slider {
     /// The track's last painted bounds, for mapping mouse positions to values.
     track: Option<Bounds<Pixels>>,
     dragging: bool,
+    /// When set, a drag only previews the value; `on_change` runs once when the mouse is released.
+    commit_on_release: bool,
+    /// A previewed value that `on_change` has not seen yet.
+    pending: bool,
     on_change: Rc<dyn Fn(f32, &mut Window, &mut App)>,
 }
 
@@ -94,31 +100,66 @@ impl Slider {
             unit: unit.into(),
             track: None,
             dragging: false,
+            commit_on_release: false,
+            pending: false,
             on_change: Rc::new(on_change),
         }
+    }
+
+    /// For settings that are expensive to apply live: a drag previews the value, and `on_change` runs
+    /// once on mouse release (a track click commits the same way).
+    pub fn commit_on_release(mut self) -> Self {
+        self.commit_on_release = true;
+        self
     }
 
     pub fn value(&self) -> f32 {
         self.value
     }
 
+    /// True while a previewed value has not been committed through `on_change`.
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
+
     /// Sets the value without calling `on_change`.
     pub fn set_value(&mut self, value: f32, cx: &mut Context<Self>) {
         self.value = self.range.snap(value);
+        self.pending = false;
         cx.notify();
     }
 }
 
-/// Sets the slider to the value at track position `fraction`, and calls `on_change` if that changed it.
+/// Sets the slider to the value at track position `fraction`. Calls `on_change` if that changed it,
+/// unless the slider commits on release, in which case only the preview moves.
 /// The handler is cloned out before it runs, so it can update this entity without a borrow conflict.
 fn set_fraction(entity: &Entity<Slider>, fraction: f32, window: &mut Window, cx: &mut App) {
-    let change = entity.update(cx, |slider, _| {
+    let change = entity.update(cx, |slider, cx| {
         let value = slider.range.value_at(fraction);
         if value == slider.value {
             return None;
         }
         slider.value = value;
+        if slider.commit_on_release {
+            slider.pending = true;
+            cx.notify();
+            return None;
+        }
         Some((value, slider.on_change.clone()))
+    });
+    if let Some((value, on_change)) = change {
+        on_change(value, window, cx);
+    }
+}
+
+/// Calls `on_change` with the previewed value, if a preview is waiting to be committed.
+fn commit(entity: &Entity<Slider>, window: &mut Window, cx: &mut App) {
+    let change = entity.update(cx, |slider, _| {
+        if !slider.pending {
+            return None;
+        }
+        slider.pending = false;
+        Some((slider.value, slider.on_change.clone()))
     });
     if let Some((value, on_change)) = change {
         on_change(value, window, cx);
@@ -194,9 +235,13 @@ impl RenderOnce for SliderView {
                             set_fraction(&drag, fraction, window, cx);
                         });
                         let release = entity.clone();
-                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                            if phase == DispatchPhase::Bubble {
-                                release.update(cx, |slider, _| slider.dragging = false);
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
+                            if phase != DispatchPhase::Bubble {
+                                return;
+                            }
+                            let was_dragging = release.update(cx, |slider, _| std::mem::replace(&mut slider.dragging, false));
+                            if was_dragging {
+                                commit(&release, window, cx);
                             }
                         });
                     }
@@ -277,6 +322,21 @@ mod tests {
         let range = SliderRange { min: 0., max: 10., step: 4. };
         assert_eq!(range.snap(9.), 8.);
         assert_eq!(range.snap(10.), 10.);
+    }
+
+    #[test]
+    fn degenerate_ranges_and_nan_do_not_panic() {
+        let flat = SliderRange { min: 5., max: 5., step: 1. };
+        assert_eq!(flat.snap(9.), 5.);
+        assert_eq!(flat.fraction(5.), 0.);
+        assert_eq!(flat.value_at(0.7), 5.);
+        let inverted = SliderRange { min: 5., max: 1., step: 1. };
+        assert_eq!(inverted.snap(3.), 5.);
+        assert_eq!(MAX_SETTING.snap(f32::NAN), 10.);
+        let nan_step = SliderRange { min: 0., max: 1., step: f32::NAN };
+        assert_eq!(nan_step.snap(0.4), 0.4);
+        assert_eq!(fraction_at(f32::NAN, 0., 10.), 0.);
+        assert_eq!(fraction_at(5., 0., f32::NAN), 0.);
     }
 
     #[test]

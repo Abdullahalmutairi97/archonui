@@ -23,6 +23,8 @@ const WORKSPACE_FILE: &str = "workspace.json";
 const PROJECTS_FILE: &str = "projects.json";
 /// Quiet time after the last change before a batch of changes is written.
 const DEBOUNCE: Duration = Duration::from_millis(300);
+/// Longest a change waits while changes keep coming, so a long burst is still written.
+const MAX_DELAY: Duration = Duration::from_secs(2);
 
 /// Where the app keeps its files. `config` holds the three JSON files; `data` holds copied assets
 /// (wallpapers and icons). Sessions live in `store::dir()`.
@@ -147,14 +149,46 @@ pub fn migrate(old: &store::Settings) -> (AppSettings, Workspace) {
     (settings, workspace)
 }
 
-/// The config file at `path` as `T`. Missing files give the default; unreadable ones are moved aside.
-fn read_or_default<T: DeserializeOwned + Default>(path: &Path) -> T {
+/// The config file at `path` as `T`. Missing files give the default. A file that doesn't parse is
+/// copied aside as `*.json.corrupt`, and every field (or list item) that still parses is kept, so one
+/// bad value, such as an enum a newer build wrote, doesn't reset the whole file.
+fn read_or_default<T: DeserializeOwned + Serialize + Default>(path: &Path) -> T {
     let Ok(bytes) = fs::read(path) else { return T::default() };
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
         eprintln!("ignoring {}: {e}", path.display());
-        let _ = fs::rename(path, path.with_extension("json.corrupt"));
-        T::default()
+        let _ = fs::copy(path, path.with_extension("json.corrupt"));
+        serde_json::from_slice(&bytes).ok().and_then(salvage).unwrap_or_default()
     })
+}
+
+/// `value` as `T`, leaving out the object fields or array items that don't parse.
+fn salvage<T: DeserializeOwned + Serialize + Default>(value: serde_json::Value) -> Option<T> {
+    use serde_json::Value;
+    match value {
+        Value::Object(fields) => {
+            // Start from what an empty file gives, so fields with their own serde defaults keep them.
+            let empty = serde_json::from_value::<T>(Value::Object(Default::default())).unwrap_or_default();
+            let Value::Object(mut kept) = serde_json::to_value(empty).ok()? else { return None };
+            for (key, field) in fields {
+                let previous = kept.insert(key.clone(), field);
+                if serde_json::from_value::<T>(Value::Object(kept.clone())).is_err() {
+                    match previous {
+                        Some(p) => kept.insert(key, p),
+                        None => kept.remove(&key),
+                    };
+                }
+            }
+            serde_json::from_value(Value::Object(kept)).ok()
+        }
+        Value::Array(items) => {
+            let kept: Vec<Value> = items
+                .into_iter()
+                .filter(|item| serde_json::from_value::<T>(Value::Array(vec![item.clone()])).is_ok())
+                .collect();
+            serde_json::from_value(Value::Array(kept)).ok()
+        }
+        _ => None,
+    }
 }
 
 pub fn to_json<T: Serialize>(value: &T) -> Vec<u8> {
@@ -169,16 +203,31 @@ pub fn save_config(saver: &Saver, config: &Path, settings: &AppSettings, workspa
 }
 
 /// Write `bytes` to `path` through a temp file and a rename, so a crash never leaves half a file.
+/// The temp name is unique to this process and write, so two windows or instances never share one.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+    if let Some(dir) = dir {
         store::create_private_dir(dir)?;
     }
     let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
-    let tmp = path.with_file_name(format!("{name}.tmp"));
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(tmp, path)
+    let tmp = path.with_file_name(format!("{name}.{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let written = (|| {
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written?;
+    // The rename is only durable once the directory is synced too.
+    if let Some(dir) = dir {
+        let _ = fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    Ok(())
 }
 
 /// Copy `src` into `dir` under a name not taken yet. Returns the copy's path.
@@ -243,14 +292,27 @@ impl Saver {
     }
 }
 
+/// Changes still waiting out the debounce are written when the saver goes, such as on quit.
+impl Drop for Saver {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
 impl Shared {
     fn run(&self) {
         loop {
             let mut pending = self.pending.lock().expect("save queue");
             pending = self.changed.wait_while(pending, |p| p.is_empty()).expect("save queue");
-            // Wait for a quiet DEBOUNCE before writing, so a burst of changes is written once.
+            // Wait for a quiet DEBOUNCE before writing, so a burst of changes is written once, but no
+            // longer than MAX_DELAY, so changes that never stop are still written.
+            let first = std::time::Instant::now();
             loop {
-                let (guard, timeout) = self.changed.wait_timeout(pending, DEBOUNCE).expect("save queue");
+                let left = MAX_DELAY.saturating_sub(first.elapsed());
+                if left.is_zero() {
+                    break;
+                }
+                let (guard, timeout) = self.changed.wait_timeout(pending, DEBOUNCE.min(left)).expect("save queue");
                 pending = guard;
                 if timeout.timed_out() {
                     break;
@@ -383,6 +445,63 @@ mod tests {
         let loaded = load(&config, &dir.join("none.json"));
         assert_eq!(loaded.settings.gaps, 14.);
         assert!(config.join("settings.json.corrupt").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn one_bad_value_keeps_the_rest_of_the_file() {
+        let dir = temp("salvage");
+        let config = dir.join("config");
+        // A theme from a newer build, and a width saved as `null` (a NaN).
+        write_atomic(&config.join(SETTINGS_FILE), br#"{"gaps": 22, "theme": "from-the-future", "app_name": "ember"}"#).unwrap();
+        write_atomic(&config.join(WORKSPACE_FILE), br#"{"right_width": null, "right_tab": "git"}"#).unwrap();
+        let projects = r#"[{"id": "p1", "name": "core", "path": "/c", "created": 1}, {"id": 5}]"#;
+        write_atomic(&config.join(PROJECTS_FILE), projects.as_bytes()).unwrap();
+
+        let loaded = load(&config, &dir.join("none.json"));
+        assert_eq!((loaded.settings.gaps, loaded.settings.app_name.as_str()), (22., "ember"));
+        assert_eq!(loaded.workspace.right_tab, RightTab::Git);
+        assert_eq!(loaded.workspace.right_width, RIGHT_WIDTH_DEFAULT);
+        assert_eq!(loaded.projects.len(), 1, "the broken project is dropped, the good one kept");
+        assert!(config.join("settings.json.corrupt").exists(), "the original is kept aside");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn writes_leave_no_temp_files() {
+        let dir = temp("tmpfiles");
+        let file = dir.join(WORKSPACE_FILE);
+        for i in 0..3 {
+            write_atomic(&file, format!("{i}").as_bytes()).unwrap();
+        }
+        assert_eq!(fs::read(&file).unwrap(), b"2");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn dropping_the_saver_writes_what_is_queued() {
+        let dir = temp("saver-drop");
+        let path = dir.join("workspace.json");
+        let saver = Saver::new();
+        saver.schedule(path.clone(), b"last".to_vec());
+        drop(saver);
+        assert_eq!(fs::read(&path).unwrap(), b"last");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_change_that_never_stops_is_still_written() {
+        let dir = temp("saver-busy");
+        let path = dir.join("workspace.json");
+        let saver = Saver::new();
+        let start = std::time::Instant::now();
+        while !path.exists() && start.elapsed() < MAX_DELAY * 3 {
+            saver.schedule(path.clone(), b"busy".to_vec());
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(path.exists(), "written within MAX_DELAY even though changes kept coming");
+        drop(saver);
         fs::remove_dir_all(dir).unwrap();
     }
 

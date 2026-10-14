@@ -360,6 +360,30 @@ pub(super) fn resolve_theme(state: &AppState) -> Theme {
     theme::resolve(&s.theme.preset(), &custom, s.fonts.get(key).cloned().unwrap_or_default())
 }
 
+/// The harness new sessions start with: the default from settings when it is detected and enabled,
+/// else the first enabled detected harness. A disabled harness is never picked; `None` when none is enabled.
+pub(in crate::ui) fn pick_harness(default: Option<&str>, agents: &[DetectedAgent]) -> Option<&'static str> {
+    pick_harness_id(default, agents.iter().map(|a| (a.harness.id(), a.enabled)))
+}
+
+/// `pick_harness` over `(harness id, enabled)` pairs in detection order.
+fn pick_harness_id(default: Option<&str>, agents: impl Iterator<Item = (&'static str, bool)> + Clone) -> Option<&'static str> {
+    let mut enabled = agents.filter(|&(_, on)| on).map(|(id, _)| id);
+    default.and_then(|d| enabled.clone().find(|id| *id == d)).or_else(|| enabled.next())
+}
+
+/// Whether a link from chat output may be opened: only `http`, `https` and `mailto`. Agent output can
+/// carry `file://`, `javascript:` or other schemes, which are refused.
+pub(in crate::ui) fn link_allowed(url: &str) -> bool {
+    let url = url.trim();
+    let Some((scheme, rest)) = url.split_once(':') else { return false };
+    match scheme.to_ascii_lowercase().as_str() {
+        "http" | "https" => rest.starts_with("//") && rest.len() > 2,
+        "mailto" => !rest.is_empty(),
+        _ => false,
+    }
+}
+
 impl Focusable for Shell {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -431,13 +455,7 @@ impl Shell {
             return;
         }
         let files = std::mem::take(&mut self.startup_files);
-        let default = self.state.settings.default_harness.clone();
-        let agent = default
-            .as_deref()
-            .and_then(|id| self.agents.iter().find(|a| a.enabled && a.harness.id() == id))
-            .or_else(|| self.agents.iter().find(|a| a.enabled))
-            .map(|a| a.harness.id());
-        let Some(agent) = agent else {
+        let Some(agent) = pick_harness(self.state.settings.default_harness.as_deref(), &self.agents) else {
             self.toast("No agent is enabled", cx);
             return;
         };
@@ -474,4 +492,31 @@ pub fn open_window(cx: &mut App, files: Vec<std::path::PathBuf>) {
         },
     )
     .expect("open window");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pick_harness_falls_back_from_a_disabled_or_missing_default() {
+        let agents = [("claude", false), ("codex", true), ("gemini", true)];
+        let pick = |d: Option<&str>| pick_harness_id(d, agents.iter().copied());
+        assert_eq!(pick(Some("gemini")), Some("gemini"));
+        assert_eq!(pick(Some("claude")), Some("codex"), "a disabled default is skipped");
+        assert_eq!(pick(Some("opencode")), Some("codex"), "an uninstalled default is skipped");
+        assert_eq!(pick(None), Some("codex"));
+        assert_eq!(pick_harness_id(Some("claude"), [("claude", false)].into_iter()), None);
+        assert_eq!(pick_harness_id(None, std::iter::empty()), None);
+    }
+
+    #[test]
+    fn only_web_and_mail_links_open() {
+        for ok in ["https://example.com", "http://localhost:3000/x", "HTTPS://Example.com", "mailto:a@b.c", " https://x.y "] {
+            assert!(link_allowed(ok), "{ok}");
+        }
+        for bad in ["file:///etc/passwd", "javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,x", "about:blank", "/etc/passwd", "relative/path", "", "https:", "http:x", "vbscript:x", "ftp://x"] {
+            assert!(!link_allowed(bad), "{bad}");
+        }
+    }
 }

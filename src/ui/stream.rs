@@ -37,6 +37,8 @@ pub struct StreamEnv<'a> {
     pub text_size: f32,
     pub session: &'a Session,
     pub busy: bool,
+    /// Settings → General "Show tool calls in chat" (chat.md §1.4 item 2).
+    pub show_tools: bool,
 }
 
 /// What a stream asks of the view that hosts it. `Shell` implements it; the stream demo has its own view.
@@ -77,6 +79,7 @@ struct RowCtx<H> {
     mode: Mode,
     /// Index of the reply that is still streaming, if the session is busy.
     streaming: Option<usize>,
+    show_tools: bool,
     selection: Option<Selection>,
 }
 
@@ -190,6 +193,7 @@ impl StreamUi {
                 session: env.session.id.clone(),
                 mode: env.session.mode.clone(),
                 streaming,
+                show_tools: env.show_tools,
                 selection: self.selection.clone(),
             });
             div()
@@ -385,6 +389,7 @@ impl Shell {
             text_size: self.state.settings.text_size,
             session,
             busy: self.state.busy(session_id),
+            show_tools: self.state.settings.show_tools,
         };
         self.stream.render(cx.entity(), env, cx)
     }
@@ -394,8 +399,13 @@ impl Shell {
         self.stream.lightbox_overlay(cx.entity(), &self.theme)
     }
 
-    /// Opens a link in the Browser tab.
+    /// Opens a link in the Browser tab. Only web and mail links: agent output can carry `file://` or
+    /// `javascript:` targets.
     pub(super) fn open_url(&mut self, url: &str, cx: &mut Context<Self>) {
+        if !super::shell::link_allowed(url) {
+            self.toast("Only web and mail links open", cx);
+            return;
+        }
         self.browser_open(url, cx);
     }
 }

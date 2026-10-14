@@ -64,26 +64,46 @@ impl Attachment {
             Kind::Pdf => "application/pdf",
             Kind::Text => "text/plain",
             Kind::Other => "application/octet-stream",
-            Kind::Image => match self.path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
-                Some("jpg" | "jpeg") => "image/jpeg",
-                Some("gif") => "image/gif",
-                Some("webp") => "image/webp",
-                _ => "image/png",
-            },
+            // The kind was sniffed from the content, so the type is too: a JPEG saved as `.png` (or with no
+            // extension) must not be labelled PNG, which Claude rejects. The extension is the fallback.
+            Kind::Image => image_type(&head(&self.path).unwrap_or_default()).unwrap_or_else(|| {
+                match self.path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
+                    Some("jpg" | "jpeg") => "image/jpeg",
+                    Some("gif") => "image/gif",
+                    Some("webp") => "image/webp",
+                    _ => "image/png",
+                }
+            }),
         }
+    }
+}
+
+/// The first bytes of `path`, enough to sniff its type.
+fn head(path: &Path) -> io::Result<Vec<u8>> {
+    let mut head = Vec::with_capacity(8192);
+    File::open(path)?.take(8192).read_to_end(&mut head)?;
+    Ok(head)
+}
+
+/// The image type `head` starts with, if it is one ArchonUI sends natively.
+fn image_type(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if head.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
     }
 }
 
 /// Classify by content, not extension.
 fn sniff(path: &Path) -> io::Result<Kind> {
-    let mut head = Vec::with_capacity(8192);
-    File::open(path)?.take(8192).read_to_end(&mut head)?;
-    let image = head.starts_with(b"\x89PNG\r\n\x1a\n")
-        || head.starts_with(b"\xff\xd8\xff")
-        || head.starts_with(b"GIF87a")
-        || head.starts_with(b"GIF89a")
-        || (head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP");
-    Ok(if image {
+    let head = head(path)?;
+    Ok(if image_type(&head).is_some() {
         Kind::Image
     } else if head.starts_with(b"%PDF") {
         Kind::Pdf
@@ -167,6 +187,16 @@ mod tests {
         assert_eq!(Attachment::inspect(&write("b.txt", b"%PDF-1.4")).unwrap().kind, Kind::Pdf);
         assert_eq!(Attachment::inspect(&write("c", "héllo".as_bytes())).unwrap().kind, Kind::Text);
         assert_eq!(Attachment::inspect(&write("d", b"\x00\x01\x02")).unwrap().kind, Kind::Other);
+    }
+
+    #[test]
+    fn image_media_type_follows_the_content_not_the_extension() {
+        let jpeg_as_png = Attachment::inspect(&write("photo.png", b"\xff\xd8\xff\xe0rest")).unwrap();
+        assert_eq!(jpeg_as_png.media_type(), "image/jpeg");
+        let webp_no_ext = Attachment::inspect(&write("shot", b"RIFF\x00\x00\x00\x00WEBPVP8 ")).unwrap();
+        assert_eq!(webp_no_ext.media_type(), "image/webp");
+        let gif_as_jpg = Attachment::inspect(&write("anim.jpg", b"GIF89a....")).unwrap();
+        assert_eq!(gif_as_jpg.media_type(), "image/gif");
     }
 
     #[test]

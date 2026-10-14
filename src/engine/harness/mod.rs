@@ -361,6 +361,28 @@ mod tests {
     }
 
     #[test]
+    fn plan_preamble_reaches_opencode_and_gemini_as_documented() {
+        for id in ["opencode", "gemini"] {
+            let plan = args(id, Mode::Plan, None);
+            assert!(plan.last().unwrap().starts_with(PLAN_PREAMBLE), "{id}: {plan:?}");
+            assert!(plan.last().unwrap().ends_with("do it"), "{id}: {plan:?}");
+            assert_eq!(args(id, Mode::Ask, None).last().map(String::as_str), Some("do it"), "{id}");
+        }
+    }
+
+    #[test]
+    fn opencode_sends_a_bare_slash_as_a_message() {
+        let turn = TurnInput { prompt: "/", ..input(Mode::Auto, None) };
+        let a = harness("opencode").unwrap().plan(&turn).args;
+        assert!(!a.contains(&"--command".to_string()), "{a:?}");
+        assert_eq!(a.last().map(String::as_str), Some("/"));
+        let turn = TurnInput { prompt: "/review main", ..input(Mode::Plan, None) };
+        let a = harness("opencode").unwrap().plan(&turn).args;
+        assert!(has_pair(&a, "--command", "review"));
+        assert_eq!(a.last().map(String::as_str), Some("main"), "command arguments get no preamble");
+    }
+
+    #[test]
     fn pi_narrows_tools_outside_auto() {
         let auto = args("pi", Mode::Auto, None);
         assert!(!auto.contains(&"--tools".to_string()));
@@ -375,6 +397,10 @@ mod tests {
     fn unverified_harnesses_map_modes_as_documented() {
         assert!(has_pair(&args("gemini", Mode::Auto, None), "--approval-mode", "auto_edit"));
         assert!(has_pair(&args("gemini", Mode::Ask, None), "--approval-mode", "plan"));
+        // Without it, headless Gemini refuses untrusted folders and drops the approval mode.
+        for mode in Mode::ALL {
+            assert!(args("gemini", mode, None).contains(&"--skip-trust".to_string()), "{mode:?}");
+        }
     }
 
     #[test]
@@ -457,7 +483,7 @@ mod tests {
         assert!(codex.env.contains(&("ARCHONUI_MCP_DOCS_AUTHORIZATION".to_string(), "Bearer t".to_string())), "{:?}", codex.env);
 
         let claude = harness("claude").unwrap().plan(&turn);
-        assert!(has_pair(&claude.args, "--mcp-config", &claude.files[0].0.display().to_string()));
+        assert!(claude.args.contains(&format!("--mcp-config={}", claude.files[0].0.display())), "{:?}", claude.args);
         let doc: serde_json::Value = serde_json::from_str(&claude.files[0].1).unwrap();
         assert_eq!(doc["mcpServers"]["docs"]["type"], "http");
         assert!(doc["mcpServers"].get("pg").is_none(), "disabled servers are not passed");

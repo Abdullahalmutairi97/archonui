@@ -187,6 +187,7 @@ fn blocks(events: &mut Events, ids: &mut usize, cwd: &Path) -> Vec<Block> {
             | Event::SoftBreak
             | Event::HardBreak
             | Event::InlineHtml(_)
+            | Event::TaskListMarker(_)
             | Event::Start(Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Link { .. } | Tag::Image { .. }) => {
                 push_inline(&mut out, inline(events, ids, cwd, None), cwd);
             }
@@ -227,7 +228,16 @@ fn inline(events: &mut Events, ids: &mut usize, cwd: &Path, until: Option<TagEnd
             }
             Event::InlineHtml(t) => {
                 events.next();
-                text.push_str(&t);
+                // Agents break table cells and lines with <br>; anything else shows as written.
+                if is_line_break_tag(&t) {
+                    text.push('\n');
+                } else {
+                    text.push_str(&t);
+                }
+            }
+            Event::TaskListMarker(checked) => {
+                events.next();
+                text.push_str(if checked { "\u{2611} " } else { "\u{2610} " });
             }
             Event::Code(code) => {
                 events.next();
@@ -270,9 +280,13 @@ fn inline(events: &mut Events, ids: &mut usize, cwd: &Path, until: Option<TagEnd
             Event::Start(Tag::Image { dest_url, .. }) => {
                 events.next();
                 let mut alt = String::new();
+                // Alt text may hold emphasis or code, so only the image's own end tag closes it.
+                let mut depth = 0;
                 while let Some(event) = events.next() {
                     match event {
-                        Event::Text(t) => alt.push_str(&t),
+                        Event::Text(t) | Event::Code(t) => alt.push_str(&t),
+                        Event::Start(_) => depth += 1,
+                        Event::End(_) if depth > 0 => depth -= 1,
                         Event::End(_) => break,
                         _ => {}
                     }
@@ -287,6 +301,12 @@ fn inline(events: &mut Events, ids: &mut usize, cwd: &Path, until: Option<TagEnd
     }
     let id = take_id(ids);
     (Text { id, heading: None, text, marks }, images)
+}
+
+/// Whether inline HTML is a `<br>` tag in any of its spellings.
+fn is_line_break_tag(html: &str) -> bool {
+    let inner = html.trim().trim_start_matches('<').trim_end_matches('>').trim_end_matches('/').trim();
+    inner.eq_ignore_ascii_case("br")
 }
 
 /// A table: the head row, then body rows, each cell as inline text.
@@ -471,6 +491,33 @@ mod tests {
         assert!(matches!(&blocks[1], Block::Image(i) if i.name == "bonfire.jpg"));
         let none = parse("See missing/shot.png", &cwd());
         assert_eq!(none.len(), 1);
+    }
+
+    #[test]
+    fn image_alt_with_emphasis_does_not_end_the_document() {
+        let blocks = parse("![a *b* c](x.png)\n\nafter", &cwd());
+        assert!(matches!(&blocks[0], Block::Image(i) if i.name == "a b c"));
+        assert_eq!(text(&blocks[1]).text, "after");
+        let nested = parse("> ![a *b*](x.png)\n\nafter", &cwd());
+        assert_eq!(text(nested.last().unwrap()).text, "after");
+    }
+
+    #[test]
+    fn task_markers_and_br_tags_are_kept() {
+        let blocks = parse("- [x] done\n- [ ] todo", &cwd());
+        let Block::List { items, .. } = &blocks[0] else { panic!("{blocks:?}") };
+        assert_eq!(text(&items[0][0]).text, "\u{2611} done");
+        assert_eq!(text(&items[1][0]).text, "\u{2610} todo");
+        let table = parse("| a |\n|---|\n| x<br>y |", &cwd());
+        let Block::Table { rows, .. } = &table[0] else { panic!("{table:?}") };
+        assert_eq!(rows[0][0].text, "x\ny");
+    }
+
+    #[test]
+    fn odd_input_does_not_panic() {
+        for input in ["```", "```ts\nconst é = \"", "| a |\n|", "![", "[x](", "- - - -\n1. 2. 3.", "<div>\n", "> > > \u{202e}é\n", "```chart\nx NaN\ny inf"] {
+            let _ = parse(input, &cwd());
+        }
     }
 
     #[test]

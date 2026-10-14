@@ -8,7 +8,7 @@ use super::{
 use crate::{
     app::workspace::RightTab,
     engine::attach::{Attachment, MAX_FILES},
-    store,
+    store, workspace,
 };
 use gpui::{
     div, prelude::*, AnyElement, ClickEvent, ClipboardEntry, Context, ImageFormat, PathPromptOptions,
@@ -85,6 +85,9 @@ impl Shell {
         }) else {
             return false;
         };
+        if image.bytes().is_empty() {
+            return false;
+        }
         let ext = match image.format {
             ImageFormat::Png => "png",
             ImageFormat::Jpeg => "jpg",
@@ -247,30 +250,32 @@ impl Shell {
 /// The most recently changed files in `root` and the folders below it, newest first. Hidden entries
 /// and `target` and `node_modules` folders are skipped.
 fn recent_files(root: &Path) -> Vec<PathBuf> {
+    // Only a project folder is scanned, and listing goes through the workspace helpers (which skip
+    // ignored and build folders); symlinks are not followed, so a link out of the project is never offered.
+    let Ok(root) = workspace::project_root(root) else { return Vec::new() };
     let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
-    let mut dirs = vec![(root.to_path_buf(), 0usize)];
+    let mut dirs = vec![(root.clone(), 0usize)];
     let mut seen = 0;
     while let Some((dir, depth)) = dirs.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
+        let Ok(entries) = workspace::list_dir(&root, &dir) else { continue };
+        for entry in entries {
             seen += 1;
             if seen > SCAN_ENTRIES {
                 dirs.clear();
                 break;
             }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with('.') || matches!(name.as_ref(), "target" | "node_modules") {
+            if entry.name.starts_with('.') {
                 continue;
             }
-            let Ok(file_type) = entry.file_type() else { continue };
-            if file_type.is_dir() {
+            if entry.is_dir {
                 if depth + 1 < SCAN_DEPTH {
-                    dirs.push((entry.path(), depth + 1));
+                    dirs.push((entry.path, depth + 1));
                 }
-            } else if file_type.is_file() {
-                if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-                    found.push((modified, entry.path()));
+            } else if let Ok(meta) = fs::symlink_metadata(&entry.path) {
+                if meta.file_type().is_file() {
+                    if let Ok(modified) = meta.modified() {
+                        found.push((modified, entry.path));
+                    }
                 }
             }
         }

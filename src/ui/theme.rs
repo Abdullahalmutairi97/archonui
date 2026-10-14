@@ -45,7 +45,8 @@ impl Rgba {
         let [r, g, b, a] = parts.as_slice() else {
             return None;
         };
-        Some(Self::new(r.parse().ok()?, g.parse().ok()?, b.parse().ok()?, a.parse().ok()?))
+        let a: f32 = a.parse().ok().filter(|a: &f32| a.is_finite())?;
+        Some(Self::new(r.parse().ok()?, g.parse().ok()?, b.parse().ok()?, a.clamp(0.0, 1.0)))
     }
 
     pub fn to_hsla(self) -> gpui::Hsla {
@@ -66,7 +67,7 @@ pub fn mix(a: Rgba, b: Rgba, t: f64) -> Rgba {
 }
 
 /// Stable config id of a preset, serialised kebab-case (`blood-moon`). Order is the prototype's
-/// `NAMES` order, which `Alt+T` cycles through.
+/// `NAMES` order, which `Ctrl+Shift+T` cycles through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeId {
@@ -632,6 +633,17 @@ impl Default for Effects {
     }
 }
 
+impl Effects {
+    /// The sliders within their ranges (blur 0–48, dim 0–80); defaults for a non-number.
+    fn clamped(self) -> Self {
+        let d = Self::default();
+        Self {
+            blur: if self.blur.is_finite() { self.blur.clamp(0.0, 48.0) } else { d.blur },
+            dim: if self.dim.is_finite() { self.dim.clamp(0.0, 80.0) } else { d.dim },
+        }
+    }
+}
+
 /// The wallpaper layer: opacity, then CSS `blur(px)` and `brightness()` filters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Wallpaper {
@@ -678,6 +690,9 @@ impl BackgroundStyle {
     /// Wallpaper and sidebar surfaces for this style (themes.md §4).
     pub fn surfaces(self, theme: &Theme, effects: Effects) -> Surfaces {
         let panel = theme.panel;
+        // Hand-edited config can put the sliders out of range; a negative brightness would
+        // paint the wallpaper inverted and a NaN would poison the cache key.
+        let effects = effects.clamped();
         let dim = 1.0 - effects.dim / 100.0;
         let (opacity, blur, brightness, side, side_blur) = match self {
             Self::Canvas => (1.0, 0.0, 1.0, panel.alpha(0.72), Some(effects.blur)),
@@ -696,6 +711,7 @@ impl BackgroundStyle {
 
     /// The session tile in this style. Only Canvas varies per tile (themes.md §4.1).
     pub fn tile(self, theme: &Theme, effects: Effects, state: TileState) -> TileSurface {
+        let effects = effects.clamped();
         let tile = theme.tile;
         let solid = |alpha: f32, blur: Option<f32>| TileSurface {
             fill: TileFill::Solid(tile.alpha(alpha)),
@@ -742,6 +758,12 @@ mod tests {
         assert_eq!(Rgba::parse("#c81e2"), None);
         assert_eq!(Rgba::parse("#gggggg"), None);
         assert_eq!(Rgba::parse("rgba(1,2,3)"), None);
+    }
+
+    #[test]
+    fn parse_rejects_non_finite_alpha_and_clamps_range() {
+        assert_eq!(Rgba::parse("rgba(1,2,3,NaN)"), None);
+        assert_eq!(Rgba::parse("rgba(1,2,3,7)"), Some(Rgba::new(1, 2, 3, 1.0)));
     }
 
     #[test]
@@ -984,5 +1006,17 @@ mod tests {
         assert!((canvas.wallpaper.brightness - 0.8).abs() < 1e-6);
         let ambient = BackgroundStyle::Ambient.surfaces(&t, dimmed);
         assert!((ambient.wallpaper.brightness - 0.44).abs() < 1e-6);
+    }
+
+    #[test]
+    fn out_of_range_sliders_are_clamped() {
+        let t = resolved(ThemeId::BloodMoon);
+        let wild = Effects { blur: -5.0, dim: 250.0 };
+        let canvas = BackgroundStyle::Canvas.surfaces(&t, wild);
+        assert_eq!(canvas.side_blur, Some(0.0));
+        assert!((canvas.wallpaper.brightness - 0.2).abs() < 1e-6);
+        let nan = Effects { blur: f32::NAN, dim: f32::NAN };
+        assert_eq!(BackgroundStyle::Canvas.surfaces(&t, nan).side_blur, Some(24.0));
+        assert_eq!(BackgroundStyle::Glass.tile(&t, Effects { blur: 900.0, dim: 0.0 }, TileState::default()).blur, Some(48.0));
     }
 }

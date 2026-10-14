@@ -572,8 +572,18 @@ impl ChatView {
 
     /// Unused "New chat" sessions vanish once you move away from them, unless they have a terminal.
     fn prune_empty(&mut self) {
-        let current = self.current.clone();
-        self.sessions.retain(|s| !s.messages.is_empty() || s.terminal || Some(&s.id) == current.as_ref());
+        let gone = unused_sessions(&self.sessions, self.current.as_deref());
+        self.sessions.retain(|s| !gone.contains(&s.id));
+        // What a pruned chat left behind: its queued files (pasted images live in its attachments
+        // folder), its folder watcher and its Git tab state. It never had messages, so nothing else is lost.
+        for id in &gone {
+            self.live.remove(id);
+            self.forget_editor(id);
+            self.forget_git(id);
+            if let Err(e) = store::delete(id) {
+                eprintln!("could not delete session {id}: {e}");
+            }
+        }
         let sessions = &self.sessions;
         self.terms.retain(|id| sessions.iter().any(|s| s.id == id));
     }
@@ -1526,6 +1536,15 @@ fn attachment_view(a: &Attachment, thumb: Option<&Thumb>, size: gpui::Pixels) ->
         .into_any_element()
 }
 
+/// The chats that vanish when moving away: no messages, no terminal, and not `current`.
+fn unused_sessions(sessions: &[Session], current: Option<&str>) -> Vec<String> {
+    sessions
+        .iter()
+        .filter(|s| s.messages.is_empty() && !s.terminal && Some(s.id.as_str()) != current)
+        .map(|s| s.id.clone())
+        .collect()
+}
+
 /// Entries whose name (or hint, e.g. a model id) contains `query`, with
 /// name-prefix matches first.
 fn rank(entries: impl Iterator<Item = PaletteEntry>, query: &str) -> Vec<PaletteEntry> {
@@ -1847,5 +1866,27 @@ impl Render for ChatView {
                     })
             )
             .when(!self.settings.hide_panel, |d| d.child(self.render_panel(window, cx)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{unused_sessions, Role, Session};
+    use std::path::PathBuf;
+
+    #[test]
+    fn only_unused_empty_chats_are_pruned() {
+        let new = |terminal: bool, message: bool| {
+            let mut s = Session::new("claude", PathBuf::from("/tmp"));
+            s.terminal = terminal;
+            if message {
+                s.push(Role::User, "hi");
+            }
+            s
+        };
+        let sessions = vec![new(false, false), new(false, false), new(true, false), new(false, true)];
+        let current = sessions[1].id.clone();
+        assert_eq!(unused_sessions(&sessions, Some(&current)), vec![sessions[0].id.clone()]);
+        assert_eq!(unused_sessions(&sessions, None).len(), 2);
     }
 }

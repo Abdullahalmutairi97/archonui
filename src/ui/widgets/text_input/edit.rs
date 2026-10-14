@@ -292,4 +292,89 @@ mod tests {
         assert_eq!(utf16_to_char(text, 1), 1);
         assert_eq!(utf16_to_char(text, 99), 3);
     }
+
+    #[test]
+    fn max_length_counts_chars_not_bytes_or_utf16_units() {
+        let mut edit = single("", Some(3));
+        edit.insert_text("😀é你x");
+        assert_eq!(edit.text(), "😀é你");
+        assert_eq!(edit.char_len(), 3);
+    }
+
+    #[test]
+    fn backspace_and_selection_treat_an_emoji_as_one_char() {
+        let mut edit = single("a😀b", None);
+        edit.buffer_mut().move_doc_end(false);
+        edit.buffer_mut().move_left(false);
+        edit.backspace();
+        assert_eq!(edit.text(), "ab");
+        edit.select_chars(0..1);
+        assert_eq!(edit.copy().as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn select_chars_clamps_past_the_end() {
+        let mut edit = single("héllo", None);
+        edit.select_chars(2..99);
+        assert_eq!(edit.char_selection(), 2..5);
+        edit.insert_text("!");
+        assert_eq!(edit.text(), "hé!");
+    }
+
+    #[test]
+    fn empty_paste_deletes_the_selection_and_keeps_the_caret() {
+        let mut edit = single("abc", None);
+        edit.select_chars(1..2);
+        assert_eq!(edit.insert_text(""), 1..1);
+        assert_eq!(edit.text(), "ac");
+        assert_eq!(edit.char_selection(), 1..1);
+    }
+
+    #[test]
+    fn pasted_newlines_in_a_limited_multiline_field_are_cut_to_the_room() {
+        let mut edit = Edit::new("", true, Some(4));
+        let range = edit.insert_text("a\r\nb\nc\nd");
+        assert_eq!(edit.text(), "a\nb\n");
+        assert_eq!(range, 0..4);
+    }
+
+    #[test]
+    fn text_longer_than_the_limit_can_still_be_replaced_or_shrunk() {
+        let mut edit = single("abcdef", Some(3));
+        edit.select_chars(0..6);
+        edit.insert_text("xyzw");
+        assert_eq!(edit.text(), "xyz");
+        edit.buffer_mut().move_doc_end(false);
+        edit.backspace();
+        assert_eq!(edit.text(), "xy");
+    }
+
+    #[test]
+    fn undo_after_replacing_a_selection_restores_it() {
+        let mut edit = single("hello", None);
+        edit.select_all();
+        edit.insert_text("bye");
+        assert_eq!(edit.text(), "bye");
+        assert!(edit.undo());
+        assert_eq!(edit.text(), "hello");
+    }
+
+    #[test]
+    fn word_moves_cross_multibyte_words() {
+        let mut edit = Edit::new("héllo wörld 😀 end", false, None);
+        edit.buffer_mut().move_doc_end(false);
+        edit.delete_word_left();
+        assert_eq!(edit.text(), "héllo wörld 😀 ");
+        edit.buffer_mut().move_doc_start(false);
+        edit.delete_word_right();
+        assert!(!edit.text().starts_with('h'));
+    }
+
+    #[test]
+    fn utf16_offsets_inside_a_surrogate_pair_round_up() {
+        let text = "a😀b";
+        assert_eq!(utf16_to_char(text, 2), 2);
+        assert_eq!(char_to_utf16(text, 99), 4);
+        assert_eq!(utf16_to_char("", 5), 0);
+    }
 }

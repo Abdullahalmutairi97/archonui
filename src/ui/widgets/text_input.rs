@@ -159,6 +159,8 @@ pub struct TextInput {
     /// Horizontal position that Up and Down keep.
     goal_x: Option<Pixels>,
     scroll_y: Pixels,
+    /// Horizontal scroll, for single-line fields (multi-line ones wrap).
+    scroll_x: Pixels,
     /// Scroll to the caret on the next paint. Set by edits and moves, cleared by the wheel.
     follow_caret: bool,
     layout: Option<Layout>,
@@ -173,6 +175,7 @@ struct Layout {
     /// The visible content area, in window coordinates.
     content: Bounds<Pixels>,
     scroll: Pixels,
+    scroll_x: Pixels,
     lines: Vec<WrappedLine>,
     /// Top of each hard line, in content coordinates before scrolling.
     tops: Vec<Pixels>,
@@ -216,7 +219,7 @@ impl Layout {
     /// Maps a window point into content space before scrolling.
     fn to_local(&self, window_point: Point<Pixels>) -> Point<Pixels> {
         point(
-            window_point.x - self.content.left(),
+            window_point.x - self.content.left() + self.scroll_x,
             window_point.y - self.content.top() + self.scroll,
         )
     }
@@ -269,6 +272,7 @@ impl TextInput {
             selecting: false,
             goal_x: None,
             scroll_y: px(0.),
+            scroll_x: px(0.),
             follow_caret: true,
             layout: None,
             _blur: blur,
@@ -284,6 +288,7 @@ impl TextInput {
         self.edit.select_all();
         self.edit.insert_text(text);
         self.edit.buffer_mut().move_doc_end(false);
+        self.marked = None;
         self.follow_caret = true;
         cx.notify();
     }
@@ -315,7 +320,13 @@ impl TextInput {
             let action = enter_action(self.config.multiline, self.config.enter_submits, shift, secondary);
             match action {
                 EnterAction::Submit => cx.emit(TextInputEvent::Submit),
-                EnterAction::Newline => return self.insert_changed("\n", cx),
+                EnterAction::Newline => {
+                    if self.edit.newline() {
+                        self.marked = None;
+                        cx.emit(TextInputEvent::Changed);
+                    }
+                    return self.moved(cx);
+                }
                 EnterAction::Ignored => {}
             }
             return self.moved(cx);
@@ -357,15 +368,10 @@ impl TextInput {
             Cmd::Up(_) | Cmd::Down(_) | Cmd::Enter { .. } => unreachable!("handled above"),
         }
         if self.edit.text() != before {
+            // A composition range from before the edit no longer points at the same text.
+            self.marked = None;
             cx.emit(TextInputEvent::Changed);
         }
-        self.moved(cx);
-    }
-
-    /// Inserts `text` at the caret and reports the change.
-    fn insert_changed(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.edit.insert_text(text);
-        cx.emit(TextInputEvent::Changed);
         self.moved(cx);
     }
 
@@ -435,7 +441,8 @@ impl TextInput {
     /// Chars at `range` (UTF-16 offsets from the platform) in the current text.
     fn chars_of(&self, range: Range<usize>) -> Range<usize> {
         let text = self.edit.text();
-        utf16_to_char(&text, range.start)..utf16_to_char(&text, range.end)
+        let start = utf16_to_char(&text, range.start);
+        start..utf16_to_char(&text, range.end).max(start)
     }
 
     fn utf16_of(&self, chars: Range<usize>) -> Range<usize> {
@@ -536,7 +543,7 @@ impl EntityInputHandler for TextInput {
         let chars = self.chars_of(range_utf16);
         let caret = layout.caret(self.edit.buffer().pos_of(chars.start));
         let origin = point(
-            layout.content.left() + caret.x,
+            layout.content.left() + caret.x - layout.scroll_x,
             layout.content.top() + caret.y - layout.scroll,
         );
         Some(Bounds::new(origin, size(px(2.), layout.line_height)))
@@ -772,6 +779,7 @@ impl Element for TextElement {
         let mut layout = Layout {
             content,
             scroll: input.scroll_y,
+            scroll_x: input.scroll_x,
             lines,
             tops,
             line_height: config.line_height,
@@ -798,7 +806,27 @@ impl Element for TextElement {
         }
         layout.scroll = scroll;
 
-        let base = point(content.left(), content.top() - scroll);
+        // Single-line text doesn't wrap, so it scrolls sideways to keep the caret in view.
+        let mut scroll_x = px(0.);
+        if !config.multiline {
+            let caret_w = px(2.);
+            let text_w = layout.lines.first().map_or(px(0.), |line| line.unwrapped_layout.width);
+            let max_x = (text_w + caret_w - content.size.width).max(px(0.));
+            scroll_x = layout.scroll_x.min(max_x).max(px(0.));
+            if follow {
+                let x = layout.caret(cursor).x;
+                if x < scroll_x {
+                    scroll_x = x;
+                }
+                if x + caret_w > scroll_x + content.size.width {
+                    scroll_x = x + caret_w - content.size.width;
+                }
+                scroll_x = scroll_x.min(max_x).max(px(0.));
+            }
+        }
+        layout.scroll_x = scroll_x;
+
+        let base = point(content.left() - scroll_x, content.top() - scroll);
         let selection_rects = match selection {
             Some((start, end)) => selection_bounds(&layout, start, end, base),
             None => Vec::new(),
@@ -815,6 +843,7 @@ impl Element for TextElement {
         self.input.update(cx, |input, _| {
             input.layout = Some(stored);
             input.scroll_y = scroll;
+            input.scroll_x = scroll_x;
             input.follow_caret = false;
         });
 

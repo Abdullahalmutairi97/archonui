@@ -7,7 +7,7 @@ use super::detect::DetectedAgent;
 use serde_json::Value;
 use std::{
     io::{BufRead, BufReader, Write},
-    os::unix::process::CommandExt,
+    os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -93,12 +93,13 @@ pub(super) fn probe_jsonl<const N: usize>(
         .ok()?;
     let killer = Killer::arm(child.id());
     // Keep stdin open until we have the answers; some CLIs exit on EOF.
-    let mut stdin = child.stdin.take()?;
-    for r in requests {
-        writeln!(stdin, "{r}").ok()?;
-    }
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let stdout = child.stdout.take().expect("piped stdout");
+    // A CLI that exits early fails the write; it is still killed and reaped below, not left a zombie.
+    let sent = requests.iter().all(|r| writeln!(stdin, "{r}").is_ok());
     let mut found: [Option<Value>; N] = std::array::from_fn(|_| None);
-    for line in BufReader::new(child.stdout.take()?).lines().map_while(Result::ok) {
+    let lines = sent.then(|| BufReader::new(stdout).lines().map_while(Result::ok));
+    for line in lines.into_iter().flatten() {
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
         if let Some(i) = (0..N).find(|&i| found[i].is_none() && wants[i](&v)) {
             found[i] = Some(v);
@@ -157,15 +158,23 @@ pub(super) fn run_json(path: &Path, cwd: &Path, args: &[&str]) -> Option<Value> 
 /// output into a pipe.
 pub(super) fn run_text(path: &Path, cwd: &Path, args: &[&str]) -> Option<String> {
     let out = std::env::temp_dir().join(format!("{}.json", crate::store::new_id()));
-    let mut child = Command::new(path)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(std::fs::File::create(&out).ok()?)
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .ok()?;
+    // Owner-only and exclusive: a CLI's output (OpenCode's config) can hold keys, and a planted
+    // symlink at a guessable name must not be written through.
+    let spawned = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&out).and_then(|file| {
+        Command::new(path)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(file)
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+    });
+    let Ok(mut child) = spawned else {
+        // A CLI that cannot start leaves no temp file behind.
+        let _ = std::fs::remove_file(&out);
+        return None;
+    };
     let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
     let finished = loop {
         match child.try_wait() {
@@ -214,6 +223,38 @@ impl Killer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_probe_that_exits_early_is_reaped() {
+        let cwd = std::env::temp_dir();
+        // Exits before reading, so the request write may fail; either way nothing is found.
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exit 0"]);
+        let start = std::time::Instant::now();
+        assert!(probe_jsonl(cmd, &cwd, ["{}"], [|_: &Value| true]).is_none());
+        assert!(start.elapsed() < PROBE_TIMEOUT, "returned without waiting for the timeout");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "read line; echo '{\"ok\":1}'; sleep 60"]);
+        let [v] = probe_jsonl(cmd, &cwd, ["{}"], [|v: &Value| v["ok"] == 1]).expect("answer found");
+        assert_eq!(v["ok"], 1);
+    }
+
+    #[test]
+    fn run_text_output_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("archonui-disc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("cli.sh");
+        std::fs::write(&script, "#!/bin/sh\nstat -c %a /proc/self/fd/1\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(run_text(&script, &dir, &[]).as_deref().map(str::trim), Some("300")); // write-only, owner-only
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_text_reports_failure_for_a_missing_binary() {
+        assert_eq!(run_text(Path::new("/nonexistent/archonui-cli"), &std::env::temp_dir(), &[]), None);
+    }
 
     #[test]
     fn short_takes_first_sentence() {

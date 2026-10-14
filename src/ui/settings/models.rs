@@ -127,15 +127,10 @@ impl Shell {
         ]
     }
 
-    /// The harness that new sessions use: the chosen default, else the first enabled one.
+    /// The harness that new sessions use: the chosen default if it's installed and enabled, else the
+    /// first enabled one.
     pub(super) fn default_harness_id(&self) -> Option<&'static str> {
-        let chosen = self.state.settings.default_harness.as_deref();
-        HARNESS_IDS
-            .into_iter()
-            .find(|id| chosen == Some(*id))
-            .or_else(|| {
-                HARNESS_IDS.into_iter().find(|id| self.agents.iter().any(|a| a.harness.id() == *id && a.enabled))
-            })
+        crate::ui::shell::pick_harness(self.state.settings.default_harness.as_deref(), &self.agents)
     }
 
     /// One row per discovered model. Rows of a disabled harness are dimmed and their controls only explain why.

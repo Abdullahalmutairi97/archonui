@@ -19,6 +19,13 @@ mod session;
 pub use detect::{detect, DetectedAgent};
 pub use discover::{discover, Capabilities, ModelInfo};
 pub use harness::{harness, Harness, Mode, ToolSettings};
+/// For tests outside `engine` that build `Capabilities.commands` and `DetectedAgent`s.
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use discover::AgentCommand;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use harness::AuthStatus;
 pub use parse::Out;
 pub use session::{start_turn, Event, Turn, TurnOptions};
 

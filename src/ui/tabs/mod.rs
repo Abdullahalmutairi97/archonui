@@ -23,16 +23,14 @@ pub struct TabsUi {
 }
 
 impl Shell {
-    /// The folder tools act on: the focused session's, else the current project's, else the default.
-    pub(super) fn tool_folder(&self) -> PathBuf {
+    /// The project folder tools act on: the focused session's folder, else the current project's. A folder
+    /// that is not a project (the home folder, `/`, a missing folder) is skipped. `None` when neither is
+    /// one, which the tools show as an empty state rather than listing home.
+    pub(super) fn tool_folder(&self) -> Option<PathBuf> {
         let ws = &self.state.workspace;
-        if let Some(s) = ws.layout.focus.as_deref().and_then(|id| self.state.session(id)) {
-            return s.cwd.clone();
-        }
-        if let Some(p) = ws.current_project.as_deref().and_then(|id| self.state.project(id)) {
-            return p.path.clone();
-        }
-        self.default_folder()
+        let session = ws.layout.focus.as_deref().and_then(|id| self.state.session(id)).map(|s| s.cwd.clone());
+        let project = ws.current_project.as_deref().and_then(|id| self.state.project(id)).map(|p| p.path.clone());
+        [session, project].into_iter().flatten().find(|folder| crate::workspace::project_root(folder).is_ok())
     }
 
     pub(super) fn render_tab(&mut self, tab: RightTab, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

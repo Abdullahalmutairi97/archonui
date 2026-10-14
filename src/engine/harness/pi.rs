@@ -66,7 +66,7 @@ impl Harness for Pi {
         for f in &files.native {
             a.push(format!("@{}", f.path.display()));
         }
-        a.push(prompt_arg(&files.prompt(input.prompt)));
+        a.push(pi_prompt(&files.prompt(input.prompt)));
         Plan { args: a, files: mcp.files, ..Default::default() }
     }
 
@@ -142,6 +142,17 @@ impl Harness for Pi {
     fn auth_status(&self) -> AuthStatus {
         let Some(home) = env::var_os("HOME") else { return AuthStatus::Missing };
         auth_in(&Path::new(&home).join(".pi/agent"))
+    }
+}
+
+/// Pi reads any argument starting with `@` as a file to include, even after `--`, so a prompt
+/// like "@src/main.rs explain this" would become one missing file and no message. A leading space
+/// keeps it a message, as `prompt_arg` does for a leading `-`.
+fn pi_prompt(p: &str) -> String {
+    if p.starts_with('@') {
+        format!(" {p}")
+    } else {
+        prompt_arg(p)
     }
 }
 
@@ -269,6 +280,24 @@ mod tests {
         let pair = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].as_str());
         assert_eq!(pair("--model"), Some("deepseek/deepseek-flash"));
         assert_eq!(pair("--thinking"), Some("high"));
+    }
+
+    #[test]
+    fn prompts_starting_with_at_stay_messages() {
+        assert_eq!(pi_prompt("@src/main.rs explain"), " @src/main.rs explain");
+        assert_eq!(pi_prompt("-x"), " -x");
+        assert_eq!(pi_prompt("fix it"), "fix it");
+        let input = TurnInput {
+            cwd: Path::new("/work"),
+            prompt: "@notes.md summarise",
+            session: None,
+            files: &[],
+            model: None,
+            effort: None,
+            mode: Mode::Auto,
+            tools: ToolSettings::default(),
+        };
+        assert_eq!(Pi.plan(&input).args.last().map(String::as_str), Some(" @notes.md summarise"));
     }
 
     #[test]

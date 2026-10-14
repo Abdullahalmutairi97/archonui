@@ -100,7 +100,7 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
         .gap(px(8.))
         .max_w(relative(0.94))
         .child(agent_header(ctx, item, streaming))
-        .when(!item.tools.is_empty(), |column| column.child(tool_group(&item.tools, theme)))
+        .when(ctx.show_tools && !item.tools.is_empty(), |column| column.child(tool_group(&item.tools, theme)))
         .when(streaming, |column| {
             column.child(
                 div()
@@ -258,7 +258,8 @@ fn text_block<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, text: &Text) -> AnyElem
         }
     };
     let on_up = move |event: &MouseUpEvent, _window: &mut Window, cx: &mut App| {
-        let index = text_index(&layout, event.position);
+        // A release past the end of the text is not a click on the link that ends the line.
+        let Ok(index) = layout.index_for_position(event.position) else { return };
         let Some(url) = marks.iter().find_map(|(range, mark)| match mark {
             Mark::Link(url) if range.contains(&index) => Some(url.clone()),
             _ => None,

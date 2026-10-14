@@ -20,13 +20,13 @@ pub struct ChartRow {
     pub value: f64,
 }
 
-/// The rows of a chart body. Lines with a single word are skipped; a non-numeric value counts as 0.
+/// The rows of a chart body. Lines with a single word are skipped; a non-numeric or non-finite value counts as 0.
 pub fn chart_rows(body: &str) -> Vec<ChartRow> {
     body.lines()
         .filter_map(|line| {
             let words: Vec<&str> = line.split_whitespace().collect();
             let (value, label) = words.split_last().filter(|_| words.len() > 1)?;
-            Some(ChartRow { label: label.join(" "), value: value.parse().unwrap_or(0.) })
+            Some(ChartRow { label: label.join(" "), value: value.parse().ok().filter(|v: &f64| v.is_finite()).unwrap_or(0.) })
         })
         .collect()
 }
@@ -111,6 +111,11 @@ mod tests {
     #[test]
     fn non_numeric_chart_values_count_as_zero() {
         assert_eq!(chart_rows("Mon n/a")[0].value, 0.);
+    }
+
+    #[test]
+    fn non_finite_chart_values_count_as_zero() {
+        assert_eq!(chart_rows("a NaN\nb inf\nc -inf").iter().map(|r| r.value).collect::<Vec<_>>(), [0., 0., 0.]);
     }
 
     fn classes(line: &str) -> Vec<(&str, Tok)> {

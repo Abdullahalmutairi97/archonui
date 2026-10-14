@@ -160,6 +160,12 @@ impl EditorSet {
     /// the status line.
     fn save(&mut self, index: usize) -> bool {
         let Some(file) = self.files.get_mut(index) else { return false };
+        if let Some(path) = file.buffer.path() {
+            if let Err(e) = workspace::resolve(&self.root, path) {
+                file.error = Some(format!("Could not save {}: {e}", path.display()));
+                return false;
+            }
+        }
         if let (Some(Ok(watcher)), Some(path)) = (&self.watch, file.buffer.path()) {
             watcher.ignore_own_write(path);
         }
@@ -306,9 +312,18 @@ impl ChatView {
     pub(super) fn open_in(&mut self, id: &str, path: &Path, reveal: bool, cx: &mut Context<Self>) {
         let Some(set) = self.set_of(id) else { return };
         set.error = None;
-        let index = match set.files.iter().position(|f| f.buffer.path() == Some(path)) {
+        // Only files inside the chat's project folder open.
+        let path = match workspace::resolve(&set.root, path) {
+            Ok(real) => real,
+            Err(e) => {
+                set.error = Some(format!("Could not open {}: {e}", path.display()));
+                cx.notify();
+                return;
+            }
+        };
+        let index = match set.files.iter().position(|f| f.buffer.path() == Some(path.as_path())) {
             Some(index) => index,
-            None => match Buffer::open(path) {
+            None => match Buffer::open(&path) {
                 Ok(buffer) => {
                     set.files.push(OpenFile::new(buffer));
                     set.files.len() - 1

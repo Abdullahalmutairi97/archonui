@@ -138,7 +138,7 @@ impl Shell {
         }
     }
 
-    /// The accent "New session" button with its Alt ⏎ hint. Tighter than layout.md §2.1 row
+    /// The accent "New session" button with its Ctrl ⇧ ⏎ hint. Tighter than layout.md §2.1 row
     /// 3.1's spec padding/text size, by request.
     fn new_session_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
@@ -157,7 +157,7 @@ impl Shell {
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_session(window, cx)))
             .child("New session")
-            .child(div().text_size(px(10.)).opacity(0.75).child("Alt ⏎"))
+            .child(div().text_size(px(10.)).opacity(0.75).child("Ctrl ⇧ ⏎"))
     }
 
     fn session_row(&self, entry: &Entry, rename: Option<&Entity<TextInput>>, cx: &mut Context<Self>) -> AnyElement {
@@ -297,14 +297,9 @@ impl Shell {
     }
 
     /// Starts a chat with the default agent in the current project's folder, split beside the
-    /// focused tile. Alt+Enter does the same.
+    /// focused tile. Ctrl+Shift+Enter does the same.
     pub(in crate::ui) fn new_session(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let default = self.state.settings.default_harness.clone();
-        let agent = default
-            .as_deref()
-            .and_then(|id| self.agents.iter().find(|a| a.enabled && a.harness.id() == id))
-            .or_else(|| self.agents.iter().find(|a| a.enabled))
-            .map(|a| a.harness.id());
+        let agent = crate::ui::shell::pick_harness(self.state.settings.default_harness.as_deref(), &self.agents);
         let Some(agent) = agent else {
             self.toast("No agent is enabled", cx);
             return;

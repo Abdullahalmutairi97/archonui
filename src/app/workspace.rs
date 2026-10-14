@@ -47,10 +47,17 @@ impl Default for Workspace {
 }
 
 impl Workspace {
-    /// Keeps the sidebar and panel widths in their ranges.
+    /// Keeps the sidebar and panel widths in their ranges and repairs the saved layout.
     pub fn normalize(&mut self) {
-        self.left_width = self.left_width.clamp(LEFT_WIDTH.0, LEFT_WIDTH.1);
-        self.right_width = self.right_width.clamp(RIGHT_WIDTH.0, RIGHT_WIDTH.1);
+        // A NaN would be saved as `null`, which no longer parses, so it goes back to the default.
+        let fit = |v: f32, (lo, hi): (f32, f32), default: f32| if v.is_finite() { v.clamp(lo, hi) } else { default };
+        self.left_width = fit(self.left_width, LEFT_WIDTH, LEFT_WIDTH_DEFAULT);
+        self.right_width = fit(self.right_width, RIGHT_WIDTH, RIGHT_WIDTH_DEFAULT);
+        self.layout.normalize();
+        // Focus on a tile that isn't open (or was dropped as a duplicate past the cap) moves to the last tile.
+        if self.layout.focus.as_ref().is_some_and(|f| !self.layout.contains(f)) {
+            self.layout.focus = self.layout.tiles.last().cloned();
+        }
     }
 }
 
@@ -120,6 +127,19 @@ mod tests {
         w.left_width = 10.;
         w.normalize();
         assert_eq!(w.left_width, LEFT_WIDTH.0);
+    }
+
+    #[test]
+    fn a_corrupt_saved_layout_is_repaired() {
+        let mut w = Workspace { left_width: f32::NAN, ..Default::default() };
+        w.layout.tiles = vec!["a".into(), "a".into(), "b".into()];
+        w.layout.focus = Some("gone".into());
+        w.layout.ratios.insert(0, 5.);
+        w.normalize();
+        assert_eq!(w.left_width, LEFT_WIDTH_DEFAULT);
+        assert_eq!(w.layout.tiles, ["a", "b"], "duplicates are dropped");
+        assert_eq!(w.layout.focus.as_deref(), Some("b"), "focus moves to an open tile");
+        assert!(w.layout.ratios[&0] < 1.);
     }
 
     #[test]

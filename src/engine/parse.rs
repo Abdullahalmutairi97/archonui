@@ -124,8 +124,22 @@ impl Parser {
                     out.extend(self.claude_result(block));
                 }
             }
-            Some("result") if v["is_error"].as_bool() == Some(true) => {
-                out.push(Out::Error(s("/result").unwrap_or_else(|| "agent reported an error".into())))
+            // Error results (`error_max_turns`, `error_during_execution`, …) carry `errors`, not `result`.
+            Some("result")
+                if v["is_error"].as_bool() == Some(true)
+                    || s("/subtype").is_some_and(|t| t.starts_with("error")) =>
+            {
+                let errors: Vec<&str> =
+                    v["errors"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                let message = s("/result")
+                    .filter(|r| !r.trim().is_empty())
+                    .or_else(|| (!errors.is_empty()).then(|| errors.join("\n")))
+                    .or_else(|| match s("/subtype").as_deref() {
+                        Some("error_max_turns") => Some("The agent reached its turn limit.".into()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "agent reported an error".into());
+                out.push(Out::Error(message))
             }
             Some("result") => out.extend(s("/result").map(Out::Final)),
             _ => {}
@@ -758,6 +772,61 @@ mod tests {
         assert_eq!(show(&parser.parse(start)), ["thinking true"]);
         assert!(parser.parse(other_stop).is_empty(), "a different block ending is not thinking ending");
         assert_eq!(show(&parser.parse(stop)), ["thinking false"]);
+    }
+
+    #[test]
+    fn claude_error_results_report_their_reason() {
+        let errors = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["API Error: 529 overloaded"]}"#;
+        assert_eq!(show(&events(Protocol::Claude, errors)), ["Error(\"API Error: 529 overloaded\")"]);
+        let turns = r#"{"type":"result","subtype":"error_max_turns","is_error":false,"num_turns":3}"#;
+        assert_eq!(show(&events(Protocol::Claude, turns)), ["Error(\"The agent reached its turn limit.\")"]);
+        let text = r#"{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key"}"#;
+        assert_eq!(show(&events(Protocol::Claude, text)), ["Error(\"Invalid API key\")"]);
+        let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":"done"}"#;
+        assert_eq!(show(&events(Protocol::Claude, ok)), ["Final(\"done\")"]);
+    }
+
+    #[test]
+    fn malformed_unknown_and_odd_lines_are_harmless() {
+        let mut lines = vec![
+            String::new(),
+            "{".into(),
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"#.into(),
+            "[1,2,3]".into(),
+            "null".into(),
+            "42".into(),
+            r#""just a string""#.into(),
+            r#"{"type":"brand_new_event","payload":{}}"#.into(),
+            r#"{"type":7}"#.into(),
+            r#"{"type":"assistant","message":{"content":"not an array"}}"#.into(),
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":5,"name":null}]}}"#.into(),
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"never-started"}]}}"#.into(),
+            r#"{"type":"item.completed","item":{"type":"file_change","changes":"oops"}}"#.into(),
+            r#"{"type":"tool_execution_start","toolCallId":1}"#.into(),
+        ];
+        lines.push(format!("{}{}", "[".repeat(10_000), "]".repeat(10_000)));
+        lines.push(format!(r#"{{"type":"x","big":"{}"}}"#, "é".repeat(2_000_000)));
+        for proto in [Protocol::Claude, Protocol::Codex, Protocol::OpenCode, Protocol::Pi, Protocol::Gemini] {
+            let mut parser = Parser::new(proto, Path::new("/"));
+            for line in &lines {
+                for out in parser.parse(line) {
+                    // A result for a call that never started still ends cleanly, with no detail.
+                    assert!(matches!(out, Out::ToolEnd { detail: None, .. }), "{out:?} from {line:.80}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_targets_are_clipped_on_character_boundaries() {
+        let cmd = format!("echo {}", "日本語🙂".repeat(40));
+        let l = serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":cmd}}]}});
+        let out = events(Protocol::Claude, &l.to_string());
+        let Out::ToolStart { target, .. } = &out[0] else { panic!("{out:?}") };
+        assert_eq!(target.chars().count(), 80);
+        assert!(target.ends_with('…'));
+        let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"héllo 🙂\u0000"}}}"#;
+        assert_eq!(texts(Protocol::Claude, delta), "héllo 🙂\u{0}");
     }
 
     #[test]

@@ -24,7 +24,6 @@ use crate::ui::scale::px;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
-    io,
     ops::Range,
     path::{Path, PathBuf},
     process::Command,
@@ -33,6 +32,8 @@ use std::{
 
 /// Most matches a filter lists.
 const MAX_MATCHES: usize = 500;
+/// Most folders a filter reads, so a miss in a huge tree doesn't freeze the UI.
+const MAX_SEARCH_DIRS: usize = 5000;
 /// Lines of the selected file shown in the footer.
 const PREVIEW_LINES: usize = 6;
 /// Largest file the footer describes. Bigger files get no footer.
@@ -249,16 +250,22 @@ impl Tree {
 }
 
 impl Shell {
-    /// The folder the Files and Git tabs show: the tool folder, with symlinks resolved so that paths
-    /// match what git reports.
-    pub(super) fn tool_root(&self) -> PathBuf {
-        let folder = self.tool_folder();
-        fs::canonicalize(&folder).unwrap_or(folder)
+    /// The project folder the Files, IDE and Git tabs show, canonicalized so that paths match what git
+    /// reports. `None` when no project folder is in focus.
+    pub(super) fn tool_root(&self) -> Option<PathBuf> {
+        workspace::project_root(&self.tool_folder()?).ok()
+    }
+
+    /// The Files tab's root, or an empty path when there is none (every operation on it is then refused).
+    fn files_root(&self) -> PathBuf {
+        self.tabs.files.root.clone().unwrap_or_default()
     }
 
     pub(in crate::ui) fn render_files(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let root = self.tool_root();
+        let Some(root) = self.tool_root() else {
+            return no_project(&theme);
+        };
         self.files_sync(&root, window, cx);
         if std::mem::take(&mut self.tabs.files.refocus) {
             window.focus(&self.focus);
@@ -311,6 +318,10 @@ impl Shell {
             files.info = None;
             files.editing = None;
             files.menu = None;
+            // The filter's matches belong to the old folder.
+            if files.filter.as_ref().is_some_and(|filter| !filter.query.is_empty()) {
+                self.files_filter_changed(cx);
+            }
         }
         if !self.tabs.files.watch.as_ref().is_some_and(|watch| watch.root == root) {
             self.tabs.files.watch = Some(FolderWatch::start(root, cx, Self::files_change));
@@ -908,7 +919,7 @@ impl Shell {
                 }
             }
         } else {
-            self.tabs.files.info = read_info(&path);
+            self.tabs.files.info = read_info(&self.files_root(), &path);
             if clicks >= 2 {
                 self.ide_open(&path, cx);
             }
@@ -925,7 +936,8 @@ impl Shell {
             tree.changed(&change.path, change.kind);
         }
         if self.tabs.files.info.as_ref().is_some_and(|info| info.path == change.path) {
-            self.tabs.files.info = if change.kind == ChangeKind::Removed { None } else { read_info(&change.path) };
+            self.tabs.files.info =
+                if change.kind == ChangeKind::Removed { None } else { read_info(&self.files_root(), &change.path) };
         }
         if self.tabs.files.filter.as_ref().is_some_and(|filter| !filter.query.is_empty()) {
             self.files_filter_changed(cx);
@@ -1011,19 +1023,16 @@ impl Shell {
         }
         match editing.edit {
             Edit::Create { dir, folder } => {
+                let root = self.files_root();
                 let path = dir.join(&name);
-                let made = if folder {
-                    fs::create_dir(&path)
-                } else {
-                    fs::OpenOptions::new().write(true).create_new(true).open(&path).map(|_| ())
-                };
+                let made = if folder { workspace::create_dir(&root, &path) } else { workspace::create_file(&root, &path) };
                 match made {
-                    Ok(()) => {
+                    Ok(path) => {
                         if let Some(tree) = &mut self.tabs.files.tree {
                             tree.changed(&path, ChangeKind::Created);
                         }
                         self.tabs.files.selected = Some(path.clone());
-                        self.tabs.files.info = if folder { None } else { read_info(&path) };
+                        self.tabs.files.info = if folder { None } else { read_info(&root, &path) };
                     }
                     Err(e) => self.toast(format!("Could not create {name}: {e}"), cx),
                 }
@@ -1044,15 +1053,16 @@ impl Shell {
                     cx.notify();
                     return;
                 }
-                match fs::rename(&old, &new) {
-                    Ok(()) => {
+                let root = self.files_root();
+                match workspace::rename(&root, &old, &new) {
+                    Ok((old, new)) => {
                         if let Some(tree) = &mut self.tabs.files.tree {
                             tree.changed(&old, ChangeKind::Removed);
                             tree.changed(&new, ChangeKind::Created);
                         }
                         if self.tabs.files.selected.as_deref() == Some(old.as_path()) {
                             self.tabs.files.selected = Some(new.clone());
-                            self.tabs.files.info = read_info(&new);
+                            self.tabs.files.info = read_info(&root, &new);
                         }
                         self.ide_moved(&old, &new);
                     }
@@ -1073,7 +1083,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        let removed = if permanently { delete_for_good(&path) } else { trash(&path) };
+        let removed = workspace::delete(&self.files_root(), &path, permanently);
         match removed {
             Ok(()) => {
                 if let Some(tree) = &mut self.tabs.files.tree {
@@ -1106,7 +1116,10 @@ impl Shell {
             self.toast("Focus a session to attach the file to.", cx);
             return;
         };
-        self.add_files(&id, &[path], cx);
+        match workspace::resolve(&self.files_root(), &path) {
+            Ok(real) => self.add_files(&id, &[real], cx),
+            Err(e) => self.toast(format!("Could not attach {}: {e}", workspace::relative(&self.files_root(), &path)), cx),
+        }
     }
 
     fn files_copy(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -1117,9 +1130,21 @@ impl Shell {
     /// Opens the folder that holds `path` in the file manager.
     fn files_reveal(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.tabs.files.menu = None;
-        let folder = path.parent().unwrap_or(path.as_path()).to_path_buf();
-        if let Err(e) = Command::new("xdg-open").arg(&folder).spawn() {
-            self.toast(format!("Could not open {}: {e}", folder.display()), cx);
+        let folder = match workspace::resolve(&self.files_root(), &path) {
+            Ok(real) => real.parent().unwrap_or(real.as_path()).to_path_buf(),
+            Err(e) => {
+                self.toast(format!("Could not open {}: {e}", path.display()), cx);
+                return;
+            }
+        };
+        match Command::new("xdg-open").arg(&folder).spawn() {
+            // Reap it, so it doesn't stay a zombie.
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => self.toast(format!("Could not open {}: {e}", folder.display()), cx),
         }
         cx.notify();
     }
@@ -1268,22 +1293,9 @@ fn file_tag(name: &str, theme: &Theme) -> (&'static str, Rgba) {
     }
 }
 
-/// Moves `path` to the trash with `gio trash`. The error is the reason the trash refused it.
-fn trash(path: &Path) -> io::Result<()> {
-    match Command::new("gio").arg("trash").arg(path).output() {
-        Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => Err(io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string())),
-        Err(_) => Err(io::Error::other("gio isn't installed, so the trash can't be used.")),
-    }
-}
-
-/// Deletes `path` for good, a folder with its contents.
-fn delete_for_good(path: &Path) -> io::Result<()> {
-    if path.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
+/// The empty state of the tool tabs when no project folder is in focus.
+pub(super) fn no_project(theme: &Theme) -> AnyElement {
+    super::ide::placeholder("No project folder in focus. Pick a project to see its files here.", theme)
 }
 
 /// The files under `root` whose names contain `query`, ignoring case. Stops at `MAX_MATCHES`.
@@ -1291,7 +1303,12 @@ pub(super) fn search(root: &Path, query: &str) -> Vec<PathBuf> {
     let needle = query.to_lowercase();
     let mut found = Vec::new();
     let mut queue = VecDeque::from([root.to_path_buf()]);
+    let mut read = 0;
     while let Some(dir) = queue.pop_front() {
+        read += 1;
+        if read > MAX_SEARCH_DIRS {
+            break;
+        }
         let Ok(entries) = workspace::list_dir(root, &dir) else { continue };
         for entry in entries {
             if entry.is_dir {
@@ -1309,13 +1326,15 @@ pub(super) fn search(root: &Path, query: &str) -> Vec<PathBuf> {
     found
 }
 
-/// The footer's details of a text file. `None` for folders, files over `MAX_INFO_BYTES`, and non-UTF-8 files.
-fn read_info(path: &Path) -> Option<Info> {
-    let meta = path.metadata().ok()?;
+/// The footer's details of a text file in `root`. `None` for folders, files over `MAX_INFO_BYTES`, non-UTF-8
+/// files, and paths outside `root`.
+fn read_info(root: &Path, path: &Path) -> Option<Info> {
+    let real = workspace::resolve(root, path).ok()?;
+    let meta = real.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_INFO_BYTES {
         return None;
     }
-    let text = fs::read_to_string(path).ok()?;
+    let text = workspace::read_to_string(root, path).ok()?;
     let lines: Vec<&str> = text.lines().collect();
     let head: Vec<String> = lines.iter().take(PREVIEW_LINES).map(|line| line.to_string()).collect();
     let preview = head.iter().map(|text| (text.clone(), tokenize(text))).collect();

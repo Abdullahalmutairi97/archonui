@@ -1,7 +1,7 @@
 //! OpenCode: `opencode run --format json`. Auto runs the default `build`
 //! agent; Plan and Ask run the read-only `plan` agent.
 
-use super::{prompt_arg, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
+use super::{planned, prompt_arg, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
 use crate::app::settings::{McpServer, McpTransport};
 use crate::engine::{
     attach::{Delivery, Kind},
@@ -60,13 +60,15 @@ impl Harness for OpenCode {
             a.extend(strs(&["--session", id]));
         }
         // OpenCode runs slash commands through a flag rather than the message.
-        let message = match input.prompt.strip_prefix('/') {
+        // A bare "/" names no command, so it goes as a message.
+        // Plan and Ask share the `plan` agent, so Plan also asks for a plan in the message.
+        let message = match input.prompt.strip_prefix('/').filter(|rest| !rest.trim().is_empty()) {
             Some(rest) => {
                 let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
                 a.extend(strs(&["--command", name]));
                 (!args.trim().is_empty() || !files.by_path.is_empty()).then(|| files.prompt(args.trim()))
             }
-            None => Some(files.prompt(input.prompt)),
+            None => Some(planned(input.mode, files.prompt(input.prompt))),
         };
         for f in &files.native {
             a.extend(["-f".into(), f.path.display().to_string()]);

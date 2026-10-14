@@ -109,8 +109,8 @@ impl Highlighter {
     /// lines; a plain in-line edit is `edited(line, 1, 1)`. Cached states before `first` stay valid,
     /// and cached lines after the edit are reused once a re-parse reaches a matching state.
     pub fn edited(&mut self, first: usize, removed: usize, inserted: usize) {
-        if self.states.is_empty() {
-            // Nothing is cached yet; the next `spans` call builds the cache.
+        if self.states.is_empty() || (removed == 0 && inserted == 0) {
+            // Nothing is cached yet, or nothing changed; the next `spans` call builds the cache.
             return;
         }
         if first + removed > self.line_count {
@@ -124,7 +124,12 @@ impl Highlighter {
         self.lines.splice(first..first + removed, vec![None; inserted]);
         // The state after the replaced lines is kept for the first line after them, where a re-parse
         // can match it. With no new lines, the state before `first` is already that state.
+        // The state at `first` stays valid. With no lines removed it is also the state after them, so it
+        // is copied rather than moved, which would leave `first` without a state.
         let mut after = self.states.split_off(first + removed);
+        if removed == 0 {
+            self.states.push(after[0].clone());
+        }
         self.states.truncate(first + 1);
         if inserted == 0 {
             after.remove(0);
@@ -490,6 +495,76 @@ mod tests {
                 fresh.spans(lines_of(&text), text.len(), line),
                 "line {line}"
             );
+        }
+    }
+    #[test]
+    fn lines_inserted_with_none_removed_match_fresh_parse() {
+        let mut text: Vec<String> = (0..30).map(|i| format!("let v{i} = {i};")).collect();
+        let mut h = Highlighter::new(Some(Path::new("a.rs")), &text[0]);
+        h.spans(lines_of(&text), text.len(), 29);
+
+        // Two lines above line 0, as an undo or redo reports them.
+        text.splice(0..0, ["/* a".to_string(), "b */".to_string()]);
+        h.edited(0, 0, 2);
+        // One line in the middle, and one after the last.
+        text.insert(10, "// note".to_string());
+        h.edited(10, 0, 1);
+        text.push("fn tail() {}".to_string());
+        h.edited(text.len() - 1, 0, 1);
+        h.edited(3, 0, 0);
+
+        let mut fresh = Highlighter::new(Some(Path::new("a.rs")), &text[0]);
+        for line in 0..text.len() {
+            assert_eq!(
+                h.spans(lines_of(&text), text.len(), line),
+                fresh.spans(lines_of(&text), text.len(), line),
+                "line {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn random_buffer_edits_highlight_like_a_fresh_parse() {
+        use crate::editor::buffer::{
+            tests::{lines_of as buffer_lines, random_step, Lcg},
+            Buffer,
+        };
+        for seed in 0..12 {
+            let mut rng = Lcg(seed);
+            let mut b = Buffer::from_str("fn a() {\n    /* x */ let s = \"q\";\n}\n");
+            let mut h = Highlighter::new(Some(Path::new("a.rs")), &b.line(0));
+            for step in 0..150 {
+                random_step(&mut b, &mut rng);
+                if let Some((first, removed, inserted)) = b.take_edit() {
+                    h.edited(first, removed, inserted);
+                }
+                if rng.below(3) == 0 {
+                    let text = buffer_lines(&b);
+                    let line = rng.below(text.len());
+                    let mut fresh = Highlighter::new(Some(Path::new("a.rs")), &text[0]);
+                    assert_eq!(
+                        h.spans(lines_of(&text), text.len(), line),
+                        fresh.spans(lines_of(&text), text.len(), line),
+                        "seed {seed} step {step} line {line}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn odd_input_does_not_panic() {
+        let text: Vec<String> = ["\u{0}\u{feff}\"unterminated", "r#\"", "\u{1F600}é\t", "", "}}}}"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for name in ["a.rs", "a.py", "a.json", "a.md", "a.sh", "Makefile"] {
+            let mut h = Highlighter::new(Some(Path::new(name)), &text[0]);
+            for line in 0..text.len() + 2 {
+                for (range, _) in h.spans(lines_of(&text), text.len(), line) {
+                    assert!(text[line].is_char_boundary(range.start) && text[line].is_char_boundary(range.end));
+                }
+            }
         }
     }
 }

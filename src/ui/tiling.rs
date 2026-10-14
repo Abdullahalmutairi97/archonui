@@ -1,7 +1,7 @@
 //! Tiling model for the centre column: tile order, focus, split fractions and
 //! divider geometry. Pure logic; the UI draws what `Layout::compute` returns.
 //! Ported from `design/ArchonUI Agent v3.dc.html` (`renderVals`, `newSession`,
-//! `openSession`, `closeTile`, the Alt+arrow handler). Spec: `docs/design/layout.md` §3.2.
+//! `openSession`, `closeTile`, the Ctrl+Shift+arrow handler). Spec: `docs/design/layout.md` §3.2.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -72,7 +72,7 @@ pub enum HandleKey {
     Master,
 }
 
-/// Alt+arrow direction.
+/// Ctrl+Shift+arrow direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrow {
     Left,
@@ -114,13 +114,14 @@ impl Layout {
         let mut rects = Vec::with_capacity(n);
         let mut handles = Vec::new();
         if self.mode == LayoutMode::Master && n > 1 {
-            let mw = ((area.w - gap) * self.master_ratio).round();
+            // Sizes are floored at zero so an area smaller than the gaps never yields negative tiles.
+            let mw = ((area.w - gap).max(0.0) * self.fraction(HandleKey::Master)).round();
             rects.push(Rect { x: area.x, y: area.y, w: mw, h: area.h });
             handles.push(handle(HandleKey::Master, Dir::V, area.x + mw, area, gap));
-            let stack_h = (area.h - gap * (n as f32 - 2.0)) / (n as f32 - 1.0);
+            let stack_h = (area.h - gap * (n as f32 - 2.0)).max(0.0) / (n as f32 - 1.0);
             for i in 1..n {
                 let y = area.y + (i as f32 - 1.0) * (stack_h + gap);
-                rects.push(Rect { x: area.x + mw + gap, y, w: area.w - mw - gap, h: stack_h });
+                rects.push(Rect { x: area.x + mw + gap, y, w: (area.w - mw - gap).max(0.0), h: stack_h });
             }
         } else {
             let mut r = area;
@@ -131,19 +132,21 @@ impl Layout {
                     rects.push(r);
                     break;
                 }
-                let k = self.ratios.get(&i).copied().unwrap_or(SPLIT_DEFAULT);
+                let k = self.fraction(HandleKey::Split(i));
                 if er_w >= er_h * 0.9 {
                     er_w = (er_w - gap) / 2.0;
-                    let w = (r.w - gap) * k;
+                    let avail = (r.w - gap).max(0.0);
+                    let w = avail * k;
                     rects.push(Rect { w, ..r });
                     handles.push(handle(HandleKey::Split(i), Dir::V, r.x + w, r, gap));
-                    r = Rect { x: r.x + w + gap, w: r.w - gap - w, ..r };
+                    r = Rect { x: r.x + w + gap, w: avail - w, ..r };
                 } else {
                     er_h = (er_h - gap) / 2.0;
-                    let h = (r.h - gap) * k;
+                    let avail = (r.h - gap).max(0.0);
+                    let h = avail * k;
                     rects.push(Rect { h, ..r });
                     handles.push(handle(HandleKey::Split(i), Dir::H, r.y + h, r, gap));
-                    r = Rect { y: r.y + h + gap, h: r.h - gap - h, ..r };
+                    r = Rect { y: r.y + h + gap, h: avail - h, ..r };
                 }
             }
         }
@@ -170,7 +173,7 @@ impl Layout {
         true
     }
 
-    /// Alt+arrow focus move: Right/Down go to the next tile and Left/Up to the previous,
+    /// Ctrl+Shift+arrow focus move: Right/Down go to the next tile and Left/Up to the previous,
     /// wrapping. Follows tile order, not geometry, as the prototype does.
     pub fn focus_arrow(&mut self, arrow: Arrow) {
         let n = self.tiles.len() as isize;
@@ -181,7 +184,8 @@ impl Layout {
             Arrow::Right | Arrow::Down => 1,
             Arrow::Left | Arrow::Up => -1,
         };
-        let i = self.focus_index().map_or(-1, |i| i as isize);
+        // With nothing focused, forward starts at the first tile and back at the last.
+        let i = self.focus_index().map_or(if step > 0 { -1 } else { n }, |i| i as isize);
         self.focus = Some(self.tiles[(i + step).rem_euclid(n) as usize].clone());
     }
 
@@ -199,8 +203,10 @@ impl Layout {
         }
         let mut next = self.clone();
         if next.tiles.len() >= MAX_TILES {
-            let focus = next.focus.clone();
-            next.tiles.retain(|t| Some(t) != focus.as_ref());
+            // Drop the focused tile, or the last one when nothing tiled is focused, so the cap holds.
+            let drop = next.focus_index().unwrap_or(next.tiles.len() - 1);
+            next.tiles.remove(drop);
+            next.tiles.truncate(MAX_TILES - 1);
         }
         let at = next.focus_index().map_or(next.tiles.len(), |i| i + 1);
         next.tiles.insert(at, id.to_owned());
@@ -260,13 +266,22 @@ impl Layout {
             Dir::V => (pointer.0 - p.x - gap / 2.0) / (p.w - gap),
             Dir::H => (pointer.1 - p.y - gap / 2.0) / (p.h - gap),
         };
+        // A zero-length parent or a NaN pointer gives no position to move to.
+        if raw.is_nan() {
+            return;
+        }
         let requested = raw.clamp(RATIO_MIN, RATIO_MAX);
-        let fits = |k: f32| {
+        let current = self.fraction(handle.key);
+        // A value is allowed when it leaves tiles no further below the minimum than they are now: in a
+        // layout that fits, that means it still fits; in one already too small (the window shrank), a
+        // divider can still move as long as it doesn't make things worse.
+        let shortfall_at = |k: f32| {
             let mut next = self.clone();
             next.set_fraction(handle.key, k);
-            next.fits(area, gap)
+            next.shortfall(area, gap)
         };
-        let current = self.fraction(handle.key);
+        let base = self.shortfall(area, gap);
+        let fits = |k: f32| shortfall_at(k) <= base + 1e-3;
         let k = if fits(requested) {
             requested
         } else {
@@ -302,15 +317,44 @@ impl Layout {
         self.master_ratio = MASTER_DEFAULT;
     }
 
+    /// Repairs a layout loaded from disk: duplicate tiles are dropped, at most `MAX_TILES` are kept, and
+    /// fractions outside 0.12–0.88 (or not numbers) are clamped or reset.
+    pub fn normalize(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.tiles.retain(|t| seen.insert(t.clone()));
+        self.tiles.truncate(MAX_TILES);
+        self.ratios.retain(|_, k| k.is_finite());
+        for k in self.ratios.values_mut() {
+            *k = k.clamp(RATIO_MIN, RATIO_MAX);
+        }
+        self.master_ratio = self.fraction(HandleKey::Master);
+    }
+
     /// Whether every tile in `area` meets the minimum size.
     fn fits(&self, area: Rect, gap: f32) -> bool {
         self.compute(area, gap).0.iter().all(|(_, r)| r.w >= MIN_TILE_W && r.h >= MIN_TILE_H)
     }
 
+    /// How far, in px summed over tiles and axes, the tiles in `area` fall below the minimum size.
+    fn shortfall(&self, area: Rect, gap: f32) -> f32 {
+        self.compute(area, gap)
+            .0
+            .iter()
+            .map(|(_, r)| (MIN_TILE_W - r.w).max(0.0) + (MIN_TILE_H - r.h).max(0.0))
+            .sum()
+    }
+
+    /// The fraction a divider uses, kept in 0.12–0.88 so a bad saved value can't produce
+    /// negative or zero-size tiles.
     fn fraction(&self, key: HandleKey) -> f32 {
-        match key {
-            HandleKey::Split(i) => self.ratios.get(&i).copied().unwrap_or(SPLIT_DEFAULT),
-            HandleKey::Master => self.master_ratio,
+        let (k, default) = match key {
+            HandleKey::Split(i) => (self.ratios.get(&i).copied().unwrap_or(SPLIT_DEFAULT), SPLIT_DEFAULT),
+            HandleKey::Master => (self.master_ratio, MASTER_DEFAULT),
+        };
+        if k.is_finite() {
+            k.clamp(RATIO_MIN, RATIO_MAX)
+        } else {
+            default
         }
     }
 
@@ -574,6 +618,91 @@ mod tests {
         assert_eq!(l.focus.as_deref(), Some("c"));
         l.focus_arrow(Arrow::Up);
         assert_eq!(l.focus.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn six_tile_cap_holds_without_focus() {
+        let area = rect(0.0, 0.0, 4000.0, 3000.0);
+        let mut l = layout(&["t0", "t1", "t2", "t3", "t4", "t5"], "t2");
+        l.focus = None;
+        assert!(l.split_focused("new", area, GAP));
+        assert_eq!(l.tiles.len(), MAX_TILES);
+        assert_eq!(l.tiles, ["t0", "t1", "t2", "t3", "t4", "new"]);
+        // A focus that names an untiled session counts as no focus.
+        l.focus = Some("gone".into());
+        assert!(l.split_focused("newer", area, GAP));
+        assert_eq!(l.tiles.len(), MAX_TILES);
+    }
+
+    #[test]
+    fn focus_arrow_without_focus_starts_at_the_ends() {
+        let mut l = layout(&["a", "b", "c"], "a");
+        l.focus = None;
+        l.focus_arrow(Arrow::Left);
+        assert_eq!(l.focus.as_deref(), Some("c"));
+        l.focus = None;
+        l.focus_arrow(Arrow::Right);
+        assert_eq!(l.focus.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn bad_saved_fractions_are_clamped() {
+        let mut l = layout(&["a", "b", "c"], "a");
+        l.ratios.insert(0, 5.0);
+        l.ratios.insert(1, -3.0);
+        let r = rects(&l);
+        assert!(r.iter().all(|r| r.w > 0.0 && r.h > 0.0), "{r:?}");
+        assert_rect(r[0], rect(0.0, 0.0, (1112.0 - GAP) * 0.88, 1052.0), 1e-3);
+
+        let mut m = layout(&["a", "b"], "a");
+        m.mode = LayoutMode::Master;
+        m.master_ratio = f32::NAN;
+        assert_rect(m.compute(CENTRE, GAP).0[0].1, rect(0.0, 0.0, 615.0, 1052.0), 0.0);
+
+        let mut n = layout(&["a", "b", "a", "c", "d", "e", "f", "g"], "a");
+        n.ratios.insert(0, f32::INFINITY);
+        n.ratios.insert(1, 0.01);
+        n.master_ratio = 2.0;
+        n.normalize();
+        assert_eq!(n.tiles, ["a", "b", "c", "d", "e", "f"]);
+        assert_eq!(n.ratios.get(&0), None);
+        assert_eq!(n.ratios[&1], RATIO_MIN);
+        assert_eq!(n.master_ratio, RATIO_MAX);
+    }
+
+    #[test]
+    fn tiny_area_never_gives_negative_sizes() {
+        for mode in [LayoutMode::Dwindle, LayoutMode::Master] {
+            let mut l = layout(&["a", "b", "c", "d"], "a");
+            l.mode = mode;
+            for area in [rect(0.0, 0.0, 0.0, 0.0), rect(0.0, 0.0, 10.0, 5.0)] {
+                for (_, r) in l.compute(area, GAP).0 {
+                    assert!(r.w >= 0.0 && r.h >= 0.0, "{mode:?} {r:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drag_with_zero_length_parent_does_nothing() {
+        let mut l = layout(&["a", "b"], "a");
+        let area = rect(0.0, 0.0, GAP, 500.0);
+        let (_, handles) = l.compute(area, GAP);
+        l.drag(&handles[0], (GAP / 2.0, 0.0), area, GAP);
+        assert!(l.ratios.get(&0).is_none_or(|k| k.is_finite()));
+    }
+
+    #[test]
+    fn drag_still_works_when_another_tile_is_already_too_small() {
+        // Four tiles side by side in a short window are all below the minimum height, which no
+        // vertical divider can fix. The first divider must still move.
+        let area = rect(0.0, 0.0, 1100.0, 90.0);
+        let mut l = layout(&["a", "b", "c", "d"], "a");
+        let (_, handles) = l.compute(area, GAP);
+        assert!(!l.fits(area, GAP));
+        l.drag(&handles[0], (400.0, 0.0), area, GAP);
+        let k = l.ratios[&0];
+        assert!((k - (400.0 - GAP / 2.0) / (1100.0 - GAP)).abs() < 1e-3, "got {k}");
     }
 
     #[test]

@@ -115,7 +115,9 @@ fn diffs_section(diffs: &[(String, String)]) -> String {
     }
     let mut out = String::from("## File diffs\n\n");
     for (file, diff) in present {
-        let _ = write!(out, "### {file}\n\n```diff\n{}\n```\n\n", diff.trim_end());
+        let diff = diff.trim_end();
+        let fence = fence_for(diff);
+        let _ = write!(out, "### {}\n\n{fence}diff\n{diff}\n{fence}\n\n", one_line(file));
     }
     out
 }
@@ -126,7 +128,36 @@ fn terminal_section(output: &str) -> String {
     if output.is_empty() {
         return String::new();
     }
-    format!("## Terminal output\n\n```text\n{output}\n```\n\n")
+    let fence = fence_for(output);
+    format!("## Terminal output\n\n{fence}text\n{output}\n{fence}\n\n")
+}
+
+/// The longest run of backticks in `content`.
+fn longest_ticks(content: &str) -> usize {
+    let (mut longest, mut run) = (0, 0);
+    for c in content.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    longest
+}
+
+/// A backtick fence longer than any backtick run in `content` (at least three), so the content can't close it.
+fn fence_for(content: &str) -> String {
+    "`".repeat(longest_ticks(content).max(2) + 1)
+}
+
+/// `text` as inline code whose delimiters can't be closed by backticks inside it.
+fn inline_code(text: &str) -> String {
+    let text = one_line(text);
+    let ticks = "`".repeat(longest_ticks(&text) + 1);
+    let pad = if text.starts_with('`') || text.ends_with('`') { " " } else { "" };
+    format!("{ticks}{pad}{text}{pad}{ticks}")
+}
+
+/// `text` with line breaks turned into spaces, for headings and list items.
+fn one_line(text: &str) -> String {
+    text.replace(['\r', '\n'], " ")
 }
 
 /// One message: a heading naming the speaker, its text, then its tool calls and attachments as lists.
@@ -146,9 +177,9 @@ fn message_section(m: &Message, harness: &str) -> String {
     if !m.tools.is_empty() {
         out.push_str("Tool calls:\n\n");
         for tool in &m.tools {
-            let _ = write!(out, "- {:?} `{}`", tool.kind, tool.target);
+            let _ = write!(out, "- {:?} {}", tool.kind, inline_code(&tool.target));
             if let Some(detail) = &tool.detail {
-                let _ = write!(out, ", {detail}");
+                let _ = write!(out, ", {}", one_line(detail));
             }
             out.push_str(match tool.ok {
                 Some(true) => " (ok)",
@@ -901,6 +932,20 @@ mod tests {
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].0, "src/recorded.ts");
         assert_eq!(diffs[0].1, "@@ -1 +1 @@\n-old\n+new");
+    }
+
+    #[test]
+    fn fences_and_inline_code_survive_backticks_in_content() {
+        let extras = Extras {
+            diffs: Some(vec![("a.md".into(), "+```\n+x".into())]),
+            terminal: Some("```\nrm -rf\n```".into()),
+        };
+        let md = markdown(&session(), &details(), &extras);
+        assert!(md.contains("````diff\n+```\n+x\n````\n"), "{md}");
+        assert!(md.contains("````text\n```\nrm -rf\n```\n````\n"), "{md}");
+        assert_eq!(inline_code("a`b"), "``a`b``");
+        assert_eq!(inline_code("`a"), "`` `a ``");
+        assert_eq!(inline_code("a\nb"), "`a b`");
     }
 
     #[test]

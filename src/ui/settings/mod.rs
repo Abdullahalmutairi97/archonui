@@ -34,8 +34,39 @@ use std::{collections::HashMap, sync::Arc};
 /// Harness ids in the order the pages list them. Each one is looked up with `engine::harness`.
 const HARNESS_IDS: [&str; 5] = ["claude", "codex", "gemini", "opencode", "pi"];
 
+/// The settings dialog's ideal size, in design px. It shrinks to fit the window.
+const DIALOG_SIZE: (f32, f32) = (1320., 880.);
+/// The dialog's smallest size, in design px. The window wins over this when it is smaller.
+const DIALOG_MIN: (f32, f32) = (560., 420.);
+/// Space kept between the dialog and the window edges, in design px.
+const DIALOG_MARGIN: f32 = 24.;
+/// The sidebar's width range, in design px. It is a share of the dialog width, so it narrows with the window.
+const NAV_WIDTH: (f32, f32) = (168., 236.);
+
+/// `ideal` clamped to `avail` and floored at `min`, but never wider than `avail`.
+fn fit(ideal: f32, min: f32, avail: f32) -> f32 {
+    ideal.min(avail).max(min.min(avail))
+}
+
 /// Keys that only change modifiers. A rebinding waits for a key that isn't one of these.
 const MODIFIER_KEYS: [&str; 5] = ["shift", "control", "alt", "platform", "function"];
+
+/// The binding to store for a captured keystroke, or why it can't be one. A bare printable key would fire
+/// while typing, and `super`/`fn` aren't understood by the key matcher, so those never get stored.
+fn capture_spec(ks: &gpui::Keystroke) -> Result<String, &'static str> {
+    let m = ks.modifiers;
+    if m.platform || m.function {
+        return Err("Shortcuts can't use the Super or Fn key");
+    }
+    if ks.key == "-" {
+        return Err("That key can't be bound. Try another");
+    }
+    let function_key = ks.key.strip_prefix('f').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    if !(m.control || m.alt || function_key) {
+        return Err("Include Ctrl or Alt in the shortcut");
+    }
+    Ok(ks.unparse())
+}
 
 /// The settings pages, in nav order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -110,6 +141,13 @@ pub(super) enum Slide {
     Scale,
     MaxSteps,
     Terminal,
+}
+
+impl Slide {
+    /// Sliders whose value re-lays-out the whole window apply only when the drag ends, not on every tick.
+    pub(super) fn commits_on_release(self) -> bool {
+        matches!(self, Slide::Scale)
+    }
 }
 
 /// A text field and the subscription that keeps the shell in step with it.
@@ -189,6 +227,10 @@ impl Shell {
             .collect();
         for server in servers {
             let id = server.id.clone();
+            // A check already running for this server is not started twice (nav clicks, rapid toggling).
+            if matches!(self.settings.mcp.get(&id), Some(None)) {
+                continue;
+            }
             self.settings.mcp.insert(id.clone(), None);
             cx.spawn(async move |this, cx| {
                 let status = cx.background_executor().spawn(async move { engine::mcp::check(&server) }).await;
@@ -281,7 +323,16 @@ impl Shell {
             Page::Skills => self.skills_page(cx),
             Page::Extensions => self.extensions_page(cx),
         };
-        let nav = self.settings_nav(cx);
+        // The window is in real px, so the design-unit sizes are converted before they are compared.
+        let viewport = window.viewport_size();
+        let margin = crate::ui::scale::real(DIALOG_MARGIN);
+        let avail_w = (f32::from(viewport.width) - 2. * margin).max(0.);
+        let avail_h = (f32::from(viewport.height) - 2. * margin).max(0.);
+        let dialog_w = fit(crate::ui::scale::real(DIALOG_SIZE.0), crate::ui::scale::real(DIALOG_MIN.0), avail_w);
+        let dialog_h = fit(crate::ui::scale::real(DIALOG_SIZE.1), crate::ui::scale::real(DIALOG_MIN.1), avail_h);
+        let dialog_design_w = dialog_w / crate::ui::scale::zoom();
+        let nav_width = (dialog_design_w * 0.25).clamp(NAV_WIDTH.0, NAV_WIDTH.1).min(dialog_design_w * 0.5);
+        let nav = self.settings_nav(nav_width, cx);
         // One scroll state per page, so a page opens at its top.
         let body = div()
             .id(self.settings.page.label())
@@ -305,8 +356,8 @@ impl Shell {
         let dialog = div()
             .flex()
             .flex_none()
-            .w(px(1320.))
-            .h(px(880.))
+            .w(gpui::px(dialog_w))
+            .h(gpui::px(dialog_h))
             .rounded(px(14.))
             .bg(theme.pop.to_hsla())
             .border_1()
@@ -339,14 +390,17 @@ impl Shell {
     }
 
     /// The nav column: logo and title, then the pages with their counts, and the version footer.
-    fn settings_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn settings_nav(&mut self, width: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let logo = self.icon_logo();
         let active = self.settings.page;
         let counts = self.nav_counts();
         let mut nav = div()
-            .w(px(236.))
+            .id("settings-nav-column")
+            .w(px(width))
             .flex_none()
+            .min_h(px(0.))
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(2.))
@@ -556,9 +610,15 @@ impl Shell {
                 self.settings.capture = None;
                 self.save(cx);
             } else if !MODIFIER_KEYS.contains(&key) {
-                self.state.settings.keys.insert(action, ev.keystroke.unparse());
-                self.settings.capture = None;
-                self.save(cx);
+                match capture_spec(&ev.keystroke) {
+                    Ok(spec) => {
+                        self.state.settings.keys.insert(action, spec);
+                        self.settings.capture = None;
+                        self.save(cx);
+                    }
+                    // Stay in capture so the user can press another key.
+                    Err(why) => self.toast(why, cx),
+                }
             }
             cx.notify();
             return true;
@@ -615,5 +675,33 @@ fn search_config() -> TextInputConfig {
         font_size: px(13.),
         line_height: px(18.),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(s: &str) -> Result<String, &'static str> {
+        capture_spec(&gpui::Keystroke::parse(s).unwrap())
+    }
+
+    #[test]
+    fn captured_shortcuts_need_a_modifier_that_cannot_be_typed() {
+        assert_eq!(spec("ctrl-shift-w").as_deref(), Ok("ctrl-shift-w"));
+        assert_eq!(spec("alt-q").as_deref(), Ok("alt-q"));
+        assert_eq!(spec("f5").as_deref(), Ok("f5"));
+        assert!(spec("a").is_err(), "a bare letter would fire while typing");
+        assert!(spec("shift-a").is_err(), "so would a shifted one");
+        assert!(spec("enter").is_err());
+        assert!(spec("ctrl--").is_err(), "a minus can't survive the spec's dash separator");
+        assert!(spec("cmd-k").is_err() && spec("fn-k").is_err());
+    }
+
+    #[test]
+    fn dialog_fits_inside_the_window() {
+        assert_eq!(fit(1320., 560., 2000.), 1320.);
+        assert_eq!(fit(1320., 560., 900.), 900.);
+        assert_eq!(fit(1320., 560., 300.), 300., "the window wins over the minimum");
     }
 }

@@ -81,7 +81,7 @@ fn parse_skill(dir: &Path, source: &str) -> Option<Skill> {
 /// The `key: value` pairs in a SKILL.md's YAML front matter. A key whose value is `>` or `|`, or
 /// empty, takes the indented lines after it, joined with spaces. Other YAML is not read.
 fn front_matter(text: &str) -> HashMap<String, String> {
-    let mut lines = text.lines();
+    let mut lines = text.strip_prefix('\u{feff}').unwrap_or(text).lines();
     if lines.next().map(str::trim_end) != Some("---") {
         return HashMap::new();
     }
@@ -102,7 +102,8 @@ fn front_matter(text: &str) -> HashMap<String, String> {
         block = None;
         let Some((key, value)) = line.split_once(':') else { continue };
         let (key, value) = (key.trim(), value.trim());
-        if matches!(value, ">" | "|" | "") {
+        // `>-`, `|+` and the like are block scalars with a chomping indicator.
+        if matches!(value, ">" | "|" | ">-" | "|-" | ">+" | "|+" | "") {
             out.insert(key.to_string(), String::new());
             block = Some(key.to_string());
         } else {
@@ -179,6 +180,11 @@ fn import_in(home: &Path, folder: &Path) -> io::Result<PathBuf> {
     let name = folder.file_name().and_then(|n| slug(&n.to_string_lossy())).ok_or_else(invalid_name)?;
     let root = home.join(".agents/skills");
     fs::create_dir_all(&root)?;
+    // A folder that holds the skills folder (e.g. the home folder with a SKILL.md) would be copied into
+    // itself without end.
+    if fs::canonicalize(&root)?.starts_with(fs::canonicalize(folder)?) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "the folder contains the skills folder"));
+    }
     let dest = root.join(&name);
     fs::create_dir(&dest)?;
     if let Err(e) = copy_dir(folder, &dest) {
@@ -269,6 +275,39 @@ mod tests {
         assert_eq!(front["model"], "x");
         assert!(!front.contains_key("Body"));
         assert!(front_matter("# no front matter\nname: x").is_empty());
+    }
+
+    #[test]
+    fn front_matter_reads_chomped_blocks_and_skips_a_bom() {
+        let text = "\u{feff}---\r\nname: lint\r\ndescription: >-\r\n  Lints code\r\n  before commits.\r\n---\r\n";
+        let front = front_matter(text);
+        assert_eq!(front["name"], "lint");
+        assert_eq!(front["description"], "Lints code before commits.");
+        assert_eq!(front_matter("---\ndescription: |-\n  one\n---\n")["description"], "one");
+    }
+
+    #[test]
+    fn import_refuses_a_folder_that_holds_the_skills_folder() {
+        let home = scratch("into-itself");
+        skill_md(&home, "---\nname: home\n---\n");
+        assert_eq!(import_in(&home, &home).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert!(fs::read_dir(home.join(".agents/skills")).unwrap().next().is_none(), "nothing was copied");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn import_skips_symlinks_out_of_the_folder() {
+        let home = scratch("symlink");
+        let src = home.join("linked");
+        skill_md(&src, "---\nname: linked\n---\n");
+        fs::write(home.join("secret"), "secret").unwrap();
+        std::os::unix::fs::symlink(home.join("secret"), src.join("leak")).unwrap();
+        std::os::unix::fs::symlink(&home, src.join("loop")).unwrap();
+        let imported = import_in(&home, &src).unwrap();
+        assert!(imported.join("SKILL.md").is_file());
+        assert!(fs::symlink_metadata(imported.join("leak")).is_err());
+        assert!(fs::symlink_metadata(imported.join("loop")).is_err());
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]

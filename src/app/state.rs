@@ -98,7 +98,8 @@ pub struct AppState {
 impl AppState {
     /// Loads everything from the platform's config and data dirs.
     pub fn load(paths: &Paths) -> Self {
-        let loaded = persist::load(&paths.config, &store::settings_path());
+        let mut loaded = persist::load(&paths.config, &store::settings_path());
+        restore_tiles(&mut loaded.workspace, &loaded.settings);
         let mut state = Self::new(store::load_all(), loaded.projects, loaded.workspace, loaded.settings);
         // Persist the sigils assigned to sessions that predate them, so the
         // assignment is stable and stored from the first launch onward.
@@ -247,6 +248,7 @@ impl AppState {
         s.terminal = true;
         if s.title.is_empty() {
             s.title = "Terminal".into();
+            s.title_auto = true;
         }
         self.dirty.insert(id.to_string());
     }
@@ -328,8 +330,8 @@ impl AppState {
         if session.agent_session.is_none() && agent.harness.preassign_session() {
             session.agent_session = Some(store::new_id());
         }
-        // The first message titles the chat.
-        if session.messages.is_empty() {
+        // The first message titles the chat, unless the user named it first.
+        if session.messages.is_empty() && (session.title.is_empty() || session.title_auto) {
             session.title = match files.first() {
                 Some(f) if prompt.is_empty() => store::title_from(&f.name),
                 _ => store::title_from(prompt),
@@ -566,6 +568,14 @@ impl AppState {
     }
 }
 
+/// With "Restore sessions on launch" off, the window starts with no tiles open.
+fn restore_tiles(workspace: &mut Workspace, settings: &AppSettings) {
+    if !settings.restore {
+        workspace.layout.tiles.clear();
+        workspace.layout.focus = None;
+    }
+}
+
 /// Copies attachments into the session's attachments dir, so the chat keeps them. Files already
 /// there are kept as they are. Returns the kept files and an error line for each one that failed.
 fn keep_files(session: &str, files: Vec<Attachment>) -> (Vec<Attachment>, Vec<String>) {
@@ -576,7 +586,9 @@ fn keep_files(session: &str, files: Vec<Attachment>) -> (Vec<Attachment>, Vec<St
         if !a.path.starts_with(&dir) {
             // A hard link is free; fall back to a copy across filesystems.
             let linked = std::fs::create_dir_all(&dir).and_then(|()| {
-                let dest = dir.join(&a.name);
+                // Only the name's last part, so it can't point outside the dir.
+                let name = std::path::Path::new(&a.name).file_name().ok_or(std::io::ErrorKind::InvalidInput)?;
+                let dest = dir.join(name);
                 if dest.exists() {
                     return Err(std::io::ErrorKind::AlreadyExists.into());
                 }
@@ -611,6 +623,7 @@ mod tests {
     #[test]
     #[ignore = "sets ARCHONUI_DATA_DIR for the whole process; run alone with --ignored"]
     fn load_persists_sigils_assigned_to_old_sessions() {
+        let _env = lock_env();
         let dir = std::env::temp_dir().join(format!("archonui-load-{}", store::new_id()));
         let data = dir.join("data");
         let cfg = dir.join("cfg");
@@ -637,6 +650,13 @@ mod tests {
             assert!(v.get("icon").is_some_and(|i| i.as_u64().is_some()), "{id} icon stored");
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Held by every test that points the data dir somewhere, since the env is shared by all test threads.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Restores the two env vars on drop, so tests don't leak a temp dir into each other.
@@ -943,6 +963,42 @@ mod tests {
     }
 
     #[test]
+    fn restore_off_starts_without_tiles() {
+        let mut w = Workspace::default();
+        w.layout.tiles = vec!["a".into(), "b".into()];
+        w.layout.focus = Some("b".into());
+        restore_tiles(&mut w, &AppSettings::default());
+        assert_eq!(w.layout.tiles.len(), 2, "restore is on by default");
+        restore_tiles(&mut w, &AppSettings { restore: false, ..Default::default() });
+        assert!(w.layout.tiles.is_empty() && w.layout.focus.is_none());
+    }
+
+    #[test]
+    fn a_chat_named_before_its_first_message_keeps_the_name() {
+        let mut app = state();
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        assert!(app.rename_session(&id, "Mine"));
+        let pi = engine::harness("pi").unwrap();
+        let agents = [DetectedAgent {
+            harness: pi,
+            path: "/nonexistent/archonui-test-pi".into(),
+            version: String::new(),
+            enabled: true,
+            auth: pi.auth_status(),
+        }];
+        app.send(&id, "hello there", &agents);
+        let s = app.session(&id).unwrap();
+        assert_eq!(s.title, "Mine");
+        assert!(!s.title_auto);
+
+        // A terminal chat's placeholder title gives way to the first message.
+        let term = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        app.mark_terminal(&term);
+        app.send(&term, "build it", &agents);
+        assert_eq!(app.session(&term).unwrap().title, "build it");
+    }
+
+    #[test]
     fn deleted_sessions_leave_their_tiles() {
         let mut app = state();
         let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
@@ -953,6 +1009,7 @@ mod tests {
 
     #[test]
     fn flush_sessions_reports_errors_when_dir_is_read_only() {
+        let _env = lock_env();
         let dir = std::env::temp_dir().join(format!("archonui-ro-test-{}", store::new_id()));
         std::fs::write(&dir, b"blocker").unwrap();
         let data_env = std::env::var_os("ARCHONUI_DATA_DIR");
@@ -975,6 +1032,7 @@ mod tests {
 
     #[test]
     fn shutdown_stops_running_turns_and_saves_partial_reply() {
+        let _env = lock_env();
         let dir = std::env::temp_dir().join(format!("archonui-shutdown-test-{}", store::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let data_env = std::env::var_os("ARCHONUI_DATA_DIR");

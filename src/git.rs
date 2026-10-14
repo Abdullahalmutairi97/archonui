@@ -2,6 +2,7 @@
 
 use std::{
     io::Read,
+    sync::mpsc,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -12,6 +13,8 @@ use std::{
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest a push, pull or commit may run: they wait on the network or on hooks.
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long to wait for a finished command's output pipes to close.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
 /// Most diff lines returned; the rest is cut off.
 const MAX_DIFF_LINES: usize = 2000;
 
@@ -40,6 +43,13 @@ pub struct FileChange {
     /// Status letter in the working tree, if changed since it was staged.
     pub unstaged: Option<char>,
     pub untracked: bool,
+}
+
+impl FileChange {
+    /// Whether the file is unmerged (a conflict): `U` on either side, or both sides added or deleted.
+    pub fn conflicted(&self) -> bool {
+        matches!((self.staged, self.unstaged), (Some('U'), _) | (_, Some('U')) | (Some('A'), Some('A')) | (Some('D'), Some('D')))
+    }
 }
 
 /// A commit from `log`.
@@ -76,6 +86,7 @@ fn run(dir: &Path, args: &[&str], timeout: Duration) -> Result<Output, String> {
     // Read on their own threads, so a full pipe can't stall the command.
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
+    let collect = |rx: mpsc::Receiver<String>| rx.recv_timeout(DRAIN_GRACE).unwrap_or_default();
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
@@ -91,20 +102,23 @@ fn run(dir: &Path, args: &[&str], timeout: Duration) -> Result<Output, String> {
     Ok(Output {
         success: status.success(),
         code: status.code(),
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        stdout: collect(stdout),
+        stderr: collect(stderr),
     })
 }
 
-/// Reads a child's output pipe to its end on a thread.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<String> {
+/// Reads a child's output pipe to its end on a thread. The text arrives on the channel; a background
+/// process that inherited the pipe (a hook's daemon) can keep it open, so callers wait a limited time.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(mut pipe) = pipe {
             let _ = pipe.read_to_end(&mut bytes);
         }
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
+        let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
+    });
+    rx
 }
 
 /// `out` if git succeeded, else its error text: stderr, or stdout when stderr is empty.
@@ -155,7 +169,9 @@ pub fn toplevel(dir: &Path) -> Result<PathBuf, String> {
 
 /// The repository state of `dir`. A folder outside any repository has `repo: false`.
 pub fn status(dir: &Path) -> Result<Status, String> {
-    if !run(dir, &["rev-parse", "--is-inside-work-tree"], LOCAL_TIMEOUT)?.success {
+    // Inside `.git` or a bare repository this exits 0 and prints `false`.
+    let inside = run(dir, &["rev-parse", "--is-inside-work-tree"], LOCAL_TIMEOUT)?;
+    if !inside.success || inside.stdout.trim() != "true" {
         return Ok(Status::default());
     }
     let args = ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"];
@@ -186,17 +202,23 @@ fn parse_status(text: &str) -> Status {
         match field.split(' ').next() {
             Some("1") => {
                 let parts: Vec<&str> = field.splitn(9, ' ').collect();
-                status.files.push(change(parts[1], parts[8]));
+                if parts.len() == 9 {
+                    status.files.push(change(parts[1], parts[8]));
+                }
             }
             Some("2") => {
                 let parts: Vec<&str> = field.splitn(10, ' ').collect();
                 // A rename is followed by its original path, as a field of its own.
                 fields.next();
-                status.files.push(change(parts[1], parts[9]));
+                if parts.len() == 10 {
+                    status.files.push(change(parts[1], parts[9]));
+                }
             }
             Some("u") => {
                 let parts: Vec<&str> = field.splitn(11, ' ').collect();
-                status.files.push(change(parts[1], parts[10]));
+                if parts.len() == 11 {
+                    status.files.push(change(parts[1], parts[10]));
+                }
             }
             Some("?") => {
                 if let Some(path) = field.strip_prefix("? ") {
@@ -228,7 +250,7 @@ pub fn diff(dir: &Path, path: &str, staged: bool, untracked: bool) -> Result<Str
     let out = if untracked {
         let file = toplevel(dir)?.join(path).to_string_lossy().into_owned();
         // `--no-index` exits with 1 when the files differ, which is the usual case here.
-        let out = run(dir, &["diff", "--no-index", "--no-color", "--", "/dev/null", file.as_str()], LOCAL_TIMEOUT)?;
+        let out = run(dir, &["diff", "--no-index", "--no-color", "--no-ext-diff", "--", "/dev/null", file.as_str()], LOCAL_TIMEOUT)?;
         if out.code == Some(1) {
             out
         } else {
@@ -236,7 +258,7 @@ pub fn diff(dir: &Path, path: &str, staged: bool, untracked: bool) -> Result<Str
         }
     } else {
         let spec = pathspec(path);
-        let mut args = vec!["diff", "--no-color"];
+        let mut args = vec!["diff", "--no-color", "--no-ext-diff"];
         if staged {
             args.push("--cached");
         }
@@ -255,7 +277,8 @@ pub fn diff(dir: &Path, path: &str, staged: bool, untracked: bool) -> Result<Str
 /// `staged`, else the working tree against the index. Paths are relative to the repository root.
 /// A binary file counts as 0 and 0.
 pub fn numstat(dir: &Path, staged: bool) -> Result<Vec<(String, u32, u32)>, String> {
-    let mut args = vec!["diff", "--numstat", "--no-color"];
+    // `-z` keeps non-ASCII and special paths unquoted, as `status` reports them.
+    let mut args = vec!["diff", "--numstat", "-z", "--no-color"];
     if staged {
         args.push("--cached");
     }
@@ -263,16 +286,26 @@ pub fn numstat(dir: &Path, staged: bool) -> Result<Vec<(String, u32, u32)>, Stri
     Ok(parse_numstat(&out.stdout))
 }
 
-/// The rows of `git diff --numstat`: `added<TAB>removed<TAB>path`, with `-` counts for binary files.
+/// The rows of `git diff --numstat -z`: `added<TAB>removed<TAB>path<NUL>`, with `-` counts for binary
+/// files. A rename has an empty path, followed by the old and new paths as fields of their own.
 fn parse_numstat(text: &str) -> Vec<(String, u32, u32)> {
-    text.lines()
-        .filter_map(|line| {
-            let mut fields = line.splitn(3, '\t');
-            let added = fields.next()?.parse().unwrap_or(0);
-            let removed = fields.next()?.parse().unwrap_or(0);
-            Some((fields.next()?.to_string(), added, removed))
-        })
-        .collect()
+    let mut rows = Vec::new();
+    let mut fields = text.split('\0').filter(|field| !field.is_empty());
+    while let Some(field) = fields.next() {
+        let mut parts = field.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let path = if path.is_empty() {
+            fields.next();
+            match fields.next() {
+                Some(new) => new,
+                None => break,
+            }
+        } else {
+            path
+        };
+        rows.push((path.to_string(), added.parse().unwrap_or(0), removed.parse().unwrap_or(0)));
+    }
+    rows
 }
 
 /// Stages `paths`, including deletions. Does nothing for an empty list.
@@ -369,7 +402,12 @@ pub fn log(dir: &Path, n: usize) -> Result<Vec<Commit>, String> {
 /// (it is new), it is binary, or git fails.
 pub fn head_version(dir: &Path, path: &Path) -> Option<String> {
     let top = toplevel(dir).ok()?;
-    let rel = path.strip_prefix(&top).ok()?.to_string_lossy().into_owned();
+    // `--show-toplevel` resolves symlinks, so a path reached through one needs resolving too.
+    let rel = match path.strip_prefix(&top) {
+        Ok(rel) => rel.to_path_buf(),
+        Err(_) => path.canonicalize().ok()?.strip_prefix(&top).ok()?.to_path_buf(),
+    };
+    let rel = rel.to_string_lossy().into_owned();
     let out = run(dir, &["show", &format!("HEAD:{rel}")], LOCAL_TIMEOUT).ok()?;
     (out.success && !out.stdout.contains('\0')).then_some(out.stdout)
 }
@@ -564,5 +602,66 @@ mod tests {
         let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
         assert!(subjects.contains(&"from a"));
         assert!(subjects.contains(&"from b"));
+    }
+
+    #[test]
+    fn hostile_paths_round_trip_through_stage_diff_and_unstage() {
+        let dir = std::env::temp_dir().join(format!("archonui-git-paths-{}", std::process::id()));
+        let _cleanup = Cleanup(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+        init(&dir).unwrap();
+        configure_identity(&dir);
+        let names = ["-rf", "--help", "sp ace.txt", "caf\u{e9}.txt", "*.txt", ":(glob)x", "tab\there"];
+        for name in names {
+            std::fs::write(dir.join(name), "x\n").unwrap();
+        }
+        let paths: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        let s = status(&dir).unwrap();
+        assert_eq!(s.files.len(), names.len(), "{:?}", s.files);
+        stage(&dir, &paths).unwrap();
+        let s = status(&dir).unwrap();
+        assert!(s.files.iter().all(|f| f.staged == Some('A')), "{:?}", s.files);
+        let counts = numstat(&dir, true).unwrap();
+        assert_eq!(counts.len(), names.len(), "{counts:?}");
+        for name in names {
+            assert!(counts.iter().any(|(p, a, _)| p == name && *a == 1), "{name} missing in {counts:?}");
+            assert!(diff(&dir, name, true, false).unwrap().contains("+x"));
+        }
+        unstage(&dir, &paths).unwrap();
+        assert!(status(&dir).unwrap().files.iter().all(|f| f.untracked));
+        assert!(diff(&dir, "-rf", false, true).unwrap().contains("+x"));
+        stage(&dir, &paths).unwrap();
+        commit(&dir, "-m weird").unwrap();
+        assert_eq!(log(&dir, 1).unwrap()[0].subject, "-m weird");
+    }
+
+    #[test]
+    fn numstat_handles_renames_and_binary() {
+        let rows = parse_numstat("3\t1\t\0old name\0new name\0-\t-\tbin.dat\0");
+        assert_eq!(rows, vec![("new name".to_string(), 3, 1), ("bin.dat".to_string(), 0, 0)]);
+    }
+
+    #[test]
+    fn inside_git_dir_is_not_a_work_tree() {
+        let dir = std::env::temp_dir().join(format!("archonui-git-gitdir-{}", std::process::id()));
+        let _cleanup = Cleanup(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+        init(&dir).unwrap();
+        assert!(!status(&dir.join(".git")).unwrap().repo);
+    }
+
+    #[test]
+    fn conflicts_are_recognised() {
+        assert!(file("a", Some('U'), Some('U'), false).conflicted());
+        assert!(file("a", Some('A'), Some('A'), false).conflicted());
+        assert!(file("a", Some('D'), Some('U'), false).conflicted());
+        assert!(!file("a", Some('A'), None, false).conflicted());
+        assert!(!file("a", Some('M'), Some('M'), false).conflicted());
+    }
+
+    #[test]
+    fn malformed_status_records_do_not_panic() {
+        let s = parse_status("1 .M N...\0u UU\02 R.\0");
+        assert!(s.files.is_empty());
     }
 }

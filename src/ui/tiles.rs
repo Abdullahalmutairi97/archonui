@@ -84,8 +84,14 @@ impl Shell {
         for id in &missing {
             self.state.workspace.layout.close(id);
         }
+        // A saved layout may hold duplicate tiles, more than six, or fractions out of range.
+        self.state.workspace.layout.normalize();
         let (slots, handles) = self.state.workspace.layout.compute(area, gap);
         let now = Instant::now();
+        // A divider that no longer exists (its tile closed, or the layout mode changed) ends the drag.
+        if self.tiles.drag.is_some_and(|d| !handles.iter().any(|h| h.key == d.key && h.dir == d.dir)) {
+            self.tiles.drag = None;
+        }
         let drag = self.tiles.drag;
         self.tiles.rects.retain(|id, _| slots.iter().any(|(slot, _)| slot == id));
 
@@ -233,6 +239,13 @@ impl Shell {
                             return;
                         }
                         moving.update(cx, |this, cx| {
+                            // The button was released outside the window, so no mouse-up arrived: end the drag.
+                            if ev.pressed_button != Some(MouseButton::Left) {
+                                this.tiles.drag = None;
+                                this.tiles.rects.clear();
+                                this.save(cx);
+                                return;
+                            }
                             let (Some(handle), Some((area, gap))) = (this.tiles.drag, this.tiles.area) else {
                                 return;
                             };
@@ -295,7 +308,7 @@ impl Shell {
         .find(|a| pressed(*a));
 
         let m = ev.keystroke.modifiers;
-        if m.alt && !m.control && !m.shift && !m.platform {
+        if m.control && m.shift && !m.alt && !m.platform {
             match ev.keystroke.key.as_str() {
                 "up" => return self.move_focus(Arrow::Up, cx),
                 "down" => return self.move_focus(Arrow::Down, cx),
@@ -338,7 +351,7 @@ impl Shell {
         self.render_lightbox(window, cx).into_iter().chain(self.render_info(cx)).chain(self.render_settings(window, cx)).chain(self.render_share(cx)).chain(self.render_switcher(window, cx)).collect()
     }
 
-    /// Starts a session in a new tile after the focused one (`Alt+Enter`, the `+` button).
+    /// Starts a session in a new tile after the focused one (`Ctrl+Shift+Enter`, the `+` button).
     pub(super) fn new_session_split(&mut self, cx: &mut Context<Self>) {
         let Some((area, gap)) = self.tiles.area else { return };
         self.start_session(Placement::Split { area, gap }, cx);
@@ -373,7 +386,7 @@ impl Shell {
         }
     }
 
-    /// Alt+arrow focus move, wrapping through the tile list.
+    /// Ctrl+Shift+arrow focus move, wrapping through the tile list.
     fn move_focus(&mut self, arrow: Arrow, cx: &mut Context<Self>) {
         self.state.workspace.layout.focus_arrow(arrow);
         self.save(cx);
@@ -470,14 +483,7 @@ impl Shell {
 
     /// The agent new sessions use when none is picked: the default if installed and enabled, else the first enabled.
     fn preferred_agent(&self) -> Option<String> {
-        self.state
-            .settings
-            .default_harness
-            .as_deref()
-            .and_then(|id| self.installed(id))
-            .filter(|a| a.enabled)
-            .or_else(|| self.agents.iter().find(|a| a.enabled))
-            .map(|a| a.harness.id().to_string())
+        super::shell::pick_harness(self.state.settings.default_harness.as_deref(), &self.agents).map(str::to_string)
     }
 
     /// The model and effort a new session with `agent` starts with.
@@ -807,15 +813,74 @@ fn header_button(id: String, glyph: &'static str, hint: &'static str, theme: &Th
         .child(glyph)
 }
 
-/// Whether `ev` is the settings binding `spec`, such as `alt-enter` or `ctrl-b`.
+/// Whether `ev` is the settings binding `spec`, such as `ctrl-shift-enter` or `ctrl-b`.
+///
+/// Modifier prefixes are peeled off the front, so a `-` key (`ctrl--`) still parses. `super`, `win` and
+/// `cmd` all name the platform key (GPUI writes `super-` on Linux), and `fn` the function key.
 pub(in crate::ui) fn keystroke_matches(spec: &str, ev: &Keystroke) -> bool {
     let spec = spec.to_ascii_lowercase();
-    let mut parts: Vec<&str> = spec.split('-').collect();
-    let key = parts.pop().unwrap_or_default();
+    let (mut ctrl, mut alt, mut shift, mut platform, mut function) = (false, false, false, false, false);
+    let mut rest = spec.as_str();
+    loop {
+        let Some((prefix, tail)) = rest.split_once('-') else { break };
+        if tail.is_empty() {
+            break;
+        }
+        let flag = match prefix {
+            "ctrl" | "control" => &mut ctrl,
+            "alt" | "option" => &mut alt,
+            "shift" => &mut shift,
+            "cmd" | "super" | "win" | "platform" => &mut platform,
+            "fn" | "function" => &mut function,
+            _ => break,
+        };
+        *flag = true;
+        rest = tail;
+    }
     let m = ev.modifiers;
-    m.control == parts.contains(&"ctrl")
-        && m.alt == parts.contains(&"alt")
-        && m.shift == parts.contains(&"shift")
-        && m.platform == parts.contains(&"cmd")
-        && ev.key == key
+    !rest.is_empty()
+        && m.control == ctrl
+        && m.alt == alt
+        && m.shift == shift
+        && m.platform == platform
+        && m.function == function
+        && ev.key == rest
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ks(s: &str) -> Keystroke {
+        Keystroke::parse(s).unwrap()
+    }
+
+    #[test]
+    fn keystroke_matches_modifiers_exactly() {
+        assert!(keystroke_matches("ctrl-shift-w", &ks("ctrl-shift-w")));
+        assert!(keystroke_matches("Ctrl-Shift-W", &ks("ctrl-shift-w")));
+        assert!(!keystroke_matches("ctrl-shift-w", &ks("ctrl-w")));
+        assert!(!keystroke_matches("ctrl-w", &ks("ctrl-shift-w")));
+        assert!(keystroke_matches("ctrl-shift-enter", &ks("ctrl-shift-enter")));
+        assert!(keystroke_matches("f5", &ks("f5")));
+        assert!(!keystroke_matches("", &ks("f5")));
+    }
+
+    #[test]
+    fn keystroke_matches_super_and_fn() {
+        for spec in ["super-k", "win-k", "cmd-k"] {
+            assert!(keystroke_matches(spec, &ks("cmd-k")), "{spec}");
+            assert!(!keystroke_matches(spec, &ks("k")), "{spec} needs the platform key");
+        }
+        assert!(keystroke_matches("fn-f1", &ks("fn-f1")));
+        assert!(!keystroke_matches("fn-f1", &ks("f1")));
+        assert!(!keystroke_matches("f1", &ks("fn-f1")));
+    }
+
+    #[test]
+    fn keystroke_matches_a_minus_key() {
+        assert!(keystroke_matches("ctrl--", &ks("ctrl--")));
+        assert!(!keystroke_matches("ctrl--", &ks("ctrl-=")));
+        assert!(keystroke_matches("-", &ks("-")));
+    }
 }

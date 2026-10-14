@@ -11,7 +11,8 @@ use std::{
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    thread::{self, JoinHandle},
+    sync::{mpsc, Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -262,7 +263,10 @@ fn run(path: &Path, args: &[&str], timeout: Duration) -> Result<String, String> 
             }
         }
     };
-    let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
+    // A process the CLI left running (a daemon, a worker) can hold the pipes open after the CLI exits;
+    // its output is all written by then, so wait only briefly for the end of it.
+    let grace = Instant::now() + DRAIN_GRACE;
+    let (out, err) = (out.finish(grace), err.finish(grace));
     if status.success() {
         return Ok(out);
     }
@@ -270,14 +274,42 @@ fn run(path: &Path, args: &[&str], timeout: Duration) -> Result<String, String> 
     Err(if err.is_empty() { format!("exited with {status}") } else { err.to_string() })
 }
 
-fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<String> {
+/// How long to keep reading a CLI's output after it exits.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// A pipe being read on its own thread.
+struct Drain {
+    text: Arc<Mutex<Vec<u8>>>,
+    done: mpsc::Receiver<()>,
+}
+
+impl Drain {
+    /// What was read, once the pipe closes or `deadline` passes. Invalid UTF-8 is replaced, not dropped.
+    fn finish(self, deadline: Instant) -> String {
+        let _ = self.done.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        String::from_utf8_lossy(&self.text.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
+    }
+}
+
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> Drain {
+    let text = Arc::new(Mutex::new(Vec::new()));
+    let (tx, done) = mpsc::channel();
+    let sink = text.clone();
     thread::spawn(move || {
-        let mut text = String::new();
         if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_string(&mut text);
+            let mut buf = [0u8; 8192];
+            loop {
+                match pipe.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => sink.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&buf[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
         }
-        text
-    })
+        let _ = tx.send(());
+    });
+    Drain { text, done }
 }
 
 #[cfg(test)]
@@ -329,6 +361,20 @@ mod tests {
         assert_eq!(run(sh, &["-c", "printf ok"], Duration::from_secs(10)).as_deref(), Ok("ok"));
         assert_eq!(run(sh, &["-c", "echo nope >&2; exit 3"], Duration::from_secs(10)), Err("nope".into()));
         assert!(run(sh, &["-c", "exit 3"], Duration::from_secs(10)).unwrap_err().starts_with("exited with"));
+    }
+
+    #[test]
+    fn run_does_not_wait_for_a_leftover_process_holding_the_pipe() {
+        let started = Instant::now();
+        let out = run(Path::new("/bin/sh"), &["-c", "sleep 4 & printf ok"], Duration::from_secs(30));
+        assert_eq!(out.as_deref(), Ok("ok"));
+        assert!(started.elapsed() < Duration::from_secs(4), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn run_keeps_output_that_is_not_utf8() {
+        let out = run(Path::new("/bin/sh"), &["-c", r"printf 'a\377b'"], Duration::from_secs(10)).unwrap();
+        assert_eq!(out, "a\u{fffd}b");
     }
 
     #[test]

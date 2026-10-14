@@ -463,8 +463,8 @@ the four groups above (wallpaper `opacity 0.4s, left 0.3s, width 0.3s`; both `<a
 - Double-click a split handle → 0.5; double-click the master handle → 0.56; double-click the panel
   handle → 480.
 - Body cursor is forced to `row-resize`/`col-resize` for the whole drag (L1236).
-- Tiling shortcuts (listed in Settings ▸ Keyboard, L1391): **Alt ⏎** split new session, **Alt Q** close
-  tile, **Alt ←/→/↑/↓** move focus between tiles, **Alt T** next theme, **⇧ Tab** cycle agent mode,
+- Tiling shortcuts (listed in Settings ▸ Keyboard, L1391): **Ctrl ⇧ ⏎** split new session, **Ctrl ⇧ W** close
+  tile, **Ctrl ⇧ ←/→/↑/↓** move focus between tiles, **Ctrl ⇧ T** next theme, **⇧ Tab** cycle agent mode,
   **⏎ / ⇧⏎** send / newline, **Esc** close dialog. Implemented in the global `keydown` handler
   (L1244–1250); Alt+arrows wrap around the tile list.
 

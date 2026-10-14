@@ -163,6 +163,10 @@ impl Shell {
 
     /// Runs the harness's connection check off the UI thread, then reports the result in a toast.
     fn test_harness(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        // One check at a time: a second click would start another CLI while the first still runs.
+        if self.settings.testing.is_some() {
+            return;
+        }
         let Some(agent) = self.agents.iter().find(|a| a.harness.id() == id) else { return };
         let (path, name, version) = (agent.path.clone(), agent.harness.name(), agent.version.clone());
         let cwd = self.default_folder();

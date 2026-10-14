@@ -144,34 +144,42 @@ pub(super) fn slider_control(
         Some(entity) => entity.clone(),
         None => {
             let on_change = edit(shell, move |this: &mut Shell, v: f32, cx| this.set_slide(which, v, cx));
-            let entity = cx.new(|_| Slider::new(value, range, unit, on_change));
+            let slider = Slider::new(value, range, unit, on_change);
+            let entity = cx.new(|_| if which.commits_on_release() { slider.commit_on_release() } else { slider });
             sliders.insert(which, entity.clone());
             entity
         }
     };
     entity.update(cx, |s, cx| {
-        if (s.value() - value).abs() > f32::EPSILON {
+        // A drag preview stays put until it is committed; the setting catches up after that.
+        if !s.is_pending() && (s.value() - value).abs() > f32::EPSILON {
             s.set_value(value, cx);
         }
     });
     div().flex().items_center().flex_none().child(slider(&entity, theme)).into_any_element()
 }
 
-/// The display label for a keystroke in the GPUI form (`alt-q`): `Alt Q`, `⇧ Tab`, `Alt ←`.
+/// The display label for a keystroke in the GPUI form (`ctrl-shift-w`): `Ctrl ⇧ W`, `⇧ Tab`, `Ctrl ⇧ ←`.
 pub(super) fn key_label(spec: &str) -> String {
-    let mut parts: Vec<&str> = spec.split('-').collect();
-    let key = parts.pop().unwrap_or_default();
-    let mut out: Vec<String> = parts
-        .iter()
-        .map(|m| match *m {
+    // Peel modifiers off the front, so a key that is itself `-` (`ctrl--`) isn't lost to a split on dashes.
+    let mut rest = spec;
+    let mut out: Vec<String> = Vec::new();
+    while let Some((m, tail)) = rest.split_once('-') {
+        if tail.is_empty() {
+            break;
+        }
+        out.push(match m {
             "ctrl" => "Ctrl".to_string(),
             "alt" => "Alt".to_string(),
             "shift" => "⇧".to_string(),
             "cmd" => "⌘".to_string(),
+            "super" | "win" => "Super".to_string(),
+            "fn" => "Fn".to_string(),
             other => other.to_string(),
-        })
-        .collect();
-    out.push(match key {
+        });
+        rest = tail;
+    }
+    out.push(match rest {
         "enter" => "⏎".to_string(),
         "tab" => "Tab".to_string(),
         "left" => "←".to_string(),
@@ -179,7 +187,9 @@ pub(super) fn key_label(spec: &str) -> String {
         "up" => "↑".to_string(),
         "down" => "↓".to_string(),
         "escape" => "Esc".to_string(),
-        k if k.len() == 1 => k.to_uppercase(),
+        "space" => "Space".to_string(),
+        "backspace" => "Backspace".to_string(),
+        k if k.chars().count() == 1 => k.to_uppercase(),
         k => k.to_string(),
     });
     out.join(" ")
@@ -190,5 +200,31 @@ pub(super) fn binding_label(keys: &std::collections::HashMap<Action, String>, ac
     match keys.get(&action).map(String::as_str) {
         Some("") | None => "Unbound".to_string(),
         Some(spec) => key_label(spec),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_labels_read_like_the_prototype() {
+        assert_eq!(key_label("ctrl-shift-w"), "Ctrl ⇧ W");
+        assert_eq!(key_label("shift-tab"), "⇧ Tab");
+        assert_eq!(key_label("ctrl-shift-left"), "Ctrl ⇧ ←");
+        assert_eq!(key_label("super-k"), "Super K");
+        assert_eq!(key_label("ctrl--"), "Ctrl -");
+        assert_eq!(key_label("-"), "-");
+        assert_eq!(key_label("ctrl-f5"), "Ctrl f5");
+    }
+
+    #[test]
+    fn unbound_actions_say_so() {
+        let mut keys = std::collections::HashMap::new();
+        assert_eq!(binding_label(&keys, Action::CloseTile), "Unbound");
+        keys.insert(Action::CloseTile, String::new());
+        assert_eq!(binding_label(&keys, Action::CloseTile), "Unbound");
+        keys.insert(Action::CloseTile, "alt-q".into());
+        assert_eq!(binding_label(&keys, Action::CloseTile), "Alt Q");
     }
 }

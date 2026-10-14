@@ -336,10 +336,15 @@ impl StdioServer {
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let (tx, lines) = mpsc::channel();
-        // The reader ends at EOF, which happens once the child is killed.
+        // The reader ends at EOF, which happens once the child is killed. A line that is not UTF-8 (a log
+        // line) is passed on lossily rather than ending the reader, which would read as the server exiting.
         thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
+            let mut stdout = BufReader::new(stdout);
+            let mut line = Vec::new();
+            while stdout.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
+                let text = String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']).to_string();
+                line.clear();
+                if tx.send(text).is_err() {
                     break;
                 }
             }
@@ -375,7 +380,8 @@ impl Exchange for StdioServer {
             };
             // Servers may print other lines (logs, notifications); only the reply matters.
             let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
-            if msg["id"] != id {
+            // A request from the server (`roots/list`, `ping`) has its own id, which may equal ours.
+            if msg["id"] != id || msg.get("method").is_some() {
                 continue;
             }
             return reply_result(method, &msg);
@@ -407,29 +413,20 @@ impl<'a> HttpServer<'a> {
         if left.is_zero() {
             return Err("no reply in time".into());
         }
-        let mut args = vec![
-            "-sS".to_string(),
-            "-i".into(),
-            "-X".into(),
-            "POST".into(),
-            "--max-time".into(),
-            left.as_secs().max(1).to_string(),
-            "-H".into(),
-            "Content-Type: application/json".into(),
-            "-H".into(),
+        // Headers (bearer tokens), the URL (it may carry a key) and the body go to curl as a config on
+        // its stdin, not argv: `/proc/<pid>/cmdline` is readable by every local user.
+        let mut headers = vec![
+            "Content-Type: application/json".to_string(),
             "Accept: application/json, text/event-stream".into(),
-            "-H".into(),
             format!("MCP-Protocol-Version: {PROTOCOL}"),
         ];
         if let Some(session) = &self.session {
-            args.extend(["-H".into(), format!("Mcp-Session-Id: {session}")]);
+            headers.push(format!("Mcp-Session-Id: {session}"));
         }
-        for (name, value) in self.headers {
-            args.extend(["-H".into(), format!("{name}: {value}")]);
-        }
-        args.extend(["--data-binary".into(), "@-".into(), self.url.into()]);
+        headers.extend(self.headers.iter().map(|(name, value)| format!("{name}: {value}")));
+        let config = curl_config(self.url, &headers, &body.to_string());
         let mut child = Command::new("curl")
-            .args(&args)
+            .args(["-sS", "-i", "-X", "POST", "--max-time", &left.as_secs().max(1).to_string(), "--config", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -437,7 +434,7 @@ impl<'a> HttpServer<'a> {
             .map_err(|e| format!("could not run curl: {e}"))?;
         if let Some(mut stdin) = child.stdin.take() {
             // A write error means curl stopped early; its exit status reports that.
-            let _ = stdin.write_all(body.to_string().as_bytes());
+            let _ = stdin.write_all(config.as_bytes());
         }
         let out = child.wait_with_output().map_err(|e| e.to_string())?;
         if !out.status.success() {
@@ -487,11 +484,29 @@ impl Exchange for HttpServer<'_> {
     }
 }
 
-/// Splits `curl -i` output into the last response's head and body, skipping `100 Continue`.
+/// A curl config (read with `--config -`) that POSTs `body` to `url` with `headers`. A value is quoted with
+/// `\` and `"` escaped; CR and LF are dropped, so a header cannot add another header or option.
+fn curl_config(url: &str, headers: &[String], body: &str) -> String {
+    let quote = |s: &str| {
+        let clean: String = s.chars().filter(|c| !matches!(c, '\r' | '\n')).collect();
+        format!("\"{}\"", clean.replace('\\', "\\\\").replace('"', "\\\""))
+    };
+    let mut config = format!("url = {}\n", quote(url));
+    for header in headers {
+        config.push_str(&format!("header = {}\n", quote(header)));
+    }
+    // A JSON body never starts with `@`, which would make curl read a file instead.
+    config.push_str(&format!("data-binary = {}\n", quote(body)));
+    config
+}
+
+/// Splits `curl -i` output into the last response's head and body, skipping `100 Continue` and a
+/// proxy's `CONNECT` answer, both of which are followed by the real response.
 fn split_response(text: &str) -> (&str, &str) {
     let mut rest = text;
     while let Some((head, body)) = rest.split_once("\r\n\r\n") {
-        if head.starts_with("HTTP/") && head.split_whitespace().nth(1) == Some("100") {
+        let interim = head.starts_with("HTTP/") && head.split_whitespace().nth(1) == Some("100");
+        if interim || (head.starts_with("HTTP/") && body.starts_with("HTTP/")) {
             rest = body;
             continue;
         }
@@ -552,6 +567,9 @@ for line in sys.stdin:
     else:
         result = {"tools": [{"name": "a"}, {"name": "b"}]}
     print("log line that is not JSON", flush=True)
+    sys.stdout.buffer.write(b"\xff\xfe binary log\n")
+    # A request of the server's own that reuses the client's id is not the reply.
+    print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "method": "roots/list"}), flush=True)
     print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}), flush=True)
 "#;
 
@@ -710,7 +728,7 @@ enabled = false
                 let mut raw = Vec::new();
                 let mut buf = [0u8; 4096];
                 // Read headers, then the body by Content-Length.
-                let (head_end, length) = loop {
+                let (head_end, length, authorized) = loop {
                     let n = stream.read(&mut buf).unwrap_or(0);
                     if n == 0 {
                         continue 'accept;
@@ -719,9 +737,13 @@ enabled = false
                     if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
                         let head = String::from_utf8_lossy(&raw[..i]).to_lowercase();
                         let len = head.lines().find_map(|l| l.strip_prefix("content-length:")).map_or(0, |v| v.trim().parse::<usize>().unwrap_or(0));
-                        break (i + 4, len);
+                        break (i + 4, len, head.lines().any(|l| l == "x-test: \"quoted\" \\ value"));
                     }
                 };
+                if !authorized {
+                    let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+                    continue;
+                }
                 while raw.len() < head_end + length {
                     let n = stream.read(&mut buf).unwrap_or(0);
                     if n == 0 {
@@ -754,7 +776,11 @@ enabled = false
         let server = McpServer {
             id: "web".into(),
             name: "web".into(),
-            transport: McpTransport::Http { url: spawn_http_server(), headers: BTreeMap::from([("X-Test".into(), "1".into())]) },
+            // The header arrives intact through curl's config quoting; the server answers 401 otherwise.
+            transport: McpTransport::Http {
+                url: spawn_http_server(),
+                headers: BTreeMap::from([("X-Test".into(), "\"quoted\" \\ value".into())]),
+            },
             enabled: true,
         };
         assert_eq!(check_within(&server, Duration::from_secs(20)), McpStatus::Connected { tools: 3 });
@@ -764,5 +790,24 @@ enabled = false
     fn split_response_skips_interim_responses() {
         let text = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nA: b\r\n\r\n{}";
         assert_eq!(split_response(text), ("HTTP/1.1 200 OK\r\nA: b", "{}"));
+        let proxied = "HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 200\r\ncontent-type: application/json\r\n\r\n{}";
+        assert_eq!(split_response(proxied), ("HTTP/2 200\r\ncontent-type: application/json", "{}"));
+    }
+
+    #[test]
+    fn curl_config_quotes_values_and_drops_line_breaks() {
+        let config = curl_config(
+            "https://h.test/mcp?key=a\"b",
+            &["Authorization: Bearer x\r\nX-Injected: 1".into()],
+            r#"{"a":"q\"\\n"}"#,
+        );
+        assert_eq!(
+            config,
+            concat!(
+                "url = \"https://h.test/mcp?key=a\\\"b\"\n",
+                "header = \"Authorization: Bearer xX-Injected: 1\"\n",
+                "data-binary = \"{\\\"a\\\":\\\"q\\\\\\\"\\\\\\\\n\\\"}\"\n",
+            )
+        );
     }
 }

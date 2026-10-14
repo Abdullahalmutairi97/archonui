@@ -70,7 +70,7 @@ impl ChatView {
             return false;
         }
         // Chat shortcuts stay with the chat.
-        if m.control && matches!(ks.key.as_str(), "n" | "i") {
+        if m.control && matches!(ks.key.as_str(), "n" | "i" | ",") {
             return false;
         }
         match ks.key.as_str() {

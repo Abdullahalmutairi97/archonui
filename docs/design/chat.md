@@ -492,10 +492,10 @@ or the session is already running, L1300).
 | `Enter` (no Shift, no Alt) | `preventDefault()` → send (draft is `.trim()`-checked; empty draft does nothing) |
 | `Shift+Enter` | newline (default browser behaviour, not intercepted) |
 | `Shift+Tab` | `preventDefault()` → cycle mode `Auto → Plan → Ask → Auto` (`cycle()`, L1518) — placeholder, trigger icon and tile meta update live |
-| `Alt+Enter` | new session (global, L1245) |
-| `Alt+Q` | close focused tile (global) |
-| `Alt+T` | next theme (L1248) |
-| `Alt+←/→/↑/↓` | move focus between tiles (global) |
+| `Alt+Enter` | new session (global, L1245); app default is `Ctrl+Shift+Enter` |
+| `Alt+Q` | close focused tile (global); app default is `Ctrl+Shift+W` |
+| `Alt+T` | next theme (L1248); app default is `Ctrl+Shift+T` |
+| `Alt+←/→/↑/↓` | move focus between tiles (global); app default is `Ctrl+Shift+←/→`, `Ctrl+Shift+↑/↓` |
 | `Escape` | only closes an open modal or the image lightbox (L1243) — it does **not** clear the draft or close the pickers |
 
 There is **no click-outside dismissal** for the two popovers: they close when their trigger is clicked again,

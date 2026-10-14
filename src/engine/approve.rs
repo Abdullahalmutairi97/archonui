@@ -35,10 +35,14 @@ pub const TOOL: &str = "approve";
 pub const SERVER: &str = "archonui";
 /// Environment variable carrying this run's token to the `--approval-mcp` child.
 pub const TOKEN_ENV: &str = "ARCHONUI_APPROVAL_TOKEN";
-/// Longest request accepted on the socket or on the child's stdin. A longer line is refused.
-const MAX_LINE: usize = 1024 * 1024;
+/// Longest request accepted on the socket or on the child's stdin. A longer line is refused. A `Write` of a
+/// large file carries the whole file, JSON-escaped, so this sits well above what a model can emit in one turn.
+const MAX_LINE: usize = 16 * 1024 * 1024;
 /// Most approval connections served at once; beyond this a connection is dropped, which denies it.
 const MAX_CONNECTIONS: usize = 64;
+/// Longest the listener waits for a connection's request line. The child writes it as soon as it connects,
+/// so a connection that stays silent is dropped rather than holding one of the `MAX_CONNECTIONS` slots.
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where a turn's approval requests go: this process's socket and the chat they belong to.
 #[derive(Clone, Copy, Debug)]
@@ -180,6 +184,8 @@ pub fn listen(
 ) -> io::Result<()> {
     if let Some(dir) = socket.parent() {
         fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        // `mode` applies only to a directory it creates; one left by an older run keeps its mode.
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
     let _ = fs::remove_file(socket);
     if let Some(dir) = socket.parent() {
@@ -239,6 +245,7 @@ fn serve_call(
     if !same_user(&stream) {
         return Ok(());
     }
+    stream.set_read_timeout(Some(timeout.min(REQUEST_READ_TIMEOUT)))?;
     let line = read_line(&mut BufReader::new(&stream), MAX_LINE)?;
     let Some(line) = line else { return Ok(()) };
     let call: Call = serde_json::from_slice(&line).map_err(io::Error::other)?;
@@ -306,8 +313,30 @@ fn ask_app(socket: &Path, session: &str, token: &str, args: &Value) -> String {
 
 /// Answers JSON-RPC messages read from `input`, one per line, writing each response to `out`.
 /// `ask` answers an `approve` call's arguments with the text Claude reads back.
-pub fn serve(mut input: impl BufRead, mut out: impl Write, mut ask: impl FnMut(&Value) -> String) -> io::Result<()> {
-    while let Some(line) = read_line(&mut input, MAX_LINE)? {
+pub fn serve(input: impl BufRead, out: impl Write, ask: impl FnMut(&Value) -> String) -> io::Result<()> {
+    serve_within(input, out, ask, MAX_LINE)
+}
+
+/// `serve` with the longest line given. An overlong line is skipped and answered with an error, so one huge
+/// message does not take the server, and every later approval of the turn, down with it.
+fn serve_within(
+    mut input: impl BufRead,
+    mut out: impl Write,
+    mut ask: impl FnMut(&Value) -> String,
+    max: usize,
+) -> io::Result<()> {
+    loop {
+        let line = match read_line(&mut input, max) {
+            Ok(Some(line)) => line,
+            Ok(None) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                skip_line(&mut input)?;
+                writeln!(out, "{}", error_reply(Value::Null, -32600, "the message is too long"))?;
+                out.flush()?;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -320,7 +349,6 @@ pub fn serve(mut input: impl BufRead, mut out: impl Write, mut ask: impl FnMut(&
             out.flush()?;
         }
     }
-    Ok(())
 }
 
 /// Reads one line, newline included, of at most `max` bytes. `None` at end of input. A line that
@@ -347,6 +375,30 @@ fn read_line(reader: &mut impl BufRead, max: usize) -> io::Result<Option<Vec<u8>
         reader.consume(used);
         if done {
             return Ok(Some(line));
+        }
+    }
+}
+
+/// Discards input up to and including the next newline, without buffering it.
+fn skip_line(reader: &mut impl BufRead) -> io::Result<()> {
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            return Ok(());
+        }
+        match available.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                reader.consume(i + 1);
+                return Ok(());
+            }
+            None => {
+                let n = available.len();
+                reader.consume(n);
+            }
         }
     }
 }
@@ -628,6 +680,51 @@ mod tests {
         let args = json!({"tool_name": "Edit", "input": {}});
         let reply: Value = serde_json::from_str(&ask_app(&path, "chat-a", token(), &args)).unwrap();
         assert_eq!(reply, json!({"behavior": "deny", "message": "Timed out"}));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_overlong_stdin_message_is_answered_and_the_server_keeps_going() {
+        let input = format!(
+            "{}\n{}\n",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"x": "y".repeat(64)}}),
+            r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
+        );
+        let mut out = Vec::new();
+        serve_within(Cursor::new(input), &mut out, no_ask, 64).unwrap();
+        let replies: Vec<Value> =
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert_eq!(replies[0]["error"]["code"], -32600);
+        assert_eq!(replies[1]["id"], 2);
+        assert_eq!(replies[1]["result"], json!({}));
+    }
+
+    #[test]
+    fn a_silent_connection_is_dropped() {
+        let dir = scratch("silent");
+        let path = dir.join("app.sock");
+        let (requests, _incoming) = smol::channel::unbounded();
+        listen(&path, requests, Allowances::default(), Duration::from_millis(200)).unwrap();
+        let stream = UnixStream::connect(&path).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let started = std::time::Instant::now();
+        let mut buf = String::new();
+        // The listener gives up on the request line and closes; the read sees end-of-file, not our timeout.
+        assert_eq!(BufReader::new(stream).read_line(&mut buf).unwrap(), 0);
+        assert!(started.elapsed() < Duration::from_secs(4));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_existing_socket_directory_is_made_owner_only() {
+        let dir = scratch("loose-dir");
+        let parent = dir.join("sockets");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let (requests, _incoming) = smol::channel::unbounded();
+        listen(&parent.join("archonui-1.sock"), requests, Allowances::default(), Duration::from_millis(50)).unwrap();
+        assert_eq!(fs::metadata(&parent).unwrap().permissions().mode() & 0o777, 0o700);
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -12,11 +12,9 @@ use std::{
     os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::Path,
     process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
 pub enum Event {
@@ -25,27 +23,65 @@ pub enum Event {
     Finished(Result<(), String>),
 }
 
+/// How long a cancelled agent gets to exit on SIGTERM before its group is sent SIGKILL.
+const KILL_AFTER: Duration = Duration::from_secs(3);
+
 /// One running prompt. Dropping it stops the agent.
 pub struct Turn {
     pub events: Receiver<Event>,
+    group: Arc<Group>,
+}
+
+/// The agent's process group. `reaped` is set, under the lock, before the
+/// child is reaped, and signals are sent only while holding the lock with
+/// `reaped` false, so the pid (and group id) can't have been reused by then.
+struct Group {
     pid: u32,
-    exited: Arc<AtomicBool>,
+    reaped: Mutex<bool>,
+}
+
+impl Group {
+    /// Sends `signal` to the whole group unless the agent was already reaped.
+    /// `false` when it was.
+    fn signal(&self, signal: i32) -> bool {
+        let reaped = self.reaped.lock().unwrap_or_else(|e| e.into_inner());
+        if !*reaped {
+            unsafe { libc::kill(-(self.pid as i32), signal) };
+        }
+        !*reaped
+    }
+
+    /// Blocks until the child has exited, without reaping it, then marks it reaped.
+    /// The caller reaps it right after.
+    fn wait_exit(&self) {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        loop {
+            let r = unsafe { libc::waitid(libc::P_PID, self.pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
+            if r == 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                break;
+            }
+        }
+        *self.reaped.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    }
 }
 
 impl Turn {
-    /// Terminate the agent and anything it spawned (tools, shells).
+    /// Terminate the agent and anything it spawned (tools, shells). An agent
+    /// that ignores SIGTERM gets SIGKILL after `KILL_AFTER`.
     pub fn cancel(&self) {
-        // The child is reaped only after `exited` is set, so its pid (and
-        // process group id) can't have been reused while this is false.
-        if !self.exited.load(Ordering::SeqCst) {
-            unsafe { libc::kill(-(self.pid as i32), libc::SIGTERM) };
+        if self.group.signal(libc::SIGTERM) {
+            let group = self.group.clone();
+            thread::spawn(move || {
+                thread::sleep(KILL_AFTER);
+                group.signal(libc::SIGKILL);
+            });
         }
     }
 
     #[cfg(test)]
     pub fn mock() -> Self {
         let (_, events) = unbounded();
-        Self { events, pid: 0, exited: Arc::new(AtomicBool::new(true)) }
+        Self { events, group: Arc::new(Group { pid: 0, reaped: Mutex::new(true) }) }
     }
 }
 
@@ -113,7 +149,7 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
     }
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let exited = Arc::new(AtomicBool::new(false));
+    let group = Arc::new(Group { pid, reaped: Mutex::new(false) });
     let (tx, rx) = unbounded();
 
     let stderr_tail = thread::spawn(move || {
@@ -128,15 +164,15 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
     });
 
     let mut parser = Parser::new(harness.protocol(), input.cwd);
-    let exited_flag = exited.clone();
+    let reaper = group.clone();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             for out in parser.parse(&line) {
                 let _ = tx.send_blocking(Event::Out(out));
             }
         }
+        reaper.wait_exit();
         let status = child.wait();
-        exited_flag.store(true, Ordering::SeqCst);
         let tail = stderr_tail.join().unwrap_or_default();
         let result = match status {
             Ok(s) if s.success() => Ok(()),
@@ -146,7 +182,7 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
         let _ = tx.send_blocking(Event::Finished(result));
     });
 
-    Ok(Turn { events: rx, pid, exited })
+    Ok(Turn { events: rx, group })
 }
 
 /// Writes `text` to `path`, creating its folder, readable by this user only.
@@ -163,6 +199,85 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use crate::engine::{
+        harness::{AuthStatus, Plan},
+        parse::Protocol,
+    };
+
+    /// Runs the prompt as a `sh -c` script.
+    struct Shell;
+
+    impl Harness for Shell {
+        fn id(&self) -> &'static str {
+            "sh"
+        }
+        fn name(&self) -> &'static str {
+            "sh"
+        }
+        fn binary(&self) -> &'static str {
+            "sh"
+        }
+        fn protocol(&self) -> Protocol {
+            Protocol::Text
+        }
+        fn modes(&self) -> &'static [Mode] {
+            &Mode::ALL
+        }
+        fn plan(&self, input: &TurnInput) -> Plan {
+            Plan { args: vec!["-c".into(), input.prompt.into()], ..Default::default() }
+        }
+        fn auth_status(&self) -> AuthStatus {
+            AuthStatus::Ok
+        }
+    }
+
+    fn run_shell(script: &str) -> Turn {
+        let input = TurnInput {
+            cwd: Path::new("/"),
+            prompt: script,
+            session: None,
+            files: &[],
+            model: None,
+            effort: None,
+            mode: Mode::Auto,
+            tools: ToolSettings::default(),
+        };
+        spawn(&Shell, Path::new("/bin/sh"), &input).unwrap()
+    }
+
+    /// The `Finished` event, skipping output, or `None` after `secs`.
+    fn finished_within(turn: &Turn, secs: u64) -> Option<Result<(), String>> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let next = smol::block_on(smol::future::or(async { turn.events.recv().await.ok() }, async {
+                smol::Timer::after(left).await;
+                None
+            }))?;
+            if let Event::Finished(result) = next {
+                return Some(result);
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_kills_an_agent_that_ignores_sigterm() {
+        let turn = run_shell("trap '' TERM; sleep 60");
+        thread::sleep(Duration::from_millis(200));
+        turn.cancel();
+        let result = finished_within(&turn, KILL_AFTER.as_secs() + 5).expect("the agent was killed");
+        assert!(result.is_err(), "a killed agent reports its signal");
+        // Once reaped, cancelling again sends nothing.
+        assert!(!turn.group.signal(0));
+        turn.cancel();
+    }
+
+    #[test]
+    fn a_finished_turn_is_marked_reaped() {
+        let turn = run_shell("echo hi");
+        assert_eq!(finished_within(&turn, 10), Some(Ok(())));
+        assert!(*turn.group.reaped.lock().unwrap());
+    }
 
     #[test]
     fn private_files_are_owner_only_and_replace_old_text() {

@@ -345,6 +345,8 @@ impl Shell {
                 card(("preset", id as usize), active, &theme)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.state.settings.theme = id;
+                        // The open colour editor belongs to the theme it was opened on.
+                        this.settings.picker = None;
                         this.state.settings.fonts.remove(theme_key(id));
                         this.state.settings.wallpapers.remove(theme_key(id));
                         this.refresh_theme(cx);

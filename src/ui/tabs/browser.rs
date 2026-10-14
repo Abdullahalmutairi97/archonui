@@ -614,7 +614,7 @@ impl Shell {
         let submit = cx.subscribe(&input, |this, input, event: &TextInputEvent, cx| match event {
             TextInputEvent::Submit => {
                 let typed = input.read(cx).text();
-                let cwd = this.tool_folder();
+                let cwd = this.tool_folder().unwrap_or_else(|| this.default_folder());
                 let url = preview::normalize_address(&typed, &cwd);
                 input.update(cx, |input, cx| input.set_text(&url, cx));
                 this.tabs.browser.view.navigate(url, browser_view, cx);

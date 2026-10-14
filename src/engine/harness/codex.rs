@@ -241,11 +241,25 @@ fn config_value(key: &str) -> Option<String> {
     let home = env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|h| Path::new(&h).join(".codex")))?;
-    let text = std::fs::read_to_string(home.join("config.toml")).ok()?;
-    text.lines()
-        .take_while(|l| !l.trim_start().starts_with('['))
-        .find_map(|l| {
-            let (k, v) = l.split_once('=')?;
-            (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
-        })
+    top_level_string(&std::fs::read_to_string(home.join("config.toml")).ok()?, key)
+}
+
+/// The string value of top-level `key` in TOML `text`. Parsed as TOML, so a trailing
+/// `# comment` or single quotes don't end up in the value.
+fn top_level_string(text: &str, key: &str) -> Option<String> {
+    let table: toml::Table = text.parse().ok()?;
+    table.get(key)?.as_str().map(String::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_values_ignore_comments_quotes_and_tables() {
+        let text = "model = \"gpt-5\" # picked in the TUI\nmodel_reasoning_effort = 'high'\n\n[profiles.fast]\nmodel = \"mini\"\n";
+        assert_eq!(top_level_string(text, "model").as_deref(), Some("gpt-5"));
+        assert_eq!(top_level_string(text, "model_reasoning_effort").as_deref(), Some("high"));
+        assert_eq!(top_level_string("[x]\nmodel = \"m\"\n", "model"), None, "keys inside tables are not top-level");
+    }
 }

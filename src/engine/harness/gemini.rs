@@ -2,7 +2,7 @@
 //! was written, so every flag here comes from its documentation; see
 //! `docs/HARNESS_MAPPING.md`.
 
-use super::{prompt_arg, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
+use super::{planned, prompt_arg, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
 use crate::engine::{attach::Delivery, parse::Protocol};
 
 pub struct Gemini;
@@ -45,6 +45,10 @@ impl Harness for Gemini {
             Mode::Plan | Mode::Ask => "plan",
         };
         a.extend(strs(&["--approval-mode", approval]));
+        // Headless Gemini (0.64.0) exits in a folder the user never trusted, and outside a trusted
+        // folder it also overrides `--approval-mode` to `default`. ArchonUI chooses the folder, as
+        // `claude -p` does, so the turn trusts it.
+        a.push("--skip-trust".into());
         for dir in files.dirs() {
             a.extend(["--include-directories".into(), dir.display().to_string()]);
         }
@@ -52,7 +56,8 @@ impl Harness for Gemini {
             a.extend(strs(&["--resume", id]));
         }
         a.extend(strs(&["--output-format", "stream-json"]));
-        a.extend(["-p".into(), prompt_arg(&files.prompt(input.prompt))]);
+        // Plan and Ask share `--approval-mode plan`, so Plan also asks for a plan in the prompt.
+        a.extend(["-p".into(), prompt_arg(&planned(input.mode, files.prompt(input.prompt)))]);
         Plan { args: a, ..Default::default() }
     }
 

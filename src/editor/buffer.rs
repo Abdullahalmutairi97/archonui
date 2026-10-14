@@ -29,6 +29,7 @@ struct Snapshot {
     rope: Rope,
     cursor: Pos,
     anchor: Option<Pos>,
+    version: u64,
 }
 
 /// An editable text file: content, cursor, selection and undo history.
@@ -39,7 +40,11 @@ pub struct Buffer {
     anchor: Option<Pos>,
     /// Column that vertical moves try to keep.
     goal_col: Option<usize>,
-    dirty: bool,
+    /// Names the current text: each edit takes a new number, and undo and redo bring back the one
+    /// their step had. The buffer is dirty unless it matches `saved_version`.
+    version: u64,
+    next_version: u64,
+    saved_version: u64,
     path: Option<PathBuf>,
     /// Whether the file used CRLF line endings, which save writes back.
     crlf: bool,
@@ -61,7 +66,9 @@ impl Buffer {
             cursor: Pos::default(),
             anchor: None,
             goal_col: None,
-            dirty: false,
+            version: 0,
+            next_version: 1,
+            saved_version: 0,
             path: None,
             crlf,
             indent: detect_indent(&text),
@@ -74,7 +81,12 @@ impl Buffer {
 
     /// Opens the text file at `path`. Files over 5 MB, or with a NUL byte in the first 8 KB, are rejected.
     pub fn open(path: &Path) -> io::Result<Self> {
-        if fs::metadata(path)?.len() > MAX_FILE_BYTES {
+        let meta = fs::metadata(path)?;
+        // A FIFO or device would block the read forever, or never end.
+        if !meta.is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a regular file"));
+        }
+        if meta.len() > MAX_FILE_BYTES {
             return Err(binary_or_too_large());
         }
         let bytes = fs::read(path)?;
@@ -88,7 +100,8 @@ impl Buffer {
         Ok(buffer)
     }
 
-    /// Writes the buffer to its path through a temp file, keeping the file's permissions.
+    /// Writes the buffer to its path through a temp file, keeping the file's permissions. A symlink is
+    /// kept and its target is written.
     pub fn save(&mut self) -> io::Result<()> {
         let path = self
             .path
@@ -96,8 +109,13 @@ impl Buffer {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "buffer has no file path"))?;
         let text = self.text();
         let content = if self.crlf { text.replace('\n', "\r\n") } else { text };
-        write_atomic(path, &content)?;
-        self.dirty = false;
+        // Renaming over a symlink would replace the link with a plain file.
+        let target = match fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(path)?,
+            _ => path.to_path_buf(),
+        };
+        write_atomic(&target, &content)?;
+        self.saved_version = self.version;
         Ok(())
     }
 
@@ -112,7 +130,8 @@ impl Buffer {
         self.anchor = self.anchor.map(|anchor| self.pos_of(self.char_index(anchor)));
         self.goal_col = None;
         self.typing = false;
-        self.dirty = false;
+        self.bump_version();
+        self.saved_version = self.version;
     }
 
     /// Returns the lines changed since the last call, as `(first line, lines removed, lines inserted)`
@@ -141,7 +160,7 @@ impl Buffer {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.version != self.saved_version
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -159,13 +178,14 @@ impl Buffer {
         self.rope.line_to_char(line) + pos.col.min(self.line_chars(line))
     }
 
-    /// The position of char index `index`, clamped to the buffer.
+    /// The position of char index `index`, clamped to the buffer. An index inside a CRLF break is
+    /// clamped to the end of its line.
     pub fn pos_of(&self, index: usize) -> Pos {
         let index = index.min(self.rope.len_chars());
         let line = self.rope.char_to_line(index);
         Pos {
             line,
-            col: index - self.rope.line_to_char(line),
+            col: (index - self.rope.line_to_char(line)).min(self.line_chars(line)),
         }
     }
 
@@ -182,24 +202,26 @@ impl Buffer {
             .unwrap_or_default()
     }
 
-    /// Moves the cursor one char left. With a selection and no `select`, collapses to its start.
+    /// Moves the cursor one char left, over a whole cluster such as an accented letter or an emoji
+    /// sequence. With a selection and no `select`, collapses to its start.
     pub fn move_left(&mut self, select: bool) {
         match self.selection_range() {
             Some((start, _)) if !select => self.move_cursor(start, false),
             _ => {
-                let idx = self.char_index(self.cursor);
-                self.move_cursor(self.pos_of(idx.saturating_sub(1)), select);
+                let idx = self.prev_boundary(self.char_index(self.cursor));
+                self.move_cursor(self.pos_of(idx), select);
             }
         }
     }
 
-    /// Moves the cursor one char right. With a selection and no `select`, collapses to its end.
+    /// Moves the cursor one char right, over a whole cluster. With a selection and no `select`,
+    /// collapses to its end.
     pub fn move_right(&mut self, select: bool) {
         match self.selection_range() {
             Some((_, end)) if !select => self.move_cursor(end, false),
             _ => {
-                let idx = self.char_index(self.cursor);
-                self.move_cursor(self.pos_of(idx + 1), select);
+                let idx = self.next_boundary(self.char_index(self.cursor));
+                self.move_cursor(self.pos_of(idx), select);
             }
         }
     }
@@ -345,7 +367,11 @@ impl Buffer {
             let in_indent = self.cursor.col >= unit
                 && self.cursor.col % unit == 0
                 && before.chars().all(|c| c == ' ');
-            idx.saturating_sub(if in_indent { unit } else { 1 })..idx
+            if in_indent {
+                idx - unit..idx
+            } else {
+                self.prev_boundary(idx)..idx
+            }
         });
         self.replace_chars(range, "", false, false);
     }
@@ -354,7 +380,7 @@ impl Buffer {
     pub fn delete(&mut self) {
         let range = self.selection_chars().unwrap_or_else(|| {
             let idx = self.char_index(self.cursor);
-            idx..(idx + 1).min(self.rope.len_chars())
+            idx..self.next_boundary(idx)
         });
         self.replace_chars(range, "", false, false);
     }
@@ -386,7 +412,7 @@ impl Buffer {
             self.shift_cols(line, width as isize);
         }
         self.goal_col = None;
-        self.dirty = true;
+        self.bump_version();
     }
 
     /// Removes one indent unit from the start of each selected line, or of the cursor's line.
@@ -410,7 +436,7 @@ impl Buffer {
             self.shift_cols(line, -(width as isize));
         }
         self.goal_col = None;
-        self.dirty = true;
+        self.bump_version();
     }
 
     /// Removes and returns the selection, or the whole current line when nothing is selected.
@@ -504,14 +530,18 @@ impl Buffer {
         line.min(self.line_count() - 1)
     }
 
-    /// Chars in `line`, not counting its line break.
+    /// Chars in `line`, not counting its line break. The rope also breaks lines at a lone `\r` and at
+    /// the Unicode line separators, so those count as the break too.
     fn line_chars(&self, line: usize) -> usize {
         let text = self.rope.line(line);
         let len = text.len_chars();
-        if len > 0 && text.char(len - 1) == '\n' {
-            len - 1
-        } else {
-            len
+        if len == 0 {
+            return 0;
+        }
+        match text.char(len - 1) {
+            '\n' if len > 1 && text.char(len - 2) == '\r' => len - 2,
+            c if is_line_break(c) => len - 1,
+            _ => len,
         }
     }
 
@@ -538,13 +568,67 @@ impl Buffer {
         self.rope
             .line(line)
             .chars()
-            .take_while(|&c| c != '\n' && c.is_whitespace())
+            .take(self.line_chars(line))
+            .take_while(|&c| c.is_whitespace())
             .count()
     }
 
     fn char_before_cursor(&self) -> Option<char> {
         let idx = self.char_index(self.cursor);
         (idx > 0).then(|| self.rope.char(idx - 1))
+    }
+
+    /// The char index after the cluster that starts at `idx`: a char with the combining marks, joiners
+    /// and modifiers after it, a flag's pair of regional indicators, or a CRLF.
+    fn next_boundary(&self, idx: usize) -> usize {
+        let len = self.rope.len_chars();
+        if idx >= len {
+            return len;
+        }
+        let first = self.rope.char(idx);
+        let mut i = idx + 1;
+        if is_line_break(first) {
+            return if first == '\r' && i < len && self.rope.char(i) == '\n' { i + 1 } else { i };
+        }
+        if is_regional_indicator(first) && i < len && is_regional_indicator(self.rope.char(i)) {
+            i += 1;
+        }
+        while i < len && self.joins_previous(i) {
+            i += 1;
+        }
+        i
+    }
+
+    /// The char index where the cluster that ends at `idx` starts.
+    fn prev_boundary(&self, idx: usize) -> usize {
+        let idx = idx.min(self.rope.len_chars());
+        if idx == 0 {
+            return 0;
+        }
+        let mut i = idx - 1;
+        if self.rope.char(i) == '\n' {
+            return if i > 0 && self.rope.char(i - 1) == '\r' { i - 1 } else { i };
+        }
+        while i > 0 && self.joins_previous(i) {
+            i -= 1;
+        }
+        if is_regional_indicator(self.rope.char(i)) {
+            // Indicators pair up from the start of their run.
+            let run = (0..i)
+                .rev()
+                .take_while(|&j| is_regional_indicator(self.rope.char(j)))
+                .count();
+            if run % 2 == 1 {
+                i -= 1;
+            }
+        }
+        i
+    }
+
+    /// Whether the char at `i` (above 0) belongs to the same cluster as the char before it.
+    fn joins_previous(&self, i: usize) -> bool {
+        let (prev, c) = (self.rope.char(i - 1), self.rope.char(i));
+        !is_line_break(prev) && !is_line_break(c) && (is_extender(c) || prev == '\u{200D}')
     }
 
     /// Char index of the start of the word before `idx`, skipping whitespace and punctuation first.
@@ -633,6 +717,7 @@ impl Buffer {
             rope: self.rope.clone(),
             cursor: self.cursor,
             anchor: self.anchor,
+            version: self.version,
         }
     }
 
@@ -643,7 +728,13 @@ impl Buffer {
         self.anchor = snapshot.anchor;
         self.goal_col = None;
         self.typing = false;
-        self.dirty = true;
+        self.version = snapshot.version;
+    }
+
+    /// Gives the text a new version number, for an edit.
+    fn bump_version(&mut self) {
+        self.version = self.next_version;
+        self.next_version += 1;
     }
 
     /// Records an undo step before an edit. A typed char joins the open step unless `new_group` is set; any other edit starts a new step.
@@ -687,16 +778,20 @@ impl Buffer {
             return;
         }
         self.checkpoint(typing, new_group);
-        let first = self.rope.char_to_line(range.start);
+        // An edit just after a `\r` can join it with a `\n` into one break, which changes the line before.
+        let joins_cr = range.start > 0 && self.rope.char(range.start - 1) == '\r';
+        let first = self.rope.char_to_line(range.start - usize::from(joins_cr));
         let removed = self.rope.char_to_line(range.end) - first + 1;
-        self.record_edit(first, removed, text.matches('\n').count() + 1);
         let start = range.start;
         self.rope.remove(range);
         self.rope.insert(start, text);
+        // Counted in the rope, which also breaks lines at `\r` and the Unicode separators.
+        let end = start + text.chars().count();
+        self.record_edit(first, removed, self.rope.char_to_line(end) - first + 1);
         self.cursor = self.pos_of(start + text.chars().count());
         self.anchor = None;
         self.goal_col = None;
-        self.dirty = true;
+        self.bump_version();
     }
 }
 
@@ -710,6 +805,31 @@ fn merge_edits(a: (usize, usize, usize), b: (usize, usize, usize)) -> (usize, us
     let old_end = end - inserted_a + removed_a;
     let new_end = end - removed_b + inserted_b;
     (start, old_end - start, new_end - start)
+}
+
+/// The chars the rope breaks lines at.
+fn is_line_break(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Chars that attach to the char before them: combining marks, the zero-width joiner, variation
+/// selectors, emoji skin tones and tags.
+fn is_extender(c: char) -> bool {
+    matches!(c as u32,
+        0x0300..=0x036F
+        | 0x1AB0..=0x1AFF
+        | 0x1DC0..=0x1DFF
+        | 0x200D
+        | 0x20D0..=0x20FF
+        | 0xFE00..=0xFE0F
+        | 0xFE20..=0xFE2F
+        | 0x1F3FB..=0x1F3FF
+        | 0xE0020..=0xE007F
+        | 0xE0100..=0xE01EF)
+}
+
+fn is_regional_indicator(c: char) -> bool {
+    matches!(c as u32, 0x1F1E6..=0x1F1FF)
 }
 
 fn is_word(c: char) -> bool {
@@ -781,7 +901,18 @@ fn write_atomic(path: &Path, content: &str) -> io::Result<()> {
 }
 
 fn write_and_rename(path: &Path, tmp: &Path, content: &str) -> io::Result<()> {
-    let mut file = fs::File::create(tmp)?;
+    // A leftover temp file, or a symlink planted under its name, is replaced rather than written through.
+    let _ = fs::remove_file(tmp);
+    let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(tmp) {
+        Ok(file) => file,
+        // A folder that can't be written to still lets a writable file be saved in place.
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied && path.exists() => {
+            let mut file = fs::OpenOptions::new().write(true).truncate(true).open(path)?;
+            file.write_all(content.as_bytes())?;
+            return file.sync_all();
+        }
+        Err(e) => return Err(e),
+    };
     file.write_all(content.as_bytes())?;
     file.sync_all()?;
     if let Ok(meta) = fs::metadata(path) {
@@ -791,7 +922,7 @@ fn write_and_rename(path: &Path, tmp: &Path, content: &str) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn pos(line: usize, col: usize) -> Pos {
@@ -1052,5 +1183,242 @@ mod tests {
         assert_eq!(b.take_edit(), Some((0, 2, 2)));
         b.outdent();
         assert_eq!(b.take_edit(), Some((0, 2, 2)));
+    }
+    #[test]
+    fn unicode_line_breaks_are_not_part_of_the_line() {
+        for text in ["ab\u{2028}cd", "ab\rcd", "ab\u{85}cd"] {
+            let mut b = Buffer::from_str(text);
+            assert_eq!(b.line_count(), 2, "{text:?}");
+            assert_eq!(b.line(0), "ab");
+            b.move_end(false);
+            assert_eq!(b.cursor(), pos(0, 2));
+            assert_eq!(b.pos_of(b.char_index(b.cursor())), pos(0, 2));
+            b.insert("X");
+            assert_eq!(b.line(0), "abX");
+            assert_eq!(b.line(1), "cd");
+        }
+    }
+
+    #[test]
+    fn home_on_a_blank_line_ending_in_a_separator_stays_in_the_line() {
+        let mut b = Buffer::from_str("  \u{2028}x");
+        b.set_cursor(pos(0, 2), false);
+        b.move_home(false);
+        assert_eq!(b.cursor(), pos(0, 0));
+        b.move_home(false);
+        assert_eq!(b.cursor(), pos(0, 2));
+    }
+
+    #[test]
+    fn cursor_moves_over_whole_clusters() {
+        // e + combining acute, a ZWJ emoji, and two flags.
+        let mut b = Buffer::from_str("e\u{301}\u{1F469}\u{200D}\u{1F4BB}\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}!");
+        for col in [2, 5, 7, 9, 10, 10] {
+            b.move_right(false);
+            assert_eq!(b.cursor(), pos(0, col));
+        }
+        for col in [9, 7, 5, 2, 0, 0] {
+            b.move_left(false);
+            assert_eq!(b.cursor(), pos(0, col));
+        }
+        b.set_cursor(pos(0, 9), false);
+        b.backspace();
+        assert_eq!(b.text(), "e\u{301}\u{1F469}\u{200D}\u{1F4BB}\u{1F1E9}\u{1F1EA}!");
+        b.set_cursor(pos(0, 0), false);
+        b.delete();
+        assert_eq!(b.text(), "\u{1F469}\u{200D}\u{1F4BB}\u{1F1E9}\u{1F1EA}!");
+    }
+
+    #[test]
+    fn combining_mark_after_a_line_break_is_its_own_cluster() {
+        let mut b = Buffer::from_str("a\n\u{301}b");
+        b.set_cursor(pos(0, 1), false);
+        b.move_right(false);
+        assert_eq!(b.cursor(), pos(1, 0));
+        b.move_left(false);
+        assert_eq!(b.cursor(), pos(0, 1));
+    }
+
+    #[test]
+    fn undoing_back_to_the_saved_text_is_clean() {
+        let mut b = Buffer::from_str("x");
+        type_text(&mut b, "ab");
+        assert!(b.is_dirty());
+        assert!(b.undo());
+        assert!(!b.is_dirty(), "back to the opened text");
+        assert!(b.redo());
+        assert!(b.is_dirty());
+
+        let dir = temp_dir("versions");
+        let path = dir.join("v.txt");
+        fs::write(&path, "x").unwrap();
+        let mut b = Buffer::open(&path).unwrap();
+        b.insert("1");
+        b.save().unwrap();
+        b.insert(" 2");
+        assert!(b.undo());
+        assert!(!b.is_dirty(), "back to the saved text");
+        assert!(b.undo());
+        assert!(b.is_dirty());
+        assert!(b.redo());
+        assert!(!b.is_dirty());
+        b.reload_from("other");
+        assert!(!b.is_dirty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_through_a_symlink_keeps_the_link() {
+        let dir = temp_dir("symlink");
+        let real = dir.join("real.txt");
+        let link = dir.join("link.txt");
+        fs::write(&real, "a").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut b = Buffer::open(&link).unwrap();
+        b.insert("b");
+        b.save().unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "ba");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_a_leftover_temp_file() {
+        let dir = temp_dir("stale-tmp");
+        let path = dir.join("f.txt");
+        let elsewhere = dir.join("elsewhere.txt");
+        fs::write(&path, "a").unwrap();
+        fs::write(&elsewhere, "keep").unwrap();
+        // A link planted at the temp name must not be written through.
+        std::os::unix::fs::symlink(&elsewhere, dir.join(".f.txt.archonui-tmp")).unwrap();
+        let mut b = Buffer::open(&path).unwrap();
+        b.insert("b");
+        b.save().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ba");
+        assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "keep");
+        assert!(!fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_instead_of_blocking() {
+        let dir = temp_dir("fifo");
+        let path = dir.join("pipe");
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        assert!(Buffer::open(&path).is_err());
+        assert!(Buffer::open(&dir).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn take_edit_counts_lines_broken_at_a_lone_cr() {
+        let mut b = Buffer::from_str("ab");
+        b.set_cursor(pos(0, 1), false);
+        b.insert("\r");
+        assert_eq!(b.line_count(), 2);
+        assert_eq!(b.take_edit(), Some((0, 1, 2)));
+    }
+
+    #[test]
+    fn empty_buffer_edges_do_not_panic() {
+        let mut b = Buffer::from_str("");
+        b.backspace();
+        b.delete();
+        b.delete_word_left();
+        b.move_left(true);
+        b.move_right(true);
+        b.move_up(false);
+        b.move_down(false);
+        b.page_up(10, false);
+        b.page_down(10, false);
+        b.move_word_left(false);
+        b.move_word_right(false);
+        b.move_home(false);
+        b.outdent();
+        b.select_all();
+        b.select_word_at(pos(5, 5));
+        b.select_line(9);
+        assert_eq!(b.cut(), None);
+        assert_eq!(b.copy(), None);
+        assert!(!b.undo());
+        assert!(!b.redo());
+        assert_eq!(b.find("x", pos(0, 0), false), None);
+        assert_eq!((b.text().as_str(), b.cursor(), b.is_dirty()), ("", pos(0, 0), false));
+    }
+
+    /// A small deterministic random source for the property tests.
+    pub(crate) struct Lcg(pub(crate) u64);
+
+    impl Lcg {
+        pub(crate) fn below(&mut self, n: usize) -> usize {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as usize) % n.max(1)
+        }
+    }
+
+    /// One random edit or move, from a mix that includes multibyte text and every line break the rope knows.
+    pub(crate) fn random_step(b: &mut Buffer, rng: &mut Lcg) {
+        const PIECES: [&str; 10] = ["a", " ", "é", "\n", "\u{1F600}", "{", "\u{301}", "\r", "\u{2028}", "xy\nz"];
+        let line = rng.below(b.line_count() + 1);
+        let col = rng.below(8);
+        match rng.below(16) {
+            0 => b.set_cursor(pos(line, col), rng.below(2) == 0),
+            1 => b.insert(PIECES[rng.below(PIECES.len())]),
+            2 => b.insert(PIECES[rng.below(PIECES.len())]),
+            3 => b.backspace(),
+            4 => b.delete(),
+            5 => b.newline(),
+            6 => b.indent(),
+            7 => b.outdent(),
+            8 => {
+                b.undo();
+            }
+            9 => {
+                b.redo();
+            }
+            10 => b.move_left(rng.below(2) == 0),
+            11 => b.move_right(rng.below(2) == 0),
+            12 => b.move_down(rng.below(2) == 0),
+            13 => b.paste("p\r\nq"),
+            14 => b.delete_word_left(),
+            _ => {
+                b.cut();
+            }
+        }
+    }
+
+    pub(crate) fn lines_of(b: &Buffer) -> Vec<String> {
+        (0..b.line_count()).map(|i| b.line(i)).collect()
+    }
+
+    #[test]
+    fn random_edits_keep_cursor_valid_and_take_edit_exact() {
+        for seed in 0..40 {
+            let mut rng = Lcg(seed);
+            let mut b = Buffer::from_str("fn a() {\n\tlet é = 1;\n}\n");
+            let mut model = lines_of(&b);
+            let original = b.text();
+            for step in 0..300 {
+                random_step(&mut b, &mut rng);
+                let cursor = b.cursor();
+                assert_eq!(b.pos_of(b.char_index(cursor)), cursor, "seed {seed} step {step}");
+                assert!(cursor.col <= b.line(cursor.line).chars().count(), "seed {seed} step {step}");
+                if let Some((first, removed, inserted)) = b.take_edit() {
+                    let new: Vec<String> = (first..first + inserted).map(|i| b.line(i)).collect();
+                    model.splice(first..first + removed, new);
+                }
+                if rng.below(4) == 0 {
+                    assert_eq!(model, lines_of(&b), "seed {seed} step {step}");
+                }
+            }
+            assert_eq!(model, lines_of(&b), "seed {seed}");
+            while b.undo() {}
+            assert_eq!(b.text(), original, "undo all, seed {seed}");
+            assert!(!b.is_dirty(), "seed {seed}");
+        }
     }
 }

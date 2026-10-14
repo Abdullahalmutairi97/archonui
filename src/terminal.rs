@@ -19,7 +19,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError,
     },
     thread,
     time::Duration,
@@ -122,6 +122,9 @@ impl Terminal {
                 command.arg(conf);
                 command.args(["new-session", "-A", "-s", name, "-c"]);
                 command.arg(cwd);
+                // tmux refuses to start a session inside another tmux, whatever the socket.
+                command.env_remove("TMUX");
+                command.env_remove("TMUX_PANE");
                 command
             }
             None => CommandBuilder::new(&shell),
@@ -129,14 +132,15 @@ impl Terminal {
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        // Handles first, so a failure here doesn't leave a shell running unattended.
+        let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
         let child = pair
             .slave
             .spawn_command(command)
             .map_err(|e| format!("Could not start the shell: {e}"))?;
         // Only the shell keeps the slave open, so the reader sees EOF when it exits.
         drop(pair.slave);
-        let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
         let pid = child.process_id();
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
@@ -167,7 +171,7 @@ impl Terminal {
 
     /// Sends input to the shell.
     pub fn write(&self, bytes: &[u8]) {
-        let _ = self.writer.lock().unwrap().write_all(bytes);
+        let _ = lock(&self.writer).write_all(bytes);
     }
 
     /// Resizes the pty and the parser. Ignored when the size is unchanged or zero.
@@ -175,7 +179,7 @@ impl Terminal {
         if cols == 0 || rows == 0 {
             return;
         }
-        let mut parser = self.parser.lock().unwrap();
+        let mut parser = lock(&self.parser);
         if parser.screen().size() == (rows, cols) {
             return;
         }
@@ -185,28 +189,28 @@ impl Terminal {
 
     /// A snapshot of the visible screen, taken without holding the parser's lock.
     pub fn screen(&self) -> Screen {
-        let parser = self.parser.lock().unwrap();
+        let parser = lock(&self.parser);
         self.changed_queued.store(false, Ordering::Release);
         snapshot(&parser)
     }
 
     /// Scrolls the view `lines` up into scrollback, clamped to what exists. 0 is the live screen.
     pub fn set_scrollback(&self, lines: usize) {
-        self.parser.lock().unwrap().screen_mut().set_scrollback(lines);
+        lock(&self.parser).screen_mut().set_scrollback(lines);
     }
 
     pub fn scrollback(&self) -> usize {
-        self.parser.lock().unwrap().screen().scrollback()
+        lock(&self.parser).screen().scrollback()
     }
 
     /// Whether the shell has turned on bracketed paste mode.
     pub fn bracketed_paste(&self) -> bool {
-        self.parser.lock().unwrap().screen().bracketed_paste()
+        lock(&self.parser).screen().bracketed_paste()
     }
 
     /// Whether the app asked for application cursor keys (vim, less, ...).
     pub fn application_cursor(&self) -> bool {
-        self.parser.lock().unwrap().screen().application_cursor()
+        lock(&self.parser).screen().application_cursor()
     }
 }
 
@@ -233,6 +237,11 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
     PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }
 }
 
+/// Locks a mutex, ignoring poisoning: a panic on the reader thread must not panic the UI too.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Feeds the shell's output to the parser until the pty closes, then reports the exit.
 fn read_output(
     mut reader: Box<dyn Read + Send>,
@@ -245,13 +254,15 @@ fn read_output(
     let mut buf = [0u8; 4096];
     loop {
         match reader.read(&mut buf) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(n) => {
-                parser.lock().unwrap().process(&buf[..n]);
+                lock(&parser).process(&buf[..n]);
                 if !changed_queued.swap(true, Ordering::AcqRel) {
                     let _ = events.send_blocking(TermEvent::Changed);
                 }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
         }
     }
     let code = child.wait().ok().map(|status| status.exit_code());

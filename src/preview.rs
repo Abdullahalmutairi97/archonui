@@ -317,6 +317,8 @@ struct Session {
     pending: HashMap<u64, Pending>,
     /// Page session id once attached.
     page: Option<String>,
+    /// The attached page's target id, to notice when the page is closed.
+    target: Option<Value>,
     /// Commands that arrived before the page was attached.
     queued: Vec<Command>,
     viewport: (u32, u32, f32),
@@ -335,6 +337,7 @@ impl Session {
             next_id: 1,
             pending: HashMap::new(),
             page: None,
+            target: None,
             queued: Vec::new(),
             viewport: (800, 600, 1.0),
             visible: true,
@@ -430,8 +433,15 @@ impl Session {
                 }
                 Some(Pending::Navigate) => {
                     if let Some(err) = v.pointer("/result/errorText").and_then(Value::as_str) {
-                        self.emit(BrowserEvent::Loading(false));
-                        self.emit(BrowserEvent::Error(friendly_error(err)));
+                        // A navigation replaced by a newer one, or turned into a download, is no
+                        // error. Only stop the spinner if no newer navigation is still in flight.
+                        let newer = self.pending.values().any(|p| matches!(p, Pending::Navigate));
+                        if err != "net::ERR_ABORTED" || !newer {
+                            self.emit(BrowserEvent::Loading(false));
+                        }
+                        if err != "net::ERR_ABORTED" {
+                            self.emit(BrowserEvent::Error(friendly_error(err)));
+                        }
                     }
                 }
                 Some(Pending::Screenshot) => {
@@ -480,6 +490,7 @@ impl Session {
                     && !self.pending.values().any(|p| matches!(p, Pending::Attached)) =>
             {
                 let target = params["targetInfo"]["targetId"].clone();
+                self.target = Some(target.clone());
                 let id = self.call(None, "Target.attachToTarget", json!({"targetId": target, "flatten": true}));
                 self.pending.insert(id, Pending::Attached);
             }
@@ -501,7 +512,8 @@ impl Session {
                 }
             }
             "Page.frameNavigated" if params["frame"]["parentId"].is_null() => {
-                if let Some(u) = params["frame"]["url"].as_str() {
+                // A failed load commits Chrome's error page; keep the address that was asked for.
+                if let Some(u) = params["frame"]["url"].as_str().filter(|u| !u.starts_with("chrome-error:")) {
                     self.emit(BrowserEvent::Url(u.to_string()));
                 }
                 self.request_history();
@@ -519,6 +531,10 @@ impl Session {
                 if self.visible {
                     self.capture_screenshot();
                 }
+            }
+            // The page itself went away (`window.close()`); nothing is left to drive.
+            "Target.targetDestroyed" if self.target.as_ref().is_some_and(|t| *t == params["targetId"]) => {
+                self.emit(BrowserEvent::Closed);
             }
             "Target.targetCrashed" => self.emit(BrowserEvent::Error("The page crashed. Reload to try again.".into())),
             _ => {}
@@ -772,13 +788,15 @@ pub fn normalize_address(input: &str, cwd: &Path) -> String {
         return "about:blank".into();
     }
     let lower = s.to_ascii_lowercase();
-    if ["http://", "https://", "file://", "about:", "data:"].iter().any(|p| lower.starts_with(p)) {
+    // Other `about:` pages (`about:flags`, `about:settings`) are Chrome's internal pages.
+    let about_blank = lower.strip_prefix("about:blank").is_some_and(|r| r.is_empty() || r.starts_with(['#', '?']));
+    if about_blank || ["http://", "https://", "file://", "data:"].iter().any(|p| lower.starts_with(p)) {
         return s.to_string();
     }
     let other_scheme = s
         .split_once("://")
         .is_some_and(|(scheme, _)| scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)));
-    let blocked = ["javascript:", "chrome:", "chrome-extension:", "view-source:", "devtools:"];
+    let blocked = ["javascript:", "chrome:", "chrome-extension:", "view-source:", "devtools:", "about:"];
     if other_scheme || blocked.iter().any(|p| lower.starts_with(p)) {
         return search_url(s);
     }
@@ -790,7 +808,8 @@ pub fn normalize_address(input: &str, cwd: &Path) -> String {
         None
     };
     if let Some(path) = explicit_path {
-        return file_url(&path);
+        // `./x` and `../x` are relative to the folder the tool is in; `join` keeps absolute paths.
+        return file_url(&cwd.join(path));
     }
     let in_cwd = cwd.join(s);
     if in_cwd.is_file() {
@@ -977,6 +996,16 @@ mod tests {
             "https://duckduckgo.com/?q=javascript%3Aalert%281%29"
         );
         assert_eq!(normalize_address("chrome://settings", cwd), "https://duckduckgo.com/?q=chrome%3A%2F%2Fsettings");
+    }
+
+    #[test]
+    fn blocks_internal_about_pages_and_resolves_relative_paths() {
+        let cwd = Path::new("/work/app");
+        assert_eq!(normalize_address("about:blank", cwd), "about:blank");
+        assert_eq!(normalize_address("ABOUT:flags", cwd), "https://duckduckgo.com/?q=ABOUT%3Aflags");
+        assert_eq!(normalize_address("about:settings", cwd), "https://duckduckgo.com/?q=about%3Asettings");
+        assert_eq!(normalize_address("./dist/index.html", cwd), "file:///work/app/./dist/index.html");
+        assert_eq!(normalize_address("/srv/x.html", cwd), "file:///srv/x.html");
     }
 
     #[test]

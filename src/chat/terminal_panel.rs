@@ -266,33 +266,37 @@ impl ChatView {
         if !self.terms.focused || self.settings.hide_panel || self.settings.panel_tab != PanelTab::Terminal || m.platform {
             return false;
         }
-        // Chat shortcuts stay with the chat.
-        if m.control && matches!(ks.key.as_str(), "n" | "i" | ",") {
+        // The app's shortcuts stay with the app. Other Ctrl and Alt combinations reach the shell.
+        if m.control && m.shift && matches!(ks.key.as_str(), "enter" | "w" | "t" | "left" | "right" | "up" | "down") {
             return false;
         }
         let Some(id) = self.session().map(|s| s.id.clone()) else { return false };
         let Some(Ok(state)) = self.terms.sessions.get_mut(&id) else { return false };
-        if m.control && m.shift && ks.key == "c" {
+        // Ctrl+Shift+C copies; plain Ctrl+C copies only when something is selected, else it is the interrupt.
+        if m.control && ks.key == "c" && (m.shift || state.selection.is_some()) {
             if let Some(sel) = state.selection {
                 let text = selected_text(&state.screen, sel, usize::from(state.size.0));
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            // A plain Ctrl+C copies once; pressed again it interrupts.
+            if !m.shift {
+                state.selection = None;
             }
         } else if m.control && m.shift && ks.key == "v" {
             state.selection = None;
             leave_copy_mode(state);
             if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                let bytes = if state.term.bracketed_paste() {
-                    format!("\x1b[200~{text}\x1b[201~")
-                } else {
-                    text.replace('\n', "\r")
-                };
-                state.term.write(bytes.as_bytes());
+                state.term.write(paste_bytes(&text, state.term.bracketed_paste()).as_bytes());
             }
         } else if state.exited.is_some() {
             if ks.key == "enter" {
                 self.reattach_terminal(cx);
             }
         } else {
+            // A combination that sends the shell nothing, such as Ctrl+, for the settings, stays with the app.
+            let Some(mut bytes) = key_bytes(&ks.key, ks.key_char.as_deref(), m.control, m.alt, m.shift) else {
+                return false;
+            };
             state.selection = None;
             // Typing returns to the live screen.
             if state.term.scrollback() > 0 {
@@ -300,12 +304,10 @@ impl ChatView {
                 state.screen = state.term.screen();
             }
             leave_copy_mode(state);
-            if let Some(mut bytes) = key_bytes(&ks.key, ks.key_char.as_deref(), m.control, m.alt, m.shift) {
-                if state.term.application_cursor() {
-                    to_application_cursor(&mut bytes);
-                }
-                state.term.write(&bytes);
+            if state.term.application_cursor() {
+                to_application_cursor(&mut bytes);
             }
+            state.term.write(&bytes);
         }
         cx.notify();
         true
@@ -439,7 +441,22 @@ impl ChatView {
             .border_2()
             .border_color(if focused { rgb(0x89b4fa) } else { rgb(0x181825) })
             // Records where the terminal is, so the shell can be sized to it.
-            .child(canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .child(
+                canvas(
+                    move |b, window, _| {
+                        if bounds.get() != b {
+                            bounds.set(b);
+                            // The shell was sized from the old bounds; draw once more to size it to these.
+                            window.request_animation_frame();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 window.focus(&this.focus);
@@ -544,9 +561,10 @@ fn term_runs(spans: &[Span], selection: Option<(usize, usize)>) -> Vec<TextRun> 
     for span in spans {
         let run = term_run(span);
         let len = span.text.chars().count();
+        let cells: usize = span.text.chars().map(char_width).sum();
         // The selected columns that fall in this span, as char offsets into it.
         let (from, to) = selection.map_or((0, 0), |(first, last)| {
-            (first.saturating_sub(col).min(len), (last + 1).saturating_sub(col).min(len))
+            char_range(&span.text, first.saturating_sub(col), (last + 1).saturating_sub(col))
         });
         for (start, end, selected) in [(0, from, false), (from, to, true), (to, len, false)] {
             if start == end {
@@ -559,9 +577,26 @@ fn term_runs(spans: &[Span], selection: Option<(usize, usize)>) -> Vec<TextRun> 
                 ..run.clone()
             });
         }
-        col += len;
+        col += cells;
     }
     runs
+}
+
+/// The chars of `text` that cover cells `first..end` (relative to its start), as an offset range.
+/// A wide character is in the range if either of its cells is.
+fn char_range(text: &str, first: usize, end: usize) -> (usize, usize) {
+    let (mut from, mut to, mut cell) = (0, 0, 0);
+    for (i, c) in text.chars().enumerate() {
+        let w = char_width(c);
+        if cell + w <= first {
+            from = i + 1;
+        }
+        if cell < end {
+            to = i + 1;
+        }
+        cell += w;
+    }
+    (from.min(to), to)
 }
 
 /// The text style of a span. Inverse video swaps its colors.
@@ -605,9 +640,42 @@ fn exit_notice(code: Option<u32>) -> String {
     }
 }
 
-/// The characters of a row, one per cell.
-fn row_chars(spans: &[Span]) -> impl Iterator<Item = char> + '_ {
-    spans.iter().flat_map(|span| span.text.chars())
+/// How many terminal cells a character covers: 0 for combining marks, 2 for wide (CJK, emoji) ones.
+fn char_width(c: char) -> usize {
+    match u32::from(c) {
+        0x0300..=0x036F | 0x200B..=0x200F | 0x20D0..=0x20FF | 0xFE00..=0xFE0F => 0,
+        0x1100..=0x115F
+        | 0x2E80..=0xA4CF
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE6F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1F64F
+        | 0x1F900..=0x1F9FF
+        | 0x20000..=0x3FFFD => 2,
+        _ => 1,
+    }
+}
+
+/// The text of each cell of a row. The second cell of a wide character is empty, and a combining
+/// mark joins the cell before it, so indexes are screen columns.
+fn row_cells(spans: &[Span]) -> Vec<String> {
+    let mut cells: Vec<String> = Vec::new();
+    for c in spans.iter().flat_map(|span| span.text.chars()) {
+        match char_width(c) {
+            0 => match cells.last_mut() {
+                Some(last) => last.push(c),
+                None => cells.push(c.to_string()),
+            },
+            2 => {
+                cells.push(c.to_string());
+                cells.push(String::new());
+            }
+            _ => cells.push(c.to_string()),
+        }
+    }
+    cells
 }
 
 /// The selected text, one line per row, each without trailing spaces.
@@ -618,7 +686,10 @@ fn selected_text(screen: &Screen, selection: Selection, cols: usize) -> String {
         .enumerate()
         .filter_map(|(row, spans)| {
             let (from, to) = selection.cols_in_row(row, cols)?;
-            let text: String = row_chars(spans).skip(from).take((to + 1).saturating_sub(from)).collect();
+            let cells = row_cells(spans);
+            // A selection that starts on the second half of a wide character keeps the character.
+            let from = if cells.get(from).is_some_and(String::is_empty) { from.saturating_sub(1) } else { from };
+            let text: String = cells.iter().skip(from).take((to + 1).saturating_sub(from)).map(String::as_str).collect();
             Some(text.trim_end().to_string())
         })
         .collect::<Vec<_>>()
@@ -627,12 +698,13 @@ fn selected_text(screen: &Screen, selection: Selection, cols: usize) -> String {
 
 /// The word under `cell`: the run of non-space cells around it on its row. `None` on a space.
 fn word_selection(screen: &Screen, (row, col): (usize, usize)) -> Option<Selection> {
-    let chars: Vec<char> = row_chars(screen.rows.get(row)?).collect();
-    if chars.get(col)?.is_whitespace() {
+    let cells = row_cells(screen.rows.get(row)?);
+    let blank = |cell: &String| cell.chars().next().is_some_and(char::is_whitespace);
+    if blank(cells.get(col)?) {
         return None;
     }
-    let start = chars[..col].iter().rposition(|c| c.is_whitespace()).map_or(0, |i| i + 1);
-    let end = col + chars[col..].iter().position(|c| c.is_whitespace()).unwrap_or(chars.len() - col);
+    let start = cells[..col].iter().rposition(blank).map_or(0, |i| i + 1);
+    let end = col + cells[col..].iter().position(blank).unwrap_or(cells.len() - col);
     Some(Selection { anchor: (row, start), head: (row, end - 1) })
 }
 
@@ -641,69 +713,112 @@ fn clamp_cell((row, col): (usize, usize), size: (u16, u16)) -> (usize, usize) {
     (row.min(usize::from(size.1).saturating_sub(1)), col.min(usize::from(size.0).saturating_sub(1)))
 }
 
-/// The bytes a keystroke sends to the shell, or `None` if it sends nothing.
-/// Arrow, Home and End keys as `ESC O x` instead of `ESC [ x`.
+/// What pasting `text` sends to the shell. In bracketed paste mode the text is wrapped in the paste
+/// markers, and an end marker inside it is dropped, so the text can't end the paste early, even when
+/// dropping one forms another. Otherwise line breaks are sent as Enter, once per line.
+fn paste_bytes(text: &str, bracketed: bool) -> String {
+    const END: &str = "\x1b[201~";
+    if bracketed {
+        let mut text = text.to_string();
+        while text.contains(END) {
+            text = text.replace(END, "");
+        }
+        format!("\x1b[200~{text}{END}")
+    } else {
+        text.replace("\r\n", "\r").replace('\n', "\r")
+    }
+}
+
+/// Arrow, Home and End keys as `ESC O x` instead of `ESC [ x`, which applications in cursor mode expect.
 fn to_application_cursor(bytes: &mut [u8]) {
     if let [0x1b, b'[', b'A' | b'B' | b'C' | b'D' | b'H' | b'F'] = bytes {
         bytes[1] = b'O';
     }
 }
 
+/// The bytes a keystroke sends to the shell, or `None` if it sends nothing.
 fn key_bytes(key: &str, key_char: Option<&str>, ctrl: bool, alt: bool, shift: bool) -> Option<Vec<u8>> {
-    if let Some(seq) = special_key(key, shift) {
-        return Some(seq.as_bytes().to_vec());
+    if let Some(seq) = special_key(key, shift, alt, ctrl) {
+        return Some(seq.into_bytes());
     }
     if ctrl {
         let byte = match key {
             "space" => 0x00,
             "[" => 0x1b,
+            "\\" => 0x1c,
+            "]" => 0x1d,
+            "^" => 0x1e,
+            "/" | "_" => 0x1f,
             _ if key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() => key.as_bytes()[0].to_ascii_lowercase() & 0x1f,
             _ => return None,
         };
-        return Some(vec![byte]);
+        return Some(if alt { vec![0x1b, byte] } else { vec![byte] });
     }
-    let text = key_char.or((key == "space").then_some(" "))?;
-    let bytes = if alt { format!("\x1b{text}") } else { text.to_string() };
+    // Alt sends Esc before the character. Without text from the platform, the key name stands in for it.
+    let text = match key_char {
+        Some(text) => text.to_string(),
+        None if key == "space" => " ".to_string(),
+        None if key.chars().count() == 1 => if shift { key.to_uppercase() } else { key.to_string() },
+        None => return None,
+    };
+    let bytes = if alt { format!("\x1b{text}") } else { text };
     Some(bytes.into_bytes())
 }
 
-/// The escape sequence for a key that isn't text.
-fn special_key(key: &str, shift: bool) -> Option<&'static str> {
+/// The escape sequence for a key that isn't text. Modified cursor, editing and function keys carry
+/// xterm's modifier number (Ctrl+Left is `ESC [ 1 ; 5 D`), which shells and editors read for word jumps.
+fn special_key(key: &str, shift: bool, alt: bool, ctrl: bool) -> Option<String> {
+    let modifier = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    // Keys whose meaning Alt changes by prefixing Esc.
+    let esc = if alt { "\x1b" } else { "" };
+    let csi = |letter: char| {
+        if modifier > 1 { format!("\x1b[1;{modifier}{letter}") } else { format!("\x1b[{letter}") }
+    };
+    let ss3 = |letter: char| {
+        if modifier > 1 { format!("\x1b[1;{modifier}{letter}") } else { format!("\x1bO{letter}") }
+    };
+    let tilde = |code: u8| {
+        if modifier > 1 { format!("\x1b[{code};{modifier}~") } else { format!("\x1b[{code}~") }
+    };
     Some(match key {
-        "enter" => "\r",
-        "backspace" => "\x7f",
-        "tab" if shift => "\x1b[Z",
-        "tab" => "\t",
-        "escape" => "\x1b",
-        "up" => "\x1b[A",
-        "down" => "\x1b[B",
-        "right" => "\x1b[C",
-        "left" => "\x1b[D",
-        "home" => "\x1b[H",
-        "end" => "\x1b[F",
-        "pageup" => "\x1b[5~",
-        "pagedown" => "\x1b[6~",
-        "delete" => "\x1b[3~",
-        "insert" => "\x1b[2~",
-        "f1" => "\x1bOP",
-        "f2" => "\x1bOQ",
-        "f3" => "\x1bOR",
-        "f4" => "\x1bOS",
-        "f5" => "\x1b[15~",
-        "f6" => "\x1b[17~",
-        "f7" => "\x1b[18~",
-        "f8" => "\x1b[19~",
-        "f9" => "\x1b[20~",
-        "f10" => "\x1b[21~",
-        "f11" => "\x1b[23~",
-        "f12" => "\x1b[24~",
+        "enter" => format!("{esc}\r"),
+        "backspace" if ctrl => format!("{esc}\x08"),
+        "backspace" => format!("{esc}\x7f"),
+        "tab" if shift => "\x1b[Z".to_string(),
+        "tab" => format!("{esc}\t"),
+        "escape" => format!("{esc}\x1b"),
+        "up" => csi('A'),
+        "down" => csi('B'),
+        "right" => csi('C'),
+        "left" => csi('D'),
+        "home" => csi('H'),
+        "end" => csi('F'),
+        "pageup" => tilde(5),
+        "pagedown" => tilde(6),
+        "delete" => tilde(3),
+        "insert" => tilde(2),
+        "f1" => ss3('P'),
+        "f2" => ss3('Q'),
+        "f3" => ss3('R'),
+        "f4" => ss3('S'),
+        "f5" => tilde(15),
+        "f6" => tilde(17),
+        "f7" => tilde(18),
+        "f8" => tilde(19),
+        "f9" => tilde(20),
+        "f10" => tilde(21),
+        "f11" => tilde(23),
+        "f12" => tilde(24),
         _ => return None,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{key_bytes, line_height, selected_text, term_runs, to_application_cursor, word_selection, Selection, SELECTION};
+    use super::{
+        key_bytes, line_height, paste_bytes, selected_text, term_runs, to_application_cursor, word_selection, Selection,
+        SELECTION,
+    };
     use crate::terminal::{Screen, Span};
     use gpui::rgb;
 
@@ -756,6 +871,21 @@ mod tests {
     }
 
     #[test]
+    fn selection_counts_screen_columns() {
+        // "日本" covers columns 0-3, "x" column 4; "é" is e plus a combining mark, one column.
+        let screen = screen(&["日本x e\u{301}z"]);
+        assert_eq!(selected_text(&screen, Selection { anchor: (0, 4), head: (0, 4) }, 8), "x");
+        assert_eq!(selected_text(&screen, Selection { anchor: (0, 3), head: (0, 4) }, 8), "本x");
+        assert_eq!(selected_text(&screen, Selection { anchor: (0, 6), head: (0, 7) }, 8), "e\u{301}z");
+        assert_eq!(word_selection(&screen, (0, 6)), Some(Selection { anchor: (0, 6), head: (0, 7) }));
+        assert_eq!(word_selection(&screen, (0, 1)), Some(Selection { anchor: (0, 0), head: (0, 4) }));
+        // Columns 2-4 highlight "本x": the runs are "日" (3 bytes), then "本x" (4 bytes), then the rest.
+        let runs = term_runs(&[span("日本x")], Some((2, 4)));
+        assert_eq!(runs.iter().map(|r| r.len).collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(runs[1].background_color, Some(rgb(SELECTION).into()));
+    }
+
+    #[test]
     fn line_height_follows_font_size() {
         assert_eq!(line_height(13.), 18.);
         assert_eq!(line_height(10.), 14.);
@@ -792,5 +922,28 @@ mod tests {
         assert_eq!(key_bytes("f5", None, false, false, false), Some(b"\x1b[15~".to_vec()));
         assert_eq!(key_bytes("shift", None, false, false, true), None);
         assert_eq!(key_bytes("1", None, true, false, false), None);
+        assert_eq!(key_bytes("left", None, true, false, false), Some(b"\x1b[1;5D".to_vec()));
+        assert_eq!(key_bytes("pageup", None, false, false, true), Some(b"\x1b[5;2~".to_vec()));
+        assert_eq!(key_bytes("backspace", None, false, true, false), Some(b"\x1b\x7f".to_vec()));
+        assert_eq!(key_bytes("c", None, true, true, false), Some(vec![0x1b, 0x03]));
+        assert_eq!(key_bytes("f", None, false, true, false), Some(b"\x1bf".to_vec()));
+        assert_eq!(key_bytes("f", None, false, true, true), Some(b"\x1bF".to_vec()));
+        assert_eq!(key_bytes("backspace", None, true, true, false), Some(b"\x1b\x08".to_vec()));
+        // Ctrl+, sends the shell nothing, so the app keeps it.
+        assert_eq!(key_bytes(",", Some(","), true, false, false), None);
+    }
+
+    #[test]
+    fn paste_cannot_end_bracketed_paste_early() {
+        assert_eq!(paste_bytes("ls", true), "\x1b[200~ls\x1b[201~");
+        assert_eq!(paste_bytes("a\x1b[201~rm -rf x\n", true), "\x1b[200~arm -rf x\n\x1b[201~");
+        // Dropping the inner marker would leave an outer one behind.
+        assert_eq!(paste_bytes("\x1b[20\x1b[201~1~echo hi\n", true), "\x1b[200~echo hi\n\x1b[201~");
+    }
+
+    #[test]
+    fn unbracketed_paste_sends_one_enter_per_line() {
+        assert_eq!(paste_bytes("a\nb", false), "a\rb");
+        assert_eq!(paste_bytes("a\r\nb\r\n", false), "a\rb\r");
     }
 }

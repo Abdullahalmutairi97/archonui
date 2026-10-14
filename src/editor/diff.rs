@@ -57,11 +57,9 @@ pub fn first_change(marks: &[(usize, Mark)]) -> Option<usize> {
 }
 
 /// Marks the line at `at` as `Removed`, or the last line when the deletion is at the end. Added and
-/// modified marks on the same line win.
+/// modified marks on the same line win. Empty text still shows one line, which gets the mark.
 fn mark_removed(marks: &mut BTreeMap<usize, Mark>, at: usize, new_count: usize) {
-    if new_count > 0 {
-        marks.entry(at.min(new_count - 1)).or_insert(Mark::Removed);
-    }
+    marks.entry(at.min(new_count.saturating_sub(1))).or_insert(Mark::Removed);
 }
 
 #[cfg(test)]
@@ -98,6 +96,13 @@ mod tests {
     #[test]
     fn deleted_lines_at_the_end_mark_the_last_line() {
         assert_eq!(line_marks("a\nb\n", "a\n"), vec![(0, Mark::Removed)]);
+    }
+
+    #[test]
+    fn deleting_everything_marks_the_one_line_left() {
+        assert_eq!(line_marks("a\nb\n", ""), vec![(0, Mark::Removed)]);
+        assert_eq!(line_marks("a", ""), vec![(0, Mark::Removed)]);
+        assert_eq!(line_marks("", ""), vec![]);
     }
 
     #[test]

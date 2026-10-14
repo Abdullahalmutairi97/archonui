@@ -82,8 +82,9 @@ impl Harness for Claude {
         if let Some(id) = input.session {
             a.extend(strs(&["--resume", id]));
         }
+        // `--add-dir` takes several values, so the `=` form keeps it from swallowing the prompt.
         for dir in files.dirs() {
-            a.extend(["--add-dir".into(), dir.display().to_string()]);
+            a.push(format!("--add-dir={}", dir.display()));
         }
         if files.native.is_empty() {
             a.push(super::prompt_arg(&prompt));
@@ -103,9 +104,7 @@ impl Harness for Claude {
     /// MCP config, so a server imported from there stays on when it is switched off here.
     fn mcp_args(&self, servers: &[McpServer]) -> Plan {
         match mcp::config_file("claude.json", servers, true) {
-            Some((path, text)) => {
-                Plan { args: strs(&["--mcp-config", &path.display().to_string()]), files: vec![(path, text)], ..Default::default() }
-            }
+            Some((path, text)) => Plan { args: vec![mcp_config_flag(&path)], files: vec![(path, text)], ..Default::default() },
             None => Plan::default(),
         }
     }
@@ -198,7 +197,13 @@ fn approval_mcp(servers: &[McpServer], route: Route) -> Plan {
     });
     let name = format!("claude-{}.json", route.session);
     let (path, text) = mcp::config_file_with(&name, servers, true, vec![(approve::SERVER.into(), server)]);
-    Plan { args: strs(&["--mcp-config", &path.display().to_string()]), files: vec![(path, text)], ..Default::default() }
+    Plan { args: vec![mcp_config_flag(&path)], files: vec![(path, text)], ..Default::default() }
+}
+
+/// `--mcp-config` takes several values, so a bare one followed by the prompt would read the prompt as
+/// another config file. The `=` form takes exactly one (checked against 2.1.300).
+fn mcp_config_flag(path: &Path) -> String {
+    format!("--mcp-config={}", path.display())
 }
 
 /// The path to hand a child that runs this same program. `/proc/self/exe` gains a " (deleted)"
@@ -467,7 +472,32 @@ mod tests {
             json!(["--approval-mcp", "/run/user/1000/archonui-1.sock", "chat-a"])
         );
         assert_eq!(config["mcpServers"]["archonui"]["env"][approve::TOKEN_ENV], approve::token());
-        assert_eq!(plan.args[0], "--mcp-config");
+        assert_eq!(plan.args, [format!("--mcp-config={}", path.display())]);
+    }
+
+    #[test]
+    fn variadic_flags_never_swallow_the_prompt() {
+        let files = [Attachment { path: "/data/big.bin".into(), name: "big.bin".into(), kind: Kind::Other, size: 1 }];
+        let servers = [McpServer {
+            id: "x".into(),
+            name: "docs".into(),
+            transport: McpTransport::Stdio { command: "docs-mcp".into(), args: vec![], env: Default::default() },
+            enabled: true,
+        }];
+        let input = TurnInput {
+            cwd: Path::new("."),
+            prompt: "do it",
+            session: None,
+            files: &files,
+            model: None,
+            effort: None,
+            mode: Mode::Auto,
+            tools: harness::ToolSettings { mcp: &servers, ..Default::default() },
+        };
+        let args = Claude.plan(&input).args;
+        assert!(args.last().unwrap().starts_with("do it"), "the prompt is last: {args:?}");
+        assert!(!args.iter().any(|a| a == "--add-dir" || a == "--mcp-config"), "{args:?}");
+        assert!(args.contains(&"--add-dir=/data".to_string()), "{args:?}");
     }
 
     #[test]

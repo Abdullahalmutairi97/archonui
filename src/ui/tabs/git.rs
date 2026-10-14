@@ -95,7 +95,8 @@ impl Shell {
     /// Reads the git state of the tool folder in the background. A read that a newer one has overtaken
     /// is dropped. A change of folder keeps the old folder's commit message as a draft.
     pub(in crate::ui) fn refresh_git(&mut self, cx: &mut Context<Self>) {
-        let folder = self.tool_root();
+        // No project folder in focus: git has nothing to read.
+        let Some(folder) = self.tool_root() else { return };
         let ui = &mut self.tabs.git;
         if ui.folder.as_deref() != Some(folder.as_path()) {
             if let (Some(old), Some(input)) = (ui.folder.take(), ui.message.clone()) {
@@ -146,7 +147,10 @@ impl Shell {
 
     pub(in crate::ui) fn render_git(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        if self.tabs.git.folder.as_deref() != Some(self.tool_root().as_path()) {
+        let Some(root) = self.tool_root() else {
+            return super::files::no_project(&theme);
+        };
+        if self.tabs.git.folder.as_deref() != Some(root.as_path()) {
             self.refresh_git(cx);
         }
         if self.tabs.git.message.is_none() {
@@ -237,7 +241,7 @@ impl Shell {
                     .child(Self::git_header_button("git-push", "Push", git::push, theme, cx)),
             );
 
-        let staged = status.files.iter().filter(|file| file.staged.is_some()).count();
+        let staged = status.files.iter().filter(|file| file.staged.is_some() && !file.conflicted()).count();
         let mut changes = div().flex().flex_col().px(px(8.));
         if status.files.is_empty() {
             changes = changes.child(
@@ -297,7 +301,9 @@ impl Shell {
     /// One changed file: its staging checkbox, letter, path and line counts. Clicking the path opens or
     /// closes the file's inline diff below the row.
     fn git_change_row(&self, ix: usize, file: &FileChange, snap: &Snapshot, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let staged = file.staged.is_some();
+        // Checked only when nothing is left to stage; a file changed again after staging, or in
+        // conflict, is unchecked so the click stages it.
+        let staged = fully_staged(file);
         let (added, removed) = snap
             .marks
             .get(Path::new(&file.path))
@@ -586,7 +592,7 @@ impl Shell {
     fn git_commit(&mut self, cx: &mut Context<Self>) {
         let (Some(folder), Some(input)) = (self.tabs.git.folder.clone(), self.tabs.git.message.clone()) else { return };
         let message = input.read(cx).text().trim().to_string();
-        let staged = self.tabs.git.snapshot.as_ref().is_some_and(|snap| snap.status.files.iter().any(|f| f.staged.is_some()));
+        let staged = self.tabs.git.snapshot.as_ref().is_some_and(|snap| snap.status.files.iter().any(|f| f.staged.is_some() && !f.conflicted()));
         if message.is_empty() || !staged {
             return;
         }
@@ -651,10 +657,11 @@ fn read_snapshot(folder: &Path) -> Option<Snapshot> {
     for file in &status.files {
         let (mut added, removed) = counts.get(&file.path).copied().unwrap_or((0, 0));
         if file.untracked {
-            added = fs::read_to_string(top.join(&file.path)).map_or(0, |text| text.lines().count() as u32);
+            added = untracked_lines(&top.join(&file.path));
         }
         let letter = match file.unstaged.or(file.staged) {
             _ if file.untracked => 'A',
+            _ if file.conflicted() => 'U',
             Some('A') => 'A',
             Some('D') => 'D',
             _ => 'M',
@@ -671,6 +678,22 @@ fn read_snapshot(folder: &Path) -> Option<Snapshot> {
     }
     let commits = git::log(folder, HISTORY_LEN).unwrap_or_default();
     Some(Snapshot { status, marks, dirs, commits, top })
+}
+
+/// Whether the checkbox shows `file` as staged: it has a staged change and no other change left.
+fn fully_staged(file: &FileChange) -> bool {
+    file.staged.is_some() && file.unstaged.is_none() && !file.conflicted()
+}
+
+/// Largest untracked file whose lines are counted; reading a bigger one would stall the refresh.
+const MAX_COUNTED_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The line count of an untracked text file, 0 when it is binary, unreadable or too large.
+fn untracked_lines(path: &Path) -> u32 {
+    if fs::metadata(path).map_or(true, |meta| !meta.is_file() || meta.len() > MAX_COUNTED_BYTES) {
+        return 0;
+    }
+    fs::read_to_string(path).map_or(0, |text| text.lines().count() as u32)
 }
 
 /// Which diff will be taken for `file`: the working tree against the index (or `/dev/null` for an
@@ -783,6 +806,27 @@ mod tests {
         assert_eq!(diff_target(&file("c", None, None, true)), selected("c", false, true));
         // Staged and changed again: the working-tree change is the newest.
         assert_eq!(diff_target(&file("d", Some('M'), Some('M'), false)), selected("d", false, false));
+    }
+
+    #[test]
+    fn checkbox_is_checked_only_when_fully_staged() {
+        assert!(fully_staged(&file("a", Some('M'), None, false)));
+        assert!(!fully_staged(&file("a", Some('M'), Some('M'), false)));
+        assert!(!fully_staged(&file("a", Some('U'), Some('U'), false)));
+        assert!(!fully_staged(&file("a", None, None, true)));
+    }
+
+    #[test]
+    fn untracked_lines_skips_dirs_and_binary() {
+        let dir = std::env::temp_dir().join(format!("archonui-git-ui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("t.txt"), "a\nb\n").unwrap();
+        std::fs::write(dir.join("b.bin"), [0xff, 0xfe, 0]).unwrap();
+        assert_eq!(untracked_lines(&dir.join("t.txt")), 2);
+        assert_eq!(untracked_lines(&dir.join("b.bin")), 0);
+        assert_eq!(untracked_lines(&dir), 0);
+        assert_eq!(untracked_lines(&dir.join("missing")), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

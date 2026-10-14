@@ -437,15 +437,15 @@ be designed separately.
 
 | section | action name (verbatim) | default binding (verbatim) |
 |---|---|---|
-| TILING | `Split new session` | `Alt ⏎` (U+23CE) |
-| TILING | `Close tile` | `Alt Q` |
-| TILING | `Move focus between tiles` | `Alt ← →` (U+2190 U+2192) |
+| TILING | `Split new session` | `Ctrl ⇧ ⏎` (U+21E7 U+23CE) |
+| TILING | `Close tile` | `Ctrl ⇧ W` |
+| TILING | `Move focus between tiles` | `Ctrl ⇧ ← →` (U+2190 U+2192) |
 | COMPOSER | `Cycle agent mode: Auto, Plan, Ask` | `⇧ Tab` (U+21E7) |
-| APP | `Next theme` | `Alt T` |
+| APP | `Next theme` | `Ctrl ⇧ T` |
 | APP | `Send / new line` | `⏎ / ⇧⏎` (U+23CE ×2) |
 | APP | `Close dialog` | `Esc` |
 
-Bindings actually implemented in the prototype (`keyFn`, `L1242–1254`, plus per-input handlers):
+Bindings actually implemented in the prototype (`keyFn`, `L1242–1254`, plus per-input handlers). The app moved its tiling and theme defaults from Alt to Ctrl+Shift because Hyprland grabs Alt+key globally, so the Alt rows below describe the prototype, not the app's defaults:
 
 | binding | code | matches the page? |
 |---|---|---|
