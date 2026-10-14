@@ -127,11 +127,14 @@ impl Edit {
         self.buffer.select_all();
     }
 
+    /// The selected text. Unlike the buffer, a field copies nothing when no text is selected.
     pub fn copy(&self) -> Option<String> {
-        self.buffer.copy()
+        self.buffer.selection_range().map(|_| self.buffer.selected_text())
     }
 
+    /// Removes and returns the selected text. Does nothing when no text is selected.
     pub fn cut(&mut self) -> Option<String> {
+        self.buffer.selection_range()?;
         self.buffer.cut()
     }
 

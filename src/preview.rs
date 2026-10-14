@@ -116,7 +116,11 @@ impl Browser {
                     Ok(())
                 })
                 .spawn()
-                .map_err(|e| format!("Could not start {}: {e}", chrome.display()))?
+                .map_err(|e| {
+                    // The profile is ours and would otherwise wait for the next launch to be cleaned up.
+                    let _ = std::fs::remove_dir_all(&profile);
+                    format!("Could not start {}: {e}", chrome.display())
+                })?
         };
         let ws = match connect_devtools(&mut child) {
             Ok(ws) => ws,
@@ -236,8 +240,10 @@ fn find_chrome() -> Option<PathBuf> {
     if let Some(p) = env::var_os("ARCHONUI_CHROME") {
         return Some(p.into());
     }
-    let path: Vec<PathBuf> =
-        env::var_os("PATH").map(|p| env::split_paths(&p).collect()).unwrap_or_default();
+    // An empty PATH entry would look in the working directory, so it is skipped.
+    let path: Vec<PathBuf> = env::var_os("PATH")
+        .map(|p| env::split_paths(&p).filter(|d| !d.as_os_str().is_empty()).collect())
+        .unwrap_or_default();
     for name in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"] {
         if let Some(p) = path.iter().map(|d| d.join(name)).find(|p| p.is_file()) {
             return Some(p);

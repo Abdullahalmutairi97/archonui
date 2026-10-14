@@ -380,13 +380,8 @@ pub fn load_settings() -> Settings {
 }
 
 pub fn save_settings(s: &Settings) -> io::Result<()> {
-    let path = settings_path();
-    if let Some(parent) = path.parent() {
-        create_private_dir(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    write_private(&tmp, &serde_json::to_vec_pretty(s)?)?;
-    fs::rename(tmp, path)
+    // Through `write_atomic`, which syncs the file before the rename, so a crash can't leave an empty settings file.
+    crate::app::persist::write_atomic(&settings_path(), &serde_json::to_vec_pretty(s)?)
 }
 
 pub fn load_all() -> Vec<Session> {

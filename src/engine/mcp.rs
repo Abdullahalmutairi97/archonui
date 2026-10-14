@@ -372,7 +372,11 @@ impl Exchange for StdioServer {
     fn request(&mut self, id: u64, method: &str, params: Value) -> Result<Value, String> {
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         loop {
+            // Checked on every line too, so a server that keeps printing cannot hold the check past its limit.
             let left = self.deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(format!("no reply to {method} in time"));
+            }
             let line = match self.lines.recv_timeout(left) {
                 Ok(line) => line,
                 Err(RecvTimeoutError::Timeout) => return Err(format!("no reply to {method} in time")),

@@ -165,20 +165,26 @@ fn config_env(dirs: &[PathBuf], servers: &[McpServer], agent: &str, steps: Optio
         .and_then(|s| serde_json::from_str(&s).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
-    let rules = &mut config["permission"]["external_directory"];
-    if !rules.is_object() {
-        *rules = json!({});
-    }
+    let rules = object_at(object_at(&mut config, "permission"), "external_directory");
     for d in dirs {
         rules[format!("{}/*", d.display())] = json!("allow");
     }
     for s in servers {
-        config["mcp"][&s.name] = mcp_entry(s);
+        object_at(&mut config, "mcp")[&s.name] = mcp_entry(s);
     }
     if let Some(steps) = steps {
-        config["agent"][agent]["steps"] = json!(steps);
+        object_at(object_at(&mut config, "agent"), agent)["steps"] = json!(steps);
     }
     Some((VAR.into(), config.to_string()))
+}
+
+/// `v[key]` as an object. A user's value there that isn't an object (e.g. `"permission": "allow"`)
+/// is replaced, since indexing into it would panic.
+fn object_at<'a>(v: &'a mut Value, key: &str) -> &'a mut Value {
+    if !v[key].is_object() {
+        v[key] = json!({});
+    }
+    &mut v[key]
 }
 
 /// An OpenCode `mcp` entry: a local command as one argv array, or a remote URL.

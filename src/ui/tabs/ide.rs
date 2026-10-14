@@ -875,7 +875,8 @@ impl Shell {
         let cell = ide.cell.max(1.);
         let Some(doc) = ide.docs.get_mut(ide.active) else { return };
         let count = doc.buffer.line_count();
-        let line = ((design(at.y - origin.y) - PAD_Y) / LINE_H).floor().max(0.) as usize;
+        // The first row drawn is `doc.top`, so a click's row is offset by the scroll.
+        let line = doc.top + ((design(at.y - origin.y) - PAD_Y) / LINE_H).floor().max(0.) as usize;
         let line = line.min(count - 1);
         let raw = doc.buffer.line(line);
         let vcol = doc.left + ((design(at.x - origin.x) - TEXT_X) / cell).round().max(0.) as usize;

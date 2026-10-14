@@ -106,6 +106,10 @@ impl Shell {
                 let draft = ui.drafts.remove(&folder).unwrap_or_default();
                 input.update(cx, |input, cx| input.set_text(&draft, cx));
             }
+            // The open diff belongs to the old folder's file, so it closes with the folder.
+            ui.selected = None;
+            ui.diff = None;
+            ui.diff_all = false;
         }
         ui.folder = Some(folder.clone());
         ui.seq += 1;

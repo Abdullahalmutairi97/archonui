@@ -234,6 +234,8 @@ impl OpenFile {
                 self.deleted = false;
                 let text = disk.text();
                 if text == self.saved {
+                    // Back to the saved text, so the disk no longer differs from what the user sees.
+                    self.changed_on_disk = false;
                     return;
                 }
                 if self.buffer.is_dirty() {

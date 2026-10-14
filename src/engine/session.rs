@@ -7,9 +7,12 @@ use super::{
 use smol::channel::{unbounded, Receiver};
 use std::{
     collections::VecDeque,
-    fs::OpenOptions,
+    fs::{OpenOptions, Permissions},
     io::{self, BufRead, BufReader, Write},
-    os::unix::{fs::OpenOptionsExt, process::CommandExt},
+    os::unix::{
+        fs::{OpenOptionsExt, PermissionsExt},
+        process::CommandExt,
+    },
     path::Path,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
@@ -154,11 +157,12 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
 
     let stderr_tail = thread::spawn(move || {
         let mut tail = VecDeque::new();
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        // Bytes, not `lines()`: a line that isn't UTF-8 must not stop the drain, or the pipe fills.
+        for bytes in BufReader::new(stderr).split(b'\n').map_while(Result::ok) {
             if tail.len() == 12 {
                 tail.pop_front();
             }
-            tail.push_back(line);
+            tail.push_back(String::from_utf8_lossy(&bytes).trim_end_matches('\r').to_string());
         }
         Vec::from(tail).join("\n")
     });
@@ -166,8 +170,10 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
     let mut parser = Parser::new(harness.protocol(), input.cwd);
     let reaper = group.clone();
     thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            for out in parser.parse(&line) {
+        // Bytes, not `lines()`: `map_while` would end the stream at the first non-UTF-8 line.
+        for bytes in BufReader::new(stdout).split(b'\n').map_while(Result::ok) {
+            let line = String::from_utf8_lossy(&bytes);
+            for out in parser.parse(line.trim_end_matches('\r')) {
                 let _ = tx.send_blocking(Event::Out(out));
             }
         }
@@ -191,6 +197,8 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
         crate::store::create_private_dir(dir)?;
     }
     let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    // `mode` applies only when the file is created; an existing file keeps its old permissions.
+    file.set_permissions(Permissions::from_mode(0o600))?;
     file.write_all(text.as_bytes())
 }
 

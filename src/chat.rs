@@ -768,6 +768,15 @@ impl ChatView {
         let Some(agent) = self.agents.iter().find(|a| a.harness.id() == session.agent) else {
             return; // the input bar explains that the agent is missing
         };
+        // Every queued file failed to save and there is no text: don't send an empty turn.
+        if prompt.is_empty() && files.is_empty() {
+            for e in file_errors {
+                session.push(Role::Error, e);
+            }
+            save(session);
+            cx.notify();
+            return;
+        }
         if session.agent_session.is_none() && agent.harness.preassign_session() {
             session.agent_session = Some(store::new_id());
         }

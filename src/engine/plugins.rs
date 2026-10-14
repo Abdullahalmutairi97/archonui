@@ -222,6 +222,10 @@ fn opencode_installed(config: &Value) -> Vec<Extension> {
 }
 
 fn read_manifest(install_path: &Path) -> Value {
+    // An entry without an install path must not read a manifest from the working directory.
+    if install_path.as_os_str().is_empty() {
+        return Value::Null;
+    }
     std::fs::read_to_string(install_path.join(".claude-plugin/plugin.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())

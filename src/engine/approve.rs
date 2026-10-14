@@ -194,7 +194,12 @@ pub fn listen(
     let listener = bind_private(socket)?;
     let live = Arc::new(AtomicUsize::new(0));
     thread::spawn(move || {
-        for stream in listener.incoming().map_while(Result::ok) {
+        for stream in listener.incoming() {
+            // A failed accept (out of descriptors, an aborted connection) must not end the listener for good.
+            let Ok(stream) = stream else {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            };
             if live.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
                 live.fetch_sub(1, Ordering::AcqRel);
                 continue;

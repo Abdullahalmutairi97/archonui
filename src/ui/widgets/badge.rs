@@ -49,7 +49,9 @@ const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 /// The badge for `name`, following chat.md §3.1. Known extensions get their own label and tone;
 /// others get their first four letters (or FILE) in `muted`.
 pub fn badge_for(name: &str) -> Badge {
-    let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+    // The extension is read from the file name only, so a dot in a folder name (`v1.2/Makefile`) doesn't leak into it.
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let ext = base.rsplit('.').next().unwrap_or("").to_lowercase();
     if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         return Badge::Image;
     }
@@ -310,6 +312,7 @@ mod tests {
         assert_eq!(badge_for("config.toml"), file("TOML", Tone::Muted));
         assert_eq!(badge_for("Makefile"), file("MAKE", Tone::Muted));
         assert_eq!(badge_for("trailing."), file("FILE", Tone::Muted));
+        assert_eq!(badge_for("v1.2/Makefile"), file("MAKE", Tone::Muted), "a dot in a folder name is not an extension");
     }
 
     #[test]

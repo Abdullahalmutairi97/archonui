@@ -430,7 +430,8 @@ fn tmux_bin() -> Option<&'static Path> {
 
 /// The first file named `name` in the `:`-separated `dirs`.
 fn find_in(dirs: &OsStr, name: &str) -> Option<PathBuf> {
-    env::split_paths(dirs).map(|dir| dir.join(name)).find(|path| path.is_file())
+    // An empty entry (a stray `:` in PATH) would look in the working directory, so skip it, as `ide` does.
+    env::split_paths(dirs).filter(|dir| !dir.as_os_str().is_empty()).map(|dir| dir.join(name)).find(|path| path.is_file())
 }
 
 /// ArchonUI's tmux config, written next to the session store the first time it's needed.

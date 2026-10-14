@@ -267,8 +267,13 @@ fn text_block<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, text: &Text) -> AnyElem
             return;
         };
         host.update(cx, |h, cx| {
-            // A press that never moved is a click; a drag ends with anchor and head apart.
-            let clicked = h.stream_ui().selection.as_ref().is_some_and(|s| s.anchor == s.head);
+            // A press that never moved, in this block, is a click; a drag ends with anchor and head apart, or
+            // began in another block.
+            let clicked = h
+                .stream_ui()
+                .selection
+                .as_ref()
+                .is_some_and(|s| s.anchor == s.head && s.session == session && s.item == ix && s.block == block);
             if clicked {
                 h.stream_open_link(&url, cx);
             }

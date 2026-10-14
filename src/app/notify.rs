@@ -84,9 +84,9 @@ pub fn on_path(program: &str) -> bool {
 /// Writes `bytes` to `cache/name` unless that file is already there, and returns its path.
 pub fn cache_file(cache: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     let path = cache.join(name);
+    // Atomic, so an interrupted write can't leave a truncated file that is then reused as the cache.
     if !path.is_file() {
-        std::fs::create_dir_all(cache)?;
-        std::fs::write(&path, bytes)?;
+        super::persist::write_atomic(&path, bytes)?;
     }
     Ok(path)
 }

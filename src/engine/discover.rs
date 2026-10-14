@@ -98,7 +98,8 @@ pub(super) fn probe_jsonl<const N: usize>(
     // A CLI that exits early fails the write; it is still killed and reaped below, not left a zombie.
     let sent = requests.iter().all(|r| writeln!(stdin, "{r}").is_ok());
     let mut found: [Option<Value>; N] = std::array::from_fn(|_| None);
-    let lines = sent.then(|| BufReader::new(stdout).lines().map_while(Result::ok));
+    // A line that is not UTF-8 is skipped, not taken as the end of the output.
+    let lines = sent.then(|| BufReader::new(stdout).lines().filter_map(Result::ok));
     for line in lines.into_iter().flatten() {
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
         if let Some(i) = (0..N).find(|&i| found[i].is_none() && wants[i](&v)) {
@@ -160,17 +161,19 @@ pub(super) fn run_text(path: &Path, cwd: &Path, args: &[&str]) -> Option<String>
     let out = std::env::temp_dir().join(format!("{}.json", crate::store::new_id()));
     // Owner-only and exclusive: a CLI's output (OpenCode's config) can hold keys, and a planted
     // symlink at a guessable name must not be written through.
-    let spawned = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&out).and_then(|file| {
-        Command::new(path)
-            .args(args)
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(file)
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-    });
-    let Ok(mut child) = spawned else {
+    // Opened first: a failed open means the name was taken, so the file there is not ours to remove.
+    let Ok(file) = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&out) else {
+        return None;
+    };
+    let Ok(mut child) = Command::new(path)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(file)
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+    else {
         // A CLI that cannot start leaves no temp file behind.
         let _ = std::fs::remove_file(&out);
         return None;
