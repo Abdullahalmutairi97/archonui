@@ -1,0 +1,10 @@
+["shot","01-default",
+ ["eval","Array.from(document.querySelectorAll('textarea')).map(t=>t.placeholder)"],
+ ["clickText","Opus 4.5",true],
+ ["wait",400],
+ ["shot","02-picker"],
+ ["eval","(()=>{const p=Array.from(document.querySelectorAll('div')).filter(d=>d.style.width==='360px'&&/100%/.test(d.style.bottom));if(!p.length)return 'no picker';const el=p[0];const cs=getComputedStyle(el);const r=el.getBoundingClientRect();return {rect:{x:r.x,y:r.y,w:r.width,h:r.height},bg:cs.backgroundColor,border:cs.border,radius:cs.borderRadius,boxShadow:cs.boxShadow,padding:cs.padding,display:cs.display,gap:cs.gap,zIndex:cs.zIndex,scrollH:el.scrollHeight};})()",2000],
+ ["eval","(()=>{const p=Array.from(document.querySelectorAll('div')).filter(d=>d.style.width==='360px'&&/100%/.test(d.style.bottom))[0];const out=[];p.querySelectorAll('button').forEach(b=>{const cs=getComputedStyle(b);const r=b.getBoundingClientRect();out.push({t:b.textContent.trim().slice(0,30),w:Math.round(r.width),h:Math.round(r.height),bg:cs.backgroundColor,bd:cs.borderTopWidth+' '+cs.borderTopColor,radius:cs.borderRadius,color:cs.color,fs:cs.fontSize,pad:cs.padding});});return out;})()",3000],
+ ["eval","(()=>{const p=Array.from(document.querySelectorAll('div')).filter(d=>d.style.width==='360px'&&/100%/.test(d.style.bottom))[0];const spans=Array.from(p.querySelectorAll('span')).map(s=>({t:s.textContent.trim().slice(0,40),fs:getComputedStyle(s).fontSize,c:getComputedStyle(s).color,ls:getComputedStyle(s).letterSpacing,ff:getComputedStyle(s).fontFamily}));return spans.slice(0,12);})()",3000],
+ ["eval","(()=>{const p=Array.from(document.querySelectorAll('div')).filter(d=>d.style.width==='360px'&&/100%/.test(d.style.bottom))[0];const rows=Array.from(p.querySelectorAll('div')).filter(d=>d.style.cursor==='pointer').map(d=>{const cs=getComputedStyle(d);const r=d.getBoundingClientRect();const sp=d.querySelectorAll('span');return {txt:Array.from(sp).map(s=>s.textContent.trim()).join(' | ').slice(0,60),h:Math.round(r.height),pad:cs.padding,bg:cs.backgroundColor,radius:cs.borderRadius,gap:cs.gap};});return rows;})()",3000]
+]

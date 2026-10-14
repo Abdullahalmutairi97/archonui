@@ -1,0 +1,16 @@
+[
+  ["eval", "JSON.stringify([...document.querySelectorAll('main section')].map(s=>{const h=s.querySelector('header');const r=s.getBoundingClientRect();return {name:h.querySelector('div span').textContent,meta:h.querySelector('div span:nth-child(2)').textContent,rect:[Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)]}}))", 1500],
+  ["clickText", "Release notes v0.9"],
+  ["wait", 500],
+  ["eval", "JSON.stringify([...document.querySelectorAll('main section')].map(s=>s.querySelector('header div span').textContent))", 1000],
+  ["eval", "JSON.stringify((()=>{const before=document.body.childElementCount;const el=[...document.querySelectorAll('aside[data-screen-label=\\\"Left sidebar\\\"] div')].find(d=>d.textContent.includes('Release notes v0.9'));el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true}));el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,metaKey:true}));return {handled:'none',tiles:[...document.querySelectorAll('main section')].map(s=>s.querySelector('header div span').textContent)};})())", 1200],
+  ["key", "Alt+Enter"],
+  ["wait", 500],
+  ["eval", "JSON.stringify([...document.querySelectorAll('main section')].map(s=>{const h=s.querySelector('header');const r=s.getBoundingClientRect();return {n:h.querySelector('div span').textContent,m:h.querySelector('div span:nth-child(2)').textContent,rect:[Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)]}}))", 2000],
+  ["key", "Alt+q"],
+  ["wait", 500],
+  ["eval", "JSON.stringify([...document.querySelectorAll('main section')].map(s=>{const r=s.getBoundingClientRect();return {n:s.querySelector('header div span').textContent,rect:[Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)]}}))", 2000],
+  ["key", "Alt+ArrowRight"],
+  ["wait", 400],
+  ["eval", "JSON.stringify([...document.querySelectorAll('main section')].map(s=>{const ring=s.firstElementChild;const bg=getComputedStyle(ring).backgroundImage;return {n:s.querySelector('header div span').textContent,ring:bg.slice(0,90)}}))", 2000]
+]

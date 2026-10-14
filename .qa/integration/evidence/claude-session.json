@@ -1,0 +1,30 @@
+{
+  "id": "archonui-18de0c8c364ba651-297683",
+  "agent": "claude",
+  "title": "Read README.md, then create notes.txt co…",
+  "title_auto": true,
+  "icon": 87,
+  "project": null,
+  "cwd": "/tmp/archonui-qa-114/proj",
+  "agent_session": "484726ec-bdf5-4baf-83c6-6f8ad7e3e25a",
+  "model": null,
+  "effort": null,
+  "mode": "auto",
+  "terminal": false,
+  "created": 1791883498,
+  "updated": 1791883801,
+  "messages": [
+    {
+      "role": "user",
+      "text": "Read README.md, then create notes.txt containing the word archonui, then run `ls` and tell me what you see."
+    },
+    {
+      "role": "error",
+      "text": "You've hit your session limit · resets 1:20pm (Asia/Riyadh)"
+    },
+    {
+      "role": "error",
+      "text": "Agent exited with an error:\nexit status: 1"
+    }
+  ]
+}

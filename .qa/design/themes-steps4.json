@@ -1,0 +1,13 @@
+[
+  ["eval", "(()=>{const r=document.querySelector('aside').parentElement;const a=document.querySelector('aside');return {theme:'start',bg:getComputedStyle(r).backgroundColor,side:getComputedStyle(a).backgroundColor,fg:getComputedStyle(r).color};})()"],
+  ["key", "Alt+t"],
+  ["wait", 400],
+  ["eval", "(()=>{const r=document.querySelector('aside').parentElement;const a=document.querySelector('aside');return {bg:getComputedStyle(r).backgroundColor,side:getComputedStyle(a).backgroundColor,fg:getComputedStyle(r).color,title:getComputedStyle([...r.querySelectorAll('span')].find(s=>s.textContent==='archonui')).fontFamily};})()"],
+  ["key", "Alt+t"],
+  ["wait", 400],
+  ["eval", "(()=>{const r=document.querySelector('aside').parentElement;const a=document.querySelector('aside');return {bg:getComputedStyle(r).backgroundColor,side:getComputedStyle(a).backgroundColor,fg:getComputedStyle(r).color};})()"],
+  ["key", "Alt+t"],
+  ["wait", 400],
+  ["eval", "(()=>{const r=document.querySelector('aside').parentElement;const a=document.querySelector('aside');const tile=[...r.querySelectorAll('section')][0];const inner=tile?tile.querySelector('div:nth-child(2)'):null;return {bg:getComputedStyle(r).backgroundColor,side:getComputedStyle(a).backgroundColor,tileBg:inner?getComputedStyle(inner).backgroundImage||getComputedStyle(inner).backgroundColor:null};})()"],
+  ["shot", "themes-cycle"]
+]

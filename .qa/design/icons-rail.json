@@ -1,0 +1,7 @@
+[
+  ["click", "button[title=\"Collapse sidebar\"]"],
+  ["wait", 700],
+  ["shot", "rail"],
+  ["eval", "JSON.stringify(Array.from(document.querySelectorAll('button')).filter(function(b){return b.title && b.title.length>3}).map(function(b){var c=getComputedStyle(b);return {t:b.title,w:c.width,h:c.height,bg:c.backgroundColor,color:c.color,r:c.borderRadius}}).slice(0,12))", 4000],
+  ["eval", "JSON.stringify(Array.from(document.querySelectorAll('svg path')).map(function(p){return p.getAttribute('d')}).filter(function(d){return d && d.length>25 && d.indexOf('L')>=0}))", 3000]
+]

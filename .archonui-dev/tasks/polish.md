@@ -1,0 +1,12 @@
+Display :112. TASK: finish the polish list /home/archonminipc/ArchonUI/.archonui-dev/polish.md in the new UI (`--new-ui`, src/ui/*). For each item first check the code to see whether it's already done (Escape on composer popovers, Claude default effort in src/engine/harness/claude.rs, tabs_blur callers, browser history/title in src/preview.rs + src/ui/tabs/browser.rs, terminal palette, code-server settings seeding in src/ide.rs, "Share…" in src/ui/sidebar/menu.rs, stream failed-row overflow, tile title ellipsis).
+Do NOT edit src/ui/approval.rs, src/engine/approve.rs or approval lines in tiles.rs/shell.rs. Don't edit src/chat/*. Specs: docs/design/*.md; prototype `design/ArchonUI Agent v3.dc.html`.
+- Escape on composer popovers: do what chat.md §4.4 and the prototype's keydown handlers do.
+- Claude default effort: read `effortLevel` from ~/.claude/settings.json (READ ONLY) as Claude's default effort when the CLI doesn't report one.
+- letter-spacing: if GPUI 0.2.2 can't do it cheaply, one line in the report and skip.
+- tabs_blur: root-level mouse-down outside the right panel blurs address bar / terminal / editor.
+- browser: title updates on every navigation; back/forward disabled at history ends (Page.getNavigationHistory).
+- terminal palette: themes.md per-theme terminal colours if defined; else keep xterm and say so.
+- vscode: seed only ABSENT keys in ArchonUI's own code-server user settings (the --user-data-dir src/ide.rs passes; User/settings.json): "workbench.colorTheme": "Default Dark Modern", "workbench.secondarySideBar.defaultVisibility": "hidden", "chat.commandCenter.enabled": false, "workbench.startupEditor": "none". Never touch ~/.local/share/code-server. Include the CLI's stderr in the open-timeout toast.
+- share: "Share…" in the session context menu opening Share for that session (src/ui/share.rs; add `share_open_for(id)` if needed).
+Fix, unit-test pure logic, verify on :112 with isolated dirs + seeds (5 tiles). Screenshots .qa/integration/polish-*.png. Move finished items under "## Done" in polish.md with one line on how. `cargo test` at the end. Report (under 25 lines): per item done/skipped + how verified.
+EXTRA: in the light INK theme the stream's code frame (src/ui/stream*) renders as a dark grey slab; the prototype draws it on Ink's light surface with dark text (.qa/integration/sweep-ink.png: left ours, right prototype). Use the prototype's tokens (chat.md code block, themes.md) for code frame bg/header/line numbers/syntax; check the IDE code area and Git diff in Ink too.

@@ -1,0 +1,117 @@
+{
+  "id": "archonui-18de0b1d1b103ef1-23631b",
+  "agent": "pi",
+  "title": "Reply with exactly: pong",
+  "title_auto": true,
+  "icon": 11,
+  "project": null,
+  "cwd": "/tmp/archonui-qa-114/proj",
+  "agent_session": "archonui-18de0b344d2f65ea-23631b",
+  "model": "deepseek/deepseek-flash",
+  "effort": "high",
+  "mode": "auto",
+  "terminal": false,
+  "created": 1791881921,
+  "updated": 1791884133,
+  "messages": [
+    {
+      "role": "user",
+      "text": "Reply with exactly: pong"
+    },
+    {
+      "role": "error",
+      "text": "The agent finished without replying."
+    },
+    {
+      "role": "user",
+      "text": "Read README.md, then create notes.txt containing the word archonui, then run `ls` and tell me what you see."
+    },
+    {
+      "role": "agent",
+      "text": "pong\n\nDone:\n- **README.md**: \"# Project — A small demo project for QA.\"\n- **notes.txt** created with content `archonui`\n- **ls** output: `README.md`, `config.toml`, `main.rs`, `notes.txt`",
+      "tools": [
+        {
+          "kind": "read",
+          "target": "README.md",
+          "ok": true
+        },
+        {
+          "kind": "write",
+          "target": "notes.txt",
+          "detail": "+1",
+          "ok": true
+        },
+        {
+          "kind": "run",
+          "target": "ls",
+          "ok": true
+        }
+      ],
+      "thought_secs": 1,
+      "took_secs": 23
+    },
+    {
+      "role": "user",
+      "text": "Reply with exactly: pi-followup"
+    },
+    {
+      "role": "agent",
+      "text": "pi-followup",
+      "took_secs": 16
+    },
+    {
+      "role": "user",
+      "text": "Create pi-plan.txt containing the word hello, then run ls."
+    },
+    {
+      "role": "agent",
+      "text": "I couldn't complete the write: the `write` tool is not available in this session (plan-only), so `pi-plan.txt` was not created.\n\nCurrent directory contents:\n```\n.git/\nconfig.toml\nmain.rs\nnotes.txt\nREADME.md\n```\n(`pi-plan.txt` is absent.)\n\nPlan to do this once write access is granted:\n1. Create `pi-plan.txt` in `/tmp/archonui-qa-114/proj` with content `hello` (single line, trailing newline).\n2. Run `ls` and confirm `pi-plan.txt` appears alongside `README.md`, `config.toml`, `main.rs`, `notes.txt`.\n3. Report the listing and the verified file content.\n\nNo further file changes were attempted.",
+      "tools": [
+        {
+          "kind": "write",
+          "target": "pi-plan.txt",
+          "ok": false
+        },
+        {
+          "kind": "other",
+          "target": ".",
+          "ok": true
+        }
+      ],
+      "thought_secs": 2,
+      "took_secs": 33
+    },
+    {
+      "role": "user",
+      "text": "Which files are in this folder? Do not change anything."
+    },
+    {
+      "role": "agent",
+      "text": "Files in `/tmp/archonui-qa-114/proj`:\n\n- `.git/` (directory)\n- `README.md`\n- `config.toml`\n- `main.rs`\n- `notes.txt`\n\nNo changes made.",
+      "tools": [
+        {
+          "kind": "other",
+          "target": ".",
+          "ok": true
+        }
+      ],
+      "took_secs": 18
+    },
+    {
+      "role": "user",
+      "text": "Write a numbered list from 1 to 40, each line a short gothic sentence about that number."
+    },
+    {
+      "role": "error",
+      "text": "Stopped."
+    },
+    {
+      "role": "user",
+      "text": "Write forty short gothic sentences about the numbers one to forty, one per line. Do not use any tools."
+    },
+    {
+      "role": "error",
+      "text": "Stopped."
+    }
+  ]
+}

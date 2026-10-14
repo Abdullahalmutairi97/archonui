@@ -1,0 +1,13 @@
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0}}
+{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01read","name":"Read","input":{}}}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01read","name":"Read","input":{"file_path":"/home/archonminipc/ArchonUI/Cargo.toml"},"caller":{"type":"direct"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01read","content":"[package]\nname = \"archonui\"","is_error":false}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01edit","name":"Edit","input":{"file_path":"/home/archonminipc/ArchonUI/src/app/state.rs","old_string":"    let a = 1;\n    let b = 2;","new_string":"    let a = 1;\n    let c = 3;\n    let d = 4;"},"caller":{"type":"direct"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01edit","content":"The file /home/archonminipc/ArchonUI/src/app/state.rs has been updated successfully.","is_error":false}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01test","name":"Bash","input":{"command":"cargo test --quiet","description":"Run unit tests"},"caller":{"type":"direct"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01test","content":[{"type":"text","text":"running 128 tests\ntest result: ok. 128 passed; 0 failed; 0 ignored"}],"is_error":false}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01clippy","name":"Bash","input":{"command":"cargo clippy","description":"Lint"},"caller":{"type":"direct"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01clippy","content":"Exit code 1\nerror: could not compile `archonui`","is_error":true}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01write","name":"Write","input":{"file_path":"/home/archonminipc/ArchonUI/notes.txt","content":"hi\nthere\n"},"caller":{"type":"direct"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01write","content":"File created successfully at: /home/archonminipc/ArchonUI/notes.txt","is_error":false}]}}

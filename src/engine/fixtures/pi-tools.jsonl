@@ -1,0 +1,16 @@
+{"type": "session", "version": 3, "id": "01a133bb-c88b-757f-bf86-c2b566f29d91", "timestamp": "2026-10-13T05:28:27.020Z", "cwd": "/tmp/archonui-qa-114/proj"}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_start", "contentIndex": 1}}
+{"type": "tool_execution_start", "toolCallId": "call_370460", "toolName": "read", "args": {"path": "README.md"}}
+{"type": "tool_execution_end", "toolCallId": "call_370460", "toolName": "read", "result": {"content": [{"type": "text", "text": "# Project\n\nA small demo project for QA.\n"}], "structuredContent": "# Project\n\nA small demo project for QA.\n"}, "isError": false, "durationMs": 5}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_start", "contentIndex": 1}}
+{"type": "tool_execution_start", "toolCallId": "call_162782", "toolName": "write", "args": {"content": "archonui\n", "path": "notes.txt"}}
+{"type": "tool_execution_end", "toolCallId": "call_162782", "toolName": "write", "result": {"content": [{"type": "text", "text": "Successfully wrote to notes.txt"}]}, "isError": false, "durationMs": 4}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_start", "contentIndex": 1}}
+{"type": "tool_execution_start", "toolCallId": "call_419884", "toolName": "bash", "args": {"command": "ls"}}
+{"type": "tool_execution_end", "toolCallId": "call_419884", "toolName": "bash", "result": {"content": [{"type": "text", "text": "README.md\nconfig.toml\nmain.rs\nnotes.txt\n"}], "structuredContent": {"output": "README.md\nconfig.toml\nmain.rs\nnotes.txt\n", "truncated": false, "exit_code": 0, "wall_time_seconds": 0}}, "isError": false, "durationMs": 16}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_start", "contentIndex": 0}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "1."}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": " Read `README.md`:\n   ```markdown\n   # Project\n\n   A small"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": " demo project for QA.\n   ```\n\n2. Created `notes.txt` containing `archonui`.\n\n3."}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": " Output of `ls`:\n   - `README.md`\n   - `config.toml`\n   - `main"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": ".rs`\n   - `notes.txt`"}}

@@ -1,0 +1,6 @@
+[
+  ["eval", "(()=>{const b=document.querySelectorAll('button[title=\"Share\"]');b[b.length-1].click();return b.length+' clicked';})()", 200],
+  ["wait", 600],
+  ["eval", "(()=>{const el=[...document.querySelectorAll('div')].find(d=>d.style.width==='520px');if(!el)return 'no share modal';const r=el.getBoundingClientRect();const kids=[...el.children[1].children].map(c=>{const q=c.getBoundingClientRect();return [c.tagName,c.textContent.slice(0,32),Math.round(q.x),Math.round(q.y+window.scrollY),Math.round(q.width),Math.round(q.height)];});return {modal:{x:r.x,y:r.y,w:r.width,h:r.height,radius:getComputedStyle(el).borderRadius,bg:getComputedStyle(el).backgroundColor,border:getComputedStyle(el).borderColor},kids:kids};})()", 3500],
+  ["shot", "share"]
+]

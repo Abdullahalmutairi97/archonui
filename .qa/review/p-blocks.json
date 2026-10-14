@@ -1,0 +1,3 @@
+[["eval","(()=>{const c=document.querySelector('[data-msgs]');c.scrollTop=c.scrollHeight;return c.scrollTop})()"],["wait",500],["shot","s1-chart"],
+ ["clickText","Port bonfire shader to WebGPU",true],["wait",900],["shot","s4-image"],
+ ["clickText","Release notes v0.9",true],["wait",900],["shot","s3-notes"]]

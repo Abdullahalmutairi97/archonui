@@ -1,0 +1,56 @@
+import json
+S=[]
+def ev(js,mx=4000): S.append(["eval",js,mx])
+def shot(n): S.append(["shot",n])
+def click(sel): S.append(["click",sel])
+def ctext(t,exact=True): S.append(["clickText",t,exact])
+def key(k): S.append(["key",k])
+def typ(t): S.append(["type",t])
+def wait(ms): S.append(["wait",ms])
+CS="const cs=e=>getComputedStyle(e);"
+
+# user message bubble (find by align-self)
+ev("(()=>{"+CS+"const t=document.querySelectorAll('[data-msgs]')[0];const u=Array.from(t.querySelectorAll('div')).filter(d=>cs(d).alignSelf==='flex-end');"
+ "const w=u.find(d=>cs(d).flexDirection==='column');const b=w.children[w.children.length-1];"
+ "return {wrap:{maxW:cs(w).maxWidth,alignSelf:cs(w).alignSelf,gap:cs(w).gap,dir:cs(w).flexDirection,alignItems:cs(w).alignItems},"
+ "bubble:{bg:cs(b).backgroundColor,color:cs(b).color,pad:cs(b).padding,radius:cs(b).borderRadius,lh:cs(b).lineHeight,fs:cs(b).fontSize,ws:cs(b).whiteSpace,tw:cs(b).textWrap,w:Math.round(b.getBoundingClientRect().width),h:Math.round(b.getBoundingClientRect().height),font:cs(b).fontFamily},"
+ "msgList:{pad:cs(t).padding,gap:cs(t).gap,userSelect:cs(t).userSelect,overflow:cs(t).overflowY,fs:cs(t).fontSize,ff:cs(t).fontFamily}};})()",2500)
+
+# agent text block
+ev("(()=>{"+CS+"const t=document.querySelectorAll('[data-msgs]')[0];"
+ "const a=Array.from(t.querySelectorAll('div')).find(d=>cs(d).maxWidth==='94%');const txt=Array.from(a.children).find(d=>cs(d).whiteSpace==='pre-wrap'&&cs(d).lineHeight==='25.5px'||cs(d).lineHeight==='25.6px');"
+ "return {block:{maxW:cs(a).maxWidth,gap:cs(a).gap,dir:cs(a).flexDirection,w:Math.round(a.getBoundingClientRect().width)},"
+ "text:txt?{lh:cs(txt).lineHeight,ws:cs(txt).whiteSpace,tw:cs(txt).textWrap,fs:cs(txt).fontSize,c:cs(txt).color,pad:cs(txt).padding,txt:txt.textContent.slice(0,60)}:null,"
+ "children:Array.from(a.children).map(c=>({lh:cs(c).lineHeight,ws:cs(c).whiteSpace,fs:cs(c).fontSize,t:c.textContent.slice(0,30)}))};})()",2500)
+
+# composer wrapper fix
+ev("(()=>{"+CS+"const ta=document.querySelector('textarea');const p=ta.parentElement;const bar=p.children[1];const outer=p.parentElement;"
+ "return {outer:{pad:cs(outer).padding},wrapper:{bd:cs(p).border,radius:cs(p).borderRadius,bg:cs(p).backgroundColor,pos:cs(p).position,w:Math.round(p.getBoundingClientRect().width),display:cs(p).display},"
+ "ta:{pad:cs(ta).padding,fs:cs(ta).fontSize,lh:cs(ta).lineHeight,color:cs(ta).color,ff:cs(ta).fontFamily,display:cs(ta).display,rows:ta.rows,ph:ta.placeholder,resize:cs(ta).resize,w:cs(ta).width},"
+ "bar:{pad:cs(bar).padding,gap:cs(bar).gap,display:cs(bar).display,wrap:cs(bar).flexWrap,h:Math.round(bar.getBoundingClientRect().height)},"
+ "kids:Array.from(bar.children).map(c=>({tag:c.tagName,t:c.textContent.trim().slice(0,24),w:c.style.width,h:c.style.height,bg:cs(c).backgroundColor,radius:cs(c).borderRadius,color:cs(c).color,fs:cs(c).fontSize,pad:cs(c).padding,display:cs(c).display,gap:cs(c).gap,title:c.title||''}))};})()",3000)
+
+# chart block via Copy CSV button ancestry
+ev("(()=>{"+CS+"const btn=Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Copy CSV');const head=btn.parentElement;const frame=head.parentElement;const body=frame.children[1];const plot=body.children[0];"
+ "const bars=Array.from(plot.children).filter(d=>d.style.flex==='1');const grid=Array.from(plot.children).filter(d=>d.style.borderTop||/dashed/.test(cs(d).borderTopStyle));const labs=body.children[1];"
+ "return {frame:{bd:cs(frame).border,radius:cs(frame).borderRadius,bg:cs(frame).backgroundColor},"
+ "head:{pad:cs(head).padding,fs:cs(head).fontSize,color:cs(head).color,bd:cs(head).borderBottom,display:cs(head).display,gap:cs(head).gap,"
+ "title:{t:head.children[1].textContent,fs:cs(head.children[1]).fontSize,c:cs(head.children[1]).color},sum:head.children[2].textContent,icon:head.children[0].getAttribute('width')+' '+Array.from(head.children[0].querySelectorAll('path')).map(p=>p.getAttribute('d')).join(''),iconColor:cs(head.children[0]).color,"
+ "copy:{pad:cs(btn).padding,radius:cs(btn).borderRadius,fs:cs(btn).fontSize,c:cs(btn).color,bgs:btn.getAttribute('style-hover')}},"
+ "body:{pad:cs(body).padding},plot:{h:cs(plot).height,display:cs(plot).display,gap:cs(plot).gap,align:cs(plot).alignItems,bd:cs(plot).borderBottom,pos:cs(plot).position},"
+ "grid:grid.map(g=>({bottom:g.style.bottom,border:cs(g).borderTop})),"
+ "bars:bars.map(b=>({label:b.children[0].textContent,vc:cs(b.children[0]).color,h:b.children[1].style.height,bg:b.children[1].style.background,barW:Math.round(b.children[1].getBoundingClientRect().width),maxW:cs(b.children[1]).maxWidth,radius:cs(b.children[1]).borderRadius,rootW:Math.round(b.getBoundingClientRect().width),rootH:Math.round(b.getBoundingClientRect().height)})),"
+ "xLabels:{pad:cs(labs).padding,gap:cs(labs).gap,items:Array.from(labs.children).map(s=>({t:s.textContent,fs:cs(s).fontSize,c:cs(s).color}))},"
+ "counts:{bars:bars.length,grid:grid.length}};})()",4000)
+
+# send button idle vs with draft
+ev("(()=>{"+CS+"const ta=document.querySelector('textarea');const bar=ta.parentElement.children[1];const send=bar.children[bar.children.length-1];return {bg:cs(send).backgroundColor,color:cs(send).color,title:send.title,w:send.style.width,h:send.style.height,radius:cs(send).borderRadius,svg:Array.from(send.querySelectorAll('svg path')).map(p=>p.getAttribute('d'))};})()",1200)
+S.append(["click","[data-msgs] ~ * textarea"])
+S.append(["eval","document.querySelector('textarea').click()"])
+typ("hello")
+wait(300)
+ev("(()=>{"+CS+"const ta=document.querySelector('textarea');const bar=ta.parentElement.children[1];const send=bar.children[bar.children.length-1];return {bg:cs(send).backgroundColor,color:cs(send).color,title:send.title};})()",800)
+ev("(()=>{"+CS+"const ta=document.querySelector('textarea');return {ph:ta.parentElement.children[1].children[1].textContent.trim(),phSpan:null};})()",800)
+
+json.dump(S,open('/home/archonminipc/ArchonUI/.qa/design/chat-steps4.json','w'))
+print(len(S))

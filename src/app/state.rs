@@ -1,0 +1,1004 @@
+//! The app's state: sessions and their live turns, projects, the workspace and settings. Plain data
+//! with no UI types, so views read it and send it intents, and the tests run without a window.
+
+use super::{
+    notify::{Ended, Outcome},
+    persist::{self, Paths, Saver},
+    sections::{self, Section},
+    settings::AppSettings,
+    workspace::{Project, Workspace},
+};
+use crate::{
+    engine::{self, attach::Attachment, title::Exchange, DetectedAgent, Event, Mode, Out, ToolSettings, Turn, TurnOptions},
+    preview,
+    store::{self, Role, Session, ToolCall, UNASSIGNED_ICON},
+    ui::{
+        sigil,
+        tiling::Rect,
+    },
+};
+use smol::channel::Receiver;
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+
+/// Where a new session's tile goes.
+#[derive(Clone, Copy, Debug)]
+pub enum Placement {
+    /// Split the focused tile, if the window has room; otherwise show in the focused tile.
+    Split { area: Rect, gap: f32 },
+    /// Show in the focused tile, replacing it.
+    Focused,
+}
+
+/// What the caller must do after `AppState::apply`.
+#[derive(Debug, Default, PartialEq)]
+pub struct Applied {
+    /// A local site or HTML file in the reply, to open in the preview.
+    pub preview: Option<String>,
+    /// The turn ended, so the agent may have changed files.
+    pub finished: bool,
+    /// How the turn ended, for the desktop alert and sound.
+    pub ended: Option<Ended>,
+    /// The chat's first exchange, when a fast title should name it.
+    pub exchange: Option<Exchange>,
+}
+
+/// Runtime state of a session. Not saved.
+#[derive(Default)]
+struct Live {
+    turn: Option<Turn>,
+    status: Option<String>,
+    cancelled: bool,
+    /// Files waiting to go with the next message.
+    pending: Vec<Attachment>,
+    /// What the agent did during the latest turn, oldest first.
+    activity: Vec<String>,
+    started: Option<Instant>,
+    /// Row index in the reply's `tools`, by call id.
+    tools: HashMap<String, usize>,
+    /// When the thinking that is open now began.
+    thinking_since: Option<Instant>,
+    /// Time spent thinking this turn; `None` if the harness never reported thinking.
+    thought: Option<Duration>,
+}
+
+impl Live {
+    fn log(&mut self, entry: impl Into<String>) {
+        let entry = entry.into();
+        if self.activity.last() != Some(&entry) {
+            self.activity.push(entry);
+        }
+    }
+
+    /// Adds the thinking that is open now to the turn's total.
+    fn stop_thinking(&mut self) {
+        if let Some(since) = self.thinking_since.take() {
+            *self.thought.get_or_insert_default() += since.elapsed();
+        }
+    }
+}
+
+pub struct AppState {
+    sessions: Vec<Session>,
+    projects: Vec<Project>,
+    /// Saved with `save_config`. The focused tile is `workspace.layout.focus`.
+    pub workspace: Workspace,
+    /// Saved with `save_config`.
+    pub settings: AppSettings,
+    live: HashMap<String, Live>,
+    /// Sessions changed since the last `flush_sessions`.
+    dirty: BTreeSet<String>,
+    /// Sessions deleted since the last `flush_sessions`; their files go on the next flush.
+    removed: Vec<String>,
+}
+
+impl AppState {
+    /// Loads everything from the platform's config and data dirs.
+    pub fn load(paths: &Paths) -> Self {
+        let loaded = persist::load(&paths.config, &store::settings_path());
+        let mut state = Self::new(store::load_all(), loaded.projects, loaded.workspace, loaded.settings);
+        // Persist the sigils assigned to sessions that predate them, so the
+        // assignment is stable and stored from the first launch onward.
+        let _ = state.flush_sessions();
+        state
+    }
+
+    /// Builds the state from loaded parts. Sessions without a unique icon get one.
+    pub fn new(sessions: Vec<Session>, projects: Vec<Project>, workspace: Workspace, settings: AppSettings) -> Self {
+        let mut state = Self {
+            sessions,
+            projects,
+            workspace,
+            settings,
+            live: HashMap::new(),
+            dirty: BTreeSet::new(),
+            removed: Vec::new(),
+        };
+        let mut taken = Vec::new();
+        for s in &mut state.sessions {
+            if s.icon == UNASSIGNED_ICON || taken.contains(&s.icon) {
+                s.icon = sigil::assign(&taken);
+                state.dirty.insert(s.id.clone());
+            }
+            taken.push(s.icon);
+        }
+        state
+    }
+
+    /// Writes the settings, workspace and projects files. Cheap to call after each change, since
+    /// the saver coalesces writes.
+    pub fn save_config(&self, saver: &Saver, paths: &Paths) {
+        persist::save_config(saver, &paths.config, &self.settings, &self.workspace, &self.projects);
+    }
+
+    /// Writes changed sessions and deletes removed ones. Blocking, so call it off the UI path or
+    /// after a turn ends. Returns a line for every file that could not be written, for the UI to
+    /// show; the app keeps running with the change in memory.
+    pub fn flush_sessions(&mut self) -> Vec<String> {
+        let mut failed = Vec::new();
+        for id in std::mem::take(&mut self.dirty) {
+            if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
+                if let Err(e) = store::save(s) {
+                    eprintln!("could not save session {id}: {e}");
+                    failed.push(format!("Couldn't save the chat: {e}"));
+                }
+            }
+        }
+        for id in std::mem::take(&mut self.removed) {
+            if let Err(e) = store::delete(&id) {
+                eprintln!("could not delete session {id}: {e}");
+                failed.push(format!("Couldn't delete the chat: {e}"));
+            }
+        }
+        failed
+    }
+
+    /// Ends every running turn as if the user pressed Stop, keeping each partial reply, then
+    /// writes the chats. The window close path calls this, so work isn't lost on quit.
+    pub fn shutdown(&mut self) {
+        let running: Vec<String> =
+            self.live.iter().filter(|(_, l)| l.turn.is_some()).map(|(id, _)| id.clone()).collect();
+        for id in running {
+            self.stop(&id);
+            self.apply(&id, Event::Finished(Ok(())));
+        }
+        self.flush_sessions();
+    }
+
+    // Sessions
+
+    pub fn sessions(&self) -> &[Session] {
+        &self.sessions
+    }
+
+    pub fn session(&self, id: &str) -> Option<&Session> {
+        self.sessions.iter().find(|s| s.id == id)
+    }
+
+    /// Creates a chat with `agent` in `cwd`, in the current project, and shows it as a tile.
+    /// Returns its id. The session isn't saved until it has a message.
+    pub fn new_session(&mut self, agent: &str, cwd: PathBuf, placement: Placement) -> String {
+        let mut s = Session::new(agent, cwd);
+        s.project = self.workspace.current_project.clone();
+        let taken: Vec<u16> = self.sessions.iter().map(|s| s.icon).collect();
+        s.icon = sigil::seed_icon_for(&s.id, &taken);
+        let id = s.id.clone();
+        self.sessions.push(s);
+        match placement {
+            Placement::Split { area, gap } => {
+                if !self.workspace.layout.split_focused(&id, area, gap) {
+                    self.workspace.layout.open_in_focused(&id);
+                }
+            }
+            Placement::Focused => self.workspace.layout.open_in_focused(&id),
+        }
+        id
+    }
+
+    /// Sets the model, effort and mode a chat passes to its agent. `None` model or effort uses the agent's default.
+    pub fn set_options(&mut self, id: &str, model: Option<String>, effort: Option<String>, mode: Mode) {
+        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+            s.model = model;
+            s.effort = effort;
+            s.mode = mode;
+            self.dirty.insert(id.to_string());
+        }
+    }
+
+    /// Removes a chat, its live turn (which stops the agent) and its tile.
+    pub fn delete_session(&mut self, id: &str) {
+        self.live.remove(id);
+        self.sessions.retain(|s| s.id != id);
+        self.workspace.layout.close(id);
+        self.dirty.remove(id);
+        self.removed.push(id.to_string());
+    }
+
+    /// Sets the chat's title. Returns false if there is no such chat.
+    pub fn rename_session(&mut self, id: &str, title: &str) -> bool {
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return false };
+        s.title = title.into();
+        s.title_auto = false;
+        self.dirty.insert(id.to_string());
+        true
+    }
+
+    /// Sets a fast title, unless the user has renamed the chat since it was made. Returns whether it was set.
+    pub fn apply_title(&mut self, id: &str, title: &str) -> bool {
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return false };
+        if !s.title_auto {
+            return false;
+        }
+        s.title = title.into();
+        self.dirty.insert(id.to_string());
+        true
+    }
+
+    /// Records that the chat has a terminal, so it is kept without messages. A chat with no title
+    /// yet is titled "Terminal" until its first message.
+    pub fn mark_terminal(&mut self, id: &str) {
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return };
+        if s.terminal {
+            return;
+        }
+        s.terminal = true;
+        if s.title.is_empty() {
+            s.title = "Terminal".into();
+        }
+        self.dirty.insert(id.to_string());
+    }
+
+    /// Puts the chat in `project`, or in no project for `None`. Returns false if there is no such chat.
+    pub fn move_to_project(&mut self, id: &str, project: Option<String>) -> bool {
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return false };
+        s.project = project;
+        self.dirty.insert(id.to_string());
+        true
+    }
+
+    /// Removes every chat that isn't open in a tile or running, and returns their ids. Tiled chats
+    /// are kept even when they have no messages.
+    pub fn clear_history(&mut self) -> Vec<String> {
+        let doomed: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|s| !self.workspace.layout.contains(&s.id) && !self.busy(&s.id))
+            .map(|s| s.id.clone())
+            .collect();
+        for id in &doomed {
+            self.delete_session(id);
+        }
+        doomed
+    }
+
+    /// The sidebar's groups, most recently used first. Empty groups are left out.
+    pub fn sections(&self, now: u64) -> Vec<(Section, Vec<&Session>)> {
+        sections::sections(&self.sessions, now)
+    }
+
+    /// Files to go with the next message to `id`.
+    pub fn add_pending(&mut self, id: &str, files: Vec<Attachment>) {
+        self.live.entry(id.to_string()).or_default().pending.extend(files);
+    }
+
+    pub fn pending(&self, id: &str) -> &[Attachment] {
+        self.live.get(id).map_or(&[], |l| l.pending.as_slice())
+    }
+
+    /// Drops the pending file at `index`, if there is one.
+    pub fn remove_pending(&mut self, id: &str, index: usize) {
+        if let Some(live) = self.live.get_mut(id) {
+            if index < live.pending.len() {
+                live.pending.remove(index);
+            }
+        }
+    }
+
+    /// Whether a turn is running in `id`.
+    pub fn busy(&self, id: &str) -> bool {
+        self.live.get(id).is_some_and(|l| l.turn.is_some())
+    }
+
+    /// The agent's latest status line for `id`, while it runs.
+    pub fn status(&self, id: &str) -> Option<&str> {
+        self.live.get(id).and_then(|l| l.status.as_deref())
+    }
+
+    /// What the agent did during the latest turn in `id`, oldest first.
+    pub fn activity(&self, id: &str) -> &[String] {
+        self.live.get(id).map_or(&[], |l| l.activity.as_slice())
+    }
+
+    /// Starts a turn in `id` with `prompt`, using the agent in `agents` that the session names.
+    /// Returns the turn's events for the caller to feed to `apply`. Returns `None` when nothing is
+    /// sent: an empty prompt with no files, a turn already running, or the session's agent not
+    /// installed. A failure to start is shown in the chat as an error message.
+    pub fn send(&mut self, id: &str, prompt: &str, agents: &[DetectedAgent]) -> Option<Receiver<Event>> {
+        let has_files = !self.pending(id).is_empty();
+        if (prompt.is_empty() && !has_files) || self.busy(id) {
+            return None;
+        }
+        let session = self.sessions.iter_mut().find(|s| s.id == id)?;
+        let agent = agents.iter().find(|a| a.harness.id() == session.agent)?;
+        let files = self.live.get_mut(id).map(|l| std::mem::take(&mut l.pending)).unwrap_or_default();
+        let (files, file_errors) = keep_files(id, files);
+        if session.agent_session.is_none() && agent.harness.preassign_session() {
+            session.agent_session = Some(store::new_id());
+        }
+        // The first message titles the chat.
+        if session.messages.is_empty() {
+            session.title = match files.first() {
+                Some(f) if prompt.is_empty() => store::title_from(&f.name),
+                _ => store::title_from(prompt),
+            };
+            session.title_auto = true;
+        }
+        session.push_with(Role::User, prompt, files.clone());
+        for e in file_errors {
+            session.push(Role::Error, e);
+        }
+        let skills = engine::skills::discover(&session.cwd);
+        let disabled_skills: Vec<String> = skills
+            .iter()
+            .filter(|s| self.settings.skills_enabled.get(&s.id) == Some(&false))
+            .map(|s| s.id.clone())
+            .collect();
+        let turn = engine::start_turn(
+            agent,
+            &session.cwd,
+            prompt,
+            session.agent_session.as_deref(),
+            TurnOptions {
+                model: session.model.as_deref(),
+                effort: session.effort.as_deref(),
+                mode: session.mode,
+                files: &files,
+                tools: ToolSettings {
+                    mcp: &self.settings.mcp_servers,
+                    skills: &skills,
+                    disabled_skills: &disabled_skills,
+                    permissions: self.settings.permissions,
+                    max_steps: Some(self.settings.max_steps),
+                    sandbox: self.settings.sandbox,
+                    ask_network: self.settings.ask_network,
+                    approval: Some(engine::approve::Route { socket: engine::approve::socket(), session: id }),
+                },
+            },
+        );
+        self.dirty.insert(id.to_string());
+        match turn {
+            Ok(turn) => {
+                session.push(Role::Agent, "");
+                let events = turn.events.clone();
+                let mut sent = format!("Sent to {}", agent.harness.name());
+                if !files.is_empty() {
+                    sent.push_str(&format!(" with {} file(s)", files.len()));
+                }
+                let live = self.live.entry(id.to_string()).or_default();
+                live.turn = Some(turn);
+                live.status = None;
+                live.cancelled = false;
+                live.started = Some(Instant::now());
+                live.activity.clear();
+                live.tools.clear();
+                live.thought = None;
+                live.thinking_since = None;
+                live.log(sent);
+                Some(events)
+            }
+            Err(e) => {
+                session.push(Role::Error, format!("Could not start {}: {e}", agent.harness.name()));
+                None
+            }
+        }
+    }
+
+    /// Folds one event from a turn in `id` into the session. Returns what the caller should do next.
+    pub fn apply(&mut self, id: &str, ev: Event) -> Applied {
+        let auto_open = self.settings.auto_open_preview;
+        let fast_titles = self.settings.fast_titles;
+        self.dirty.insert(id.to_string());
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return Applied::default() };
+        let live = self.live.entry(id.to_string()).or_default();
+        let mut applied = Applied::default();
+        match ev {
+            Event::Out(Out::Text(t)) => {
+                live.status = None;
+                if let Some(m) = s.reply_mut() {
+                    m.text.push_str(&t);
+                }
+            }
+            Event::Out(Out::Break) => {
+                if let Some(m) = s.reply_mut().filter(|m| !m.text.is_empty()) {
+                    if !m.text.ends_with("\n\n") {
+                        m.text.push_str(if m.text.ends_with('\n') { "\n" } else { "\n\n" });
+                    }
+                }
+            }
+            Event::Out(Out::Final(text)) => {
+                if let Some(m) = s.reply_mut().filter(|m| m.text.trim().is_empty()) {
+                    m.text = text;
+                }
+            }
+            Event::Out(Out::Status(st)) => {
+                live.log(st.clone());
+                live.status = Some(st);
+            }
+            Event::Out(Out::ToolStart { id, kind, target }) => {
+                if let Some(m) = s.reply_mut() {
+                    match live.tools.get(&id).copied() {
+                        // A call can be reported again as its details arrive; the row stays.
+                        Some(i) => {
+                            if let Some(t) = m.tools.get_mut(i) {
+                                t.kind = kind;
+                                t.target = target;
+                            }
+                        }
+                        None => {
+                            live.tools.insert(id, m.tools.len());
+                            m.tools.push(ToolCall { kind, target, detail: None, ok: None });
+                        }
+                    }
+                }
+            }
+            Event::Out(Out::ToolEnd { id, ok, detail }) => {
+                if let (Some(&i), Some(m)) = (live.tools.get(&id), s.reply_mut()) {
+                    if let Some(t) = m.tools.get_mut(i) {
+                        t.ok = Some(ok);
+                        t.detail = detail;
+                    }
+                }
+            }
+            Event::Out(Out::Thinking(true)) => {
+                live.thought.get_or_insert_default();
+                live.thinking_since.get_or_insert_with(Instant::now);
+            }
+            Event::Out(Out::Thinking(false)) => live.stop_thinking(),
+            Event::Out(Out::Session(agent_session)) => {
+                if s.agent_session.is_none() {
+                    s.agent_session = Some(agent_session);
+                }
+            }
+            Event::Out(Out::Error(e)) => s.push(Role::Error, e),
+            Event::Finished(result) => {
+                applied.finished = true;
+                live.turn = None;
+                live.status = None;
+                let cancelled = std::mem::take(&mut live.cancelled);
+                let ok = result.is_ok();
+                let elapsed = live.started.take().map(|t| t.elapsed());
+                live.stop_thinking();
+                let thought = live.thought.take();
+                let took = elapsed.map_or(String::new(), |t| format!(" after {:.1}s", t.as_secs_f32()));
+                live.log(match (&result, cancelled) {
+                    (_, true) => format!("Stopped{took}"),
+                    (Err(_), _) => format!("Failed{took}"),
+                    (Ok(()), _) => format!("Finished{took}"),
+                });
+                if let Some(m) = s.reply_mut() {
+                    m.text = m.text.trim_end().to_string();
+                    m.thought_secs = thought.map(|t| t.as_secs() as u32);
+                    m.took_secs = elapsed.map(|t| t.as_secs() as u32);
+                }
+                let had_reply = s.reply_mut().is_some_and(|m| !m.text.is_empty());
+                s.messages.retain(|m| m.role != Role::Agent || !m.text.is_empty() || !m.tools.is_empty());
+                let outcome = match (cancelled, &result) {
+                    (true, _) => Outcome::Stopped,
+                    (false, Err(e)) => Outcome::Failed(e.clone()),
+                    (false, Ok(())) => Outcome::Finished,
+                };
+                if cancelled {
+                    s.push(Role::Error, "Stopped.");
+                } else if let Err(e) = result {
+                    s.push(Role::Error, format!("Agent exited with an error:\n{e}"));
+                } else if !had_reply {
+                    s.push(Role::Error, "The agent finished without replying.");
+                }
+                s.updated = store::now();
+                let reply_text = s.messages.iter().rev().find(|m| m.role == Role::Agent).map_or_else(String::new, |m| m.text.clone());
+                applied.ended = Some(Ended { title: s.title.clone(), outcome, reply: reply_text });
+                // The first exchange of a chat that is still auto-titled gets a fast title.
+                if fast_titles && ok && had_reply && !cancelled && s.title_auto && s.messages.len() == 2 && s.messages[0].role == Role::User {
+                    applied.exchange = Some(Exchange { prompt: s.messages[0].text.clone(), reply: s.messages[1].text.clone() });
+                }
+                // A local site or HTML file in the reply opens in the preview.
+                let reply = s
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == Role::Agent)
+                    .filter(|_| ok && had_reply && !cancelled && auto_open);
+                applied.preview = reply.and_then(|m| preview::find_preview_target(&m.text, &s.cwd));
+            }
+        }
+        applied
+    }
+
+    /// Stops the turn in `id`, if one runs. The turn's `Finished` event follows.
+    pub fn stop(&mut self, id: &str) -> bool {
+        let Some(live) = self.live.get_mut(id) else { return false };
+        let Some(turn) = &live.turn else { return false };
+        live.cancelled = true;
+        turn.cancel();
+        true
+    }
+
+    // Projects
+
+    pub fn projects(&self) -> &[Project] {
+        &self.projects
+    }
+
+    pub fn project(&self, id: &str) -> Option<&Project> {
+        self.projects.iter().find(|p| p.id == id)
+    }
+
+    /// Adds a project for `path` and returns its id.
+    pub fn add_project(&mut self, name: &str, path: PathBuf) -> String {
+        let id = store::new_id();
+        self.projects.push(Project { id: id.clone(), name: name.into(), path, created: store::now() });
+        id
+    }
+
+    /// Renames the project and moves it to `path`. Returns false if there is no such project.
+    pub fn update_project(&mut self, id: &str, name: &str, path: PathBuf) -> bool {
+        let Some(p) = self.projects.iter_mut().find(|p| p.id == id) else { return false };
+        p.name = name.into();
+        p.path = path;
+        true
+    }
+
+    /// Removes the project. Its chats stay, ungrouped. Returns false if there is no such project.
+    pub fn remove_project(&mut self, id: &str) -> bool {
+        let before = self.projects.len();
+        self.projects.retain(|p| p.id != id);
+        if self.workspace.current_project.as_deref() == Some(id) {
+            self.workspace.current_project = None;
+        }
+        for s in self.sessions.iter_mut().filter(|s| s.project.as_deref() == Some(id)) {
+            s.project = None;
+            self.dirty.insert(s.id.clone());
+        }
+        self.projects.len() != before
+    }
+}
+
+/// Copies attachments into the session's attachments dir, so the chat keeps them. Files already
+/// there are kept as they are. Returns the kept files and an error line for each one that failed.
+fn keep_files(session: &str, files: Vec<Attachment>) -> (Vec<Attachment>, Vec<String>) {
+    let dir = store::attachments_dir(session);
+    let mut kept = Vec::new();
+    let mut errors = Vec::new();
+    for mut a in files {
+        if !a.path.starts_with(&dir) {
+            // A hard link is free; fall back to a copy across filesystems.
+            let linked = std::fs::create_dir_all(&dir).and_then(|()| {
+                let dest = dir.join(&a.name);
+                if dest.exists() {
+                    return Err(std::io::ErrorKind::AlreadyExists.into());
+                }
+                std::fs::hard_link(&a.path, &dest).map(|()| dest)
+            });
+            match linked.or_else(|_| store::store_attachment(session, &a.path)) {
+                Ok(dest) => a.path = dest,
+                Err(e) => {
+                    errors.push(format!("Could not attach {}: {e}", a.name));
+                    continue;
+                }
+            }
+        }
+        kept.push(a);
+    }
+    (kept, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{store::ToolKind, ui::tiling::Layout};
+    use smol::channel::unbounded;
+
+    /// A rect big enough for several tiles at the minimum size.
+    const WIDE: Rect = Rect { x: 0., y: 0., w: 2000., h: 1200. };
+
+    fn state() -> AppState {
+        AppState::new(Vec::new(), Vec::new(), Workspace::default(), AppSettings::default())
+    }
+
+    #[test]
+    #[ignore = "sets ARCHONUI_DATA_DIR for the whole process; run alone with --ignored"]
+    fn load_persists_sigils_assigned_to_old_sessions() {
+        let dir = std::env::temp_dir().join(format!("archonui-load-{}", store::new_id()));
+        let data = dir.join("data");
+        let cfg = dir.join("cfg");
+        std::fs::create_dir_all(&data).unwrap();
+        // Old sessions: no `icon` field, so `AppState::new` assigns one.
+        let old = |id: &str| format!(
+            r#"{{"id":"{id}","agent":"pi","title":"hi","cwd":"/tmp","created":1,"updated":2,"messages":[{{"role":"user","text":"hi"}},{{"role":"agent","text":"ok"}}]}}"#
+        );
+        for id in ["s1", "s2"] {
+            std::fs::write(data.join(format!("{id}.json")), old(id)).unwrap();
+        }
+        // Point the default-path lookups at the temp dir, then restore them.
+        let data_env = std::env::var_os("ARCHONUI_DATA_DIR");
+        let cfg_env = std::env::var_os("ARCHONUI_CONFIG_DIR");
+        std::env::set_var("ARCHONUI_DATA_DIR", &data);
+        std::env::set_var("ARCHONUI_CONFIG_DIR", &cfg);
+        let _guard = EnvGuard { data_env, cfg_env };
+
+        AppState::load(&Paths::current());
+
+        for id in ["s1", "s2"] {
+            let bytes = std::fs::read(data.join(format!("{id}.json"))).unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(v.get("icon").is_some_and(|i| i.as_u64().is_some()), "{id} icon stored");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Restores the two env vars on drop, so tests don't leak a temp dir into each other.
+    struct EnvGuard {
+        data_env: Option<std::ffi::OsString>,
+        cfg_env: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            fn restore(key: &str, value: Option<std::ffi::OsString>) {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+            restore("ARCHONUI_DATA_DIR", self.data_env.take());
+            restore("ARCHONUI_CONFIG_DIR", self.cfg_env.take());
+        }
+    }
+
+    #[test]
+    fn new_session_placement() {
+        let mut app = state();
+        let first = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        assert_eq!(app.workspace.layout.tiles, [first.as_str()]);
+
+        let second = app.new_session("pi", "/tmp".into(), Placement::Split { area: WIDE, gap: 8. });
+        assert_eq!(app.workspace.layout.tiles, [first.as_str(), second.as_str()]);
+        assert_eq!(app.workspace.layout.focus.as_deref(), Some(second.as_str()));
+
+        // Split at the tile cap, or where the area is too small, shows in the focused tile.
+        let tiny = Rect { x: 0., y: 0., w: 100., h: 100. };
+        let third = app.new_session("pi", "/tmp".into(), Placement::Split { area: tiny, gap: 8. });
+        assert_eq!(app.workspace.layout.tiles, [first.as_str(), third.as_str()]);
+        assert_eq!(app.workspace.layout.focus.as_deref(), Some(third.as_str()));
+        assert_eq!(app.sessions().len(), 3, "every new chat is kept");
+    }
+
+    #[test]
+    fn new_session_joins_the_current_project() {
+        let mut app = state();
+        let p = app.add_project("core", "/code/core".into());
+        app.workspace.current_project = Some(p.clone());
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        assert_eq!(app.session(&id).unwrap().project.as_deref(), Some(p.as_str()));
+    }
+
+    #[test]
+    fn icons_are_unique() {
+        let mut app = state();
+        let ids: Vec<String> = (0..20).map(|_| app.new_session("pi", "/tmp".into(), Placement::Focused)).collect();
+        let icons: BTreeSet<u16> = app.sessions().iter().map(|s| s.icon).collect();
+        assert_eq!(icons.len(), ids.len());
+
+        // Sessions loaded with duplicate or missing icons are fixed up on load.
+        let mut a = Session::new("pi", "/tmp".into());
+        let mut b = Session::new("pi", "/tmp".into());
+        let mut c = Session::new("pi", "/tmp".into());
+        a.icon = 7;
+        b.icon = 7;
+        c.icon = UNASSIGNED_ICON;
+        let loaded = AppState::new(vec![a, b, c], Vec::new(), Workspace::default(), AppSettings::default());
+        let icons: BTreeSet<u16> = loaded.sessions().iter().map(|s| s.icon).collect();
+        assert_eq!(icons.len(), 3);
+        assert!(!icons.contains(&UNASSIGNED_ICON));
+    }
+
+    #[test]
+    fn project_crud() {
+        let mut app = state();
+        let id = app.add_project("core", "/code/core".into());
+        assert_eq!(app.project(&id).unwrap().name, "core");
+
+        assert!(app.update_project(&id, "archonui core", "/code/archonui".into()));
+        assert_eq!(app.project(&id).unwrap().path, PathBuf::from("/code/archonui"));
+        assert!(!app.update_project("missing", "x", "/x".into()));
+
+        let session = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        app.sessions.iter_mut().for_each(|s| s.project = Some(id.clone()));
+        app.workspace.current_project = Some(id.clone());
+        assert!(app.remove_project(&id));
+        assert!(app.projects().is_empty());
+        assert!(app.workspace.current_project.is_none());
+        assert_eq!(app.session(&session).unwrap().project, None, "chats stay, ungrouped");
+        assert!(!app.remove_project(&id));
+    }
+
+    #[test]
+    fn clear_history_keeps_tiled_sessions() {
+        let mut app = state();
+        let tiled = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let old = Session::new("pi", "/tmp".into());
+        let old_id = old.id.clone();
+        app.sessions.push(old);
+        app.workspace.layout = Layout { tiles: vec![tiled.clone()], ..Layout::default() };
+
+        assert_eq!(app.clear_history(), [old_id]);
+        assert_eq!(app.sessions().len(), 1);
+        assert_eq!(app.sessions()[0].id, tiled);
+        assert!(app.workspace.layout.contains(&tiled));
+    }
+
+    #[test]
+    fn sections_group_by_last_use() {
+        let mut app = state();
+        let now = 10 * 86_400 + 12 * 3600;
+        let mut recent = Session::new("pi", "/tmp".into());
+        recent.updated = now - 60;
+        let mut older = Session::new("pi", "/tmp".into());
+        older.updated = now - 5 * 86_400;
+        app.sessions = vec![older, recent];
+        let groups = app.sections(now);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].0, Section::Today);
+        assert_eq!(groups[1].0, Section::Earlier);
+        assert!(groups[0].1[0].updated > groups[1].1[0].updated);
+    }
+
+    #[test]
+    fn apply_builds_the_reply_from_the_event_stream() {
+        let mut app = state();
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "hi");
+        s.push(Role::Agent, "");
+
+        let (tx, rx) = unbounded();
+        for ev in [
+            Event::Out(Out::Text("Hel".into())),
+            Event::Out(Out::Text("lo".into())),
+            Event::Out(Out::Break),
+            Event::Out(Out::Text("two".into())),
+            Event::Out(Out::Session("thread-9".into())),
+            Event::Out(Out::Status("Running ls".into())),
+            Event::Out(Out::Error("warning".into())),
+            Event::Finished(Ok(())),
+        ] {
+            tx.try_send(ev).unwrap();
+        }
+        drop(tx);
+
+        let mut applied = Vec::new();
+        smol::block_on(async {
+            while let Ok(ev) = rx.recv().await {
+                applied.push(app.apply(&id, ev));
+            }
+        });
+
+        let s = app.session(&id).unwrap();
+        assert_eq!(s.agent_session.as_deref(), Some("thread-9"));
+        assert_eq!(s.messages.len(), 3, "user, reply, warning");
+        assert_eq!(s.messages[1].text, "Hello\n\ntwo");
+        assert_eq!(s.messages[2].role, Role::Error);
+        assert_eq!(app.activity(&id), ["Running ls", "Finished"]);
+        assert!(app.status(&id).is_none());
+        assert_eq!(applied.iter().filter(|a| a.finished).count(), 1);
+        assert!(applied.last().unwrap().finished);
+    }
+
+    #[test]
+    fn apply_reports_failures_and_empty_replies() {
+        let mut app = state();
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "hi");
+        s.push(Role::Agent, "");
+
+        app.apply(&id, Event::Finished(Err("exit 2".into())));
+        let s = app.session(&id).unwrap();
+        assert_eq!(s.messages.len(), 2, "the empty reply is dropped");
+        assert!(s.messages[1].text.starts_with("Agent exited with an error:"));
+    }
+
+    #[test]
+    fn apply_records_tool_rows_and_thinking_time() {
+        let mut app = state();
+        let id = app.new_session("claude", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "fix it");
+        s.push(Role::Agent, "");
+
+        for ev in [
+            Event::Out(Out::ToolStart { id: "t1".into(), kind: ToolKind::Edit, target: "src/server/cache.ts".into() }),
+            Event::Out(Out::Thinking(true)),
+            Event::Out(Out::Thinking(false)),
+            Event::Out(Out::ToolEnd { id: "t1".into(), ok: true, detail: Some("+41".into()) }),
+            Event::Out(Out::ToolStart { id: "t2".into(), kind: ToolKind::Run, target: "pnpm test".into() }),
+            Event::Out(Out::ToolEnd { id: "t2".into(), ok: true, detail: Some("128 passed".into()) }),
+            Event::Out(Out::Text("Done.".into())),
+            Event::Finished(Ok(())),
+        ] {
+            app.apply(&id, ev);
+        }
+
+        let reply = &app.session(&id).unwrap().messages[1];
+        assert_eq!(reply.text, "Done.");
+        assert_eq!(
+            reply.tools,
+            [
+                ToolCall {
+                    kind: ToolKind::Edit,
+                    target: "src/server/cache.ts".into(),
+                    detail: Some("+41".into()),
+                    ok: Some(true),
+                },
+                ToolCall {
+                    kind: ToolKind::Run,
+                    target: "pnpm test".into(),
+                    detail: Some("128 passed".into()),
+                    ok: Some(true),
+                },
+            ]
+        );
+        assert!(reply.thought_secs.is_some(), "thinking was reported");
+    }
+
+    #[test]
+    fn thought_time_needs_thinking_events_and_tool_only_replies_are_kept() {
+        let mut app = state();
+        let id = app.new_session("opencode", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "list");
+        s.push(Role::Agent, "");
+
+        app.apply(&id, Event::Out(Out::ToolStart { id: "g".into(), kind: ToolKind::Grep, target: "hello".into() }));
+        app.apply(&id, Event::Out(Out::ToolEnd { id: "g".into(), ok: false, detail: None }));
+        app.apply(&id, Event::Finished(Ok(())));
+
+        let s = app.session(&id).unwrap();
+        assert_eq!(s.messages[1].tools.len(), 1, "the tool row survives an empty reply");
+        assert_eq!(s.messages[1].thought_secs, None, "no thinking was reported");
+        assert_eq!(s.messages[2].role, Role::Error);
+    }
+
+    #[test]
+    fn stop_without_a_turn_does_nothing() {
+        let mut app = state();
+        assert!(!app.stop("nothing"));
+        assert!(!app.busy("nothing"));
+    }
+
+    /// A chat whose first message was sent, with the agent's reply still streaming in.
+    fn first_turn(app: &mut AppState, title_auto: bool) -> String {
+        let id = app.new_session("claude", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.title = "fix the cache".into();
+        s.title_auto = title_auto;
+        s.push(Role::User, "fix the cache");
+        s.push(Role::Agent, "");
+        app.apply(&id, Event::Out(Out::Text("Done.".into())));
+        id
+    }
+
+    #[test]
+    fn the_first_exchange_of_an_auto_titled_chat_asks_for_a_fast_title() {
+        let mut app = state();
+        let id = first_turn(&mut app, true);
+        let applied = app.apply(&id, Event::Finished(Ok(())));
+        assert_eq!(applied.exchange, Some(Exchange { prompt: "fix the cache".into(), reply: "Done.".into() }));
+        let ended = applied.ended.unwrap();
+        assert_eq!((ended.outcome, ended.reply.as_str()), (Outcome::Finished, "Done."));
+
+        assert!(app.apply_title(&id, "Cache fix"));
+        assert_eq!(app.session(&id).unwrap().title, "Cache fix");
+    }
+
+    #[test]
+    fn fast_titles_need_the_setting_an_auto_title_and_a_first_exchange() {
+        let mut app = state();
+        app.settings.fast_titles = false;
+        let off = first_turn(&mut app, true);
+        assert!(app.apply(&off, Event::Finished(Ok(()))).exchange.is_none(), "the setting is off");
+
+        app.settings.fast_titles = true;
+        let typed = first_turn(&mut app, false);
+        assert!(app.apply(&typed, Event::Finished(Ok(()))).exchange.is_none(), "the title was typed");
+
+        let second = first_turn(&mut app, true);
+        app.apply(&second, Event::Finished(Ok(())));
+        let s = app.sessions.iter_mut().find(|s| s.id == second).unwrap();
+        s.push(Role::User, "and the tests?");
+        s.push(Role::Agent, "");
+        app.apply(&second, Event::Out(Out::Text("Yes.".into())));
+        assert!(app.apply(&second, Event::Finished(Ok(()))).exchange.is_none(), "only the first exchange");
+    }
+
+    #[test]
+    fn a_renamed_chat_keeps_its_name_over_a_fast_title() {
+        let mut app = state();
+        let id = first_turn(&mut app, true);
+        assert!(app.rename_session(&id, "Mine"));
+        assert!(!app.apply_title(&id, "Cache fix"));
+        assert_eq!(app.session(&id).unwrap().title, "Mine");
+    }
+
+    #[test]
+    fn a_failed_turn_reports_its_outcome_without_a_fast_title() {
+        let mut app = state();
+        let id = first_turn(&mut app, true);
+        let applied = app.apply(&id, Event::Finished(Err("exit 2".into())));
+        assert!(applied.exchange.is_none());
+        assert_eq!(applied.ended.unwrap().outcome, Outcome::Failed("exit 2".into()));
+    }
+
+    #[test]
+    fn deleted_sessions_leave_their_tiles() {
+        let mut app = state();
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        app.delete_session(&id);
+        assert!(app.sessions().is_empty());
+        assert!(app.workspace.layout.tiles.is_empty());
+    }
+
+    #[test]
+    fn flush_sessions_reports_errors_when_dir_is_read_only() {
+        let dir = std::env::temp_dir().join(format!("archonui-ro-test-{}", store::new_id()));
+        std::fs::write(&dir, b"blocker").unwrap();
+        let data_env = std::env::var_os("ARCHONUI_DATA_DIR");
+        std::env::set_var("ARCHONUI_DATA_DIR", &dir);
+        let _guard = EnvGuard { data_env, cfg_env: None };
+
+        let mut app = state();
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "test");
+        s.push(Role::Agent, "reply");
+        app.dirty.insert(id);
+
+        let failed = app.flush_sessions();
+        assert!(!failed.is_empty(), "reports save failure");
+        assert!(failed[0].contains("Couldn't save the chat"));
+
+        let _ = std::fs::remove_file(dir);
+    }
+
+    #[test]
+    fn shutdown_stops_running_turns_and_saves_partial_reply() {
+        let dir = std::env::temp_dir().join(format!("archonui-shutdown-test-{}", store::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data_env = std::env::var_os("ARCHONUI_DATA_DIR");
+        std::env::set_var("ARCHONUI_DATA_DIR", &dir);
+        let _guard = EnvGuard { data_env, cfg_env: None };
+
+        let mut app = state();
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "long task");
+        s.push(Role::Agent, "partial reply here");
+        let live = app.live.entry(id.clone()).or_default();
+        live.started = Some(Instant::now());
+        live.turn = Some(engine::Turn::mock());
+
+        app.shutdown();
+
+        // After shutdown, live.turn should be None and session on disk should contain the reply and Stopped
+        let saved = store::load_all().into_iter().find(|s| s.id == id).expect("session persisted");
+        assert_eq!(saved.messages.len(), 3);
+        assert_eq!(saved.messages[1].text, "partial reply here");
+        assert_eq!(saved.messages[2].role, Role::Error);
+        assert_eq!(saved.messages[2].text, "Stopped.");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

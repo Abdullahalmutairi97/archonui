@@ -1,0 +1,11 @@
+[
+  ["clickText", "Settings"],
+  ["wait", 700],
+  ["clickText", "Appearance"],
+  ["wait", 700],
+  ["shot", "appearance"],
+  ["eval", "(()=>{const inp=[...document.querySelectorAll('input[type=color]')].map(i=>({v:i.value,label:(i.closest('label')||{}).innerText}));return inp;})()"],
+  ["eval", "(()=>{const rr=[...document.querySelectorAll('input[type=range]')].map(i=>({v:i.value,min:i.min,max:i.max,step:i.step}));return rr;})()"],
+  ["eval", "(()=>{const t=[...document.querySelectorAll('span')].map(s=>s.textContent.trim()).filter(s=>/^#[0-9a-f]{6}$/i.test(s));return {count:t.length,sample:[...new Set(t)].slice(0,20)};})()"],
+  ["eval", "(()=>{const names=['Fraktur','Pirata','Grenze','Cormorant','Italiana','Bodoni','Bebas','Orbitron','Gloock','Cinzel','Mincho','Metamorphous','Ink','Pixelify','Silkscreen','Press Start','Metamorphous','Young Serif','Philosopher'];const els=[...document.querySelectorAll('div,span')];const res={};for(const e of els){const tx=e.textContent.trim();if(names.includes(tx)&&e.children.length===0){res[tx]=getComputedStyle(e).fontFamily;}}return res;})()"]
+]

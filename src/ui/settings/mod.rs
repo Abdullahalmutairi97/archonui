@@ -1,0 +1,619 @@
+//! The settings modal: 1320×880, nav + 8 pages. Spec: docs/design/settings.md.
+
+mod appearance;
+mod colour;
+mod controls;
+mod extensions;
+mod general;
+mod harnesses;
+mod keyboard;
+mod models;
+mod skills;
+mod tools;
+
+pub(crate) use models::long_context_model;
+
+use super::{
+    shell::Shell,
+    widgets::{
+        slider::{Slider, SliderRange},
+        text_input::{TextInput, TextInputConfig, TextInputEvent},
+    },
+};
+use crate::{
+    app::settings::{Action, AppIcon},
+    engine::{self, mcp::McpStatus, plugins::Extension, skills::Skill},
+};
+use gpui::{
+    div, hsla, img, point, prelude::*, AnyElement, App, BoxShadow, Context, Entity, Image, KeyDownEvent, MouseButton,
+    ObjectFit, Subscription, Window,
+};
+use crate::ui::scale::px;
+use std::{collections::HashMap, sync::Arc};
+
+/// Harness ids in the order the pages list them. Each one is looked up with `engine::harness`.
+const HARNESS_IDS: [&str; 5] = ["claude", "codex", "gemini", "opencode", "pi"];
+
+/// Keys that only change modifiers. A rebinding waits for a key that isn't one of these.
+const MODIFIER_KEYS: [&str; 5] = ["shift", "control", "alt", "platform", "function"];
+
+/// The settings pages, in nav order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Page {
+    #[default]
+    General,
+    Appearance,
+    Keyboard,
+    Harnesses,
+    Models,
+    Tools,
+    Skills,
+    Extensions,
+}
+
+/// One row of the nav: a section heading or a page.
+enum NavEntry {
+    Head(&'static str),
+    Page(Page),
+}
+
+const NAV: [NavEntry; 11] = [
+    NavEntry::Head("APP"),
+    NavEntry::Page(Page::General),
+    NavEntry::Page(Page::Appearance),
+    NavEntry::Page(Page::Keyboard),
+    NavEntry::Head("AI"),
+    NavEntry::Page(Page::Harnesses),
+    NavEntry::Page(Page::Models),
+    NavEntry::Head("CAPABILITIES"),
+    NavEntry::Page(Page::Tools),
+    NavEntry::Page(Page::Skills),
+    NavEntry::Page(Page::Extensions),
+];
+
+impl Page {
+    fn label(self) -> &'static str {
+        match self {
+            Page::General => "General",
+            Page::Appearance => "Appearance",
+            Page::Keyboard => "Keyboard",
+            Page::Harnesses => "Harnesses",
+            Page::Models => "Models",
+            Page::Tools => "Tools",
+            Page::Skills => "Skills",
+            Page::Extensions => "Extensions",
+        }
+    }
+
+    fn desc(self) -> &'static str {
+        match self {
+            Page::General => "Startup, agent behaviour, notifications and data.",
+            Page::Appearance => "Presets, colours, fonts, wallpaper and layout. Changes apply live.",
+            Page::Keyboard => "Shortcuts for tiling and navigation.",
+            Page::Harnesses => "Agent CLIs that this app drives. Each one brings its own models, tools and sign-in.",
+            Page::Models => "Which models appear in the composer, and the defaults for new sessions.",
+            Page::Tools => "MCP servers and built-in tools the agent can call.",
+            Page::Skills => "Reusable instructions the agent loads when a task matches.",
+            Page::Extensions => "Plugins that add panels, commands and integrations.",
+        }
+    }
+}
+
+/// The layout and effect sliders. Each one writes one setting in `Shell::set_slide`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Slide {
+    Gaps,
+    Radius,
+    Blur,
+    Dim,
+    Text,
+    Scale,
+    MaxSteps,
+    Terminal,
+}
+
+/// A text field and the subscription that keeps the shell in step with it.
+type Field = (Entity<TextInput>, Subscription);
+
+/// Settings modal state, not persisted.
+#[derive(Default)]
+pub struct SettingsUi {
+    pub(super) open: bool,
+    pub(super) page: Page,
+    /// The app name field on Appearance, made on first render.
+    pub(super) name: Option<Field>,
+    /// The extension search field, made on first render.
+    pub(super) search: Option<Field>,
+    pub(super) sliders: HashMap<Slide, Entity<Slider>>,
+    /// Logos and wallpapers, decoded once, by a key such as `logo:<name>`, `wall:<name>` or `file:<path>`.
+    pub(super) images: HashMap<String, Arc<Image>>,
+    /// The action waiting for a key on the Keyboard page.
+    pub(super) capture: Option<Action>,
+    /// The open colour picker, if any.
+    pub(super) picker: Option<colour::Picker>,
+    /// Discovered skills; `None` until the first search finishes.
+    pub(super) skills: Option<Vec<Skill>>,
+    /// Installed and available extensions; `None` until the first search finishes.
+    pub(super) plugins: Option<(Vec<Extension>, Vec<Extension>)>,
+    /// MCP server checks by server id. `None` while a check runs.
+    pub(super) mcp: HashMap<String, Option<McpStatus>>,
+    /// The harness whose test connection is running.
+    pub(super) testing: Option<&'static str>,
+}
+
+impl Shell {
+    pub(super) fn settings_open(&mut self, cx: &mut Context<Self>) {
+        self.settings.open = true;
+        self.settings.page = Page::General;
+        self.settings.capture = None;
+        self.settings.picker = None;
+        self.load_catalogues(cx);
+        cx.notify();
+    }
+
+    pub(super) fn settings_close(&mut self, cx: &mut Context<Self>) {
+        self.settings.open = false;
+        self.settings.capture = None;
+        self.settings.picker = None;
+        cx.notify();
+    }
+
+    /// Searches for skills and extensions off the UI thread. Both are blocking reads of the disk and the CLIs.
+    fn load_catalogues(&mut self, cx: &mut Context<Self>) {
+        let cwd = self.default_folder();
+        cx.spawn(async move |this, cx| {
+            let (skills, installed, available) = cx
+                .background_executor()
+                .spawn(async move {
+                    (engine::skills::discover(&cwd), engine::plugins::installed(), engine::plugins::available())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.settings.skills = Some(skills);
+                this.settings.plugins = Some((installed, available));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Checks the enabled MCP servers off the UI thread, or only `only`. Each check is one server's round trip.
+    pub(super) fn check_mcp(&mut self, only: Option<String>, cx: &mut Context<Self>) {
+        let servers: Vec<_> = self
+            .state
+            .settings
+            .mcp_servers
+            .iter()
+            .filter(|s| s.enabled && only.as_ref().map_or(true, |id| &s.id == id))
+            .cloned()
+            .collect();
+        for server in servers {
+            let id = server.id.clone();
+            self.settings.mcp.insert(id.clone(), None);
+            cx.spawn(async move |this, cx| {
+                let status = cx.background_executor().spawn(async move { engine::mcp::check(&server) }).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.settings.mcp.insert(id, Some(status));
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// Writes one layout or effect slider to its setting. Gaps change tile sizes, so they go through `widths_changed`.
+    pub(super) fn set_slide(&mut self, which: Slide, value: f32, cx: &mut Context<Self>) {
+        let s = &mut self.state.settings;
+        match which {
+            Slide::Gaps => {
+                s.gaps = value;
+                self.widths_changed(true, cx);
+                return;
+            }
+            Slide::Radius => s.radius = value,
+            Slide::Blur => s.panel_blur = value,
+            Slide::Dim => s.wallpaper_dim = value,
+            Slide::Text => s.text_size = value,
+            Slide::Scale => {
+                s.ui_scale = value / 100.;
+                crate::ui::scale::set_zoom(s.ui_scale);
+                self.widths_changed(true, cx);
+            }
+            Slide::MaxSteps => s.max_steps = value.round() as u32,
+            Slide::Terminal => s.terminal_font_size = value,
+        }
+        self.save(cx);
+    }
+
+    /// The slider for `which`, reading `value` from settings and writing back through `set_slide`.
+    pub(super) fn slide(
+        &mut self,
+        which: Slide,
+        value: f32,
+        range: SliderRange,
+        unit: &'static str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = self.theme.clone();
+        let weak = cx.entity().downgrade();
+        controls::slider_control(which, value, range, unit, &weak, &theme, &mut self.settings.sliders, cx)
+    }
+
+    /// Creates the text fields on first use. Both need a window, so they can't be made in `settings_open`.
+    fn ensure_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.name.is_none() {
+            let input = cx.new(|cx| TextInput::new(name_config(), window, cx));
+            input.update(cx, |input, cx| input.set_text(&self.state.settings.app_name, cx));
+            let subscription = cx.subscribe(&input, |this, input, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed = event {
+                    this.state.settings.app_name = input.read(cx).text();
+                    this.refresh_theme(cx);
+                }
+            });
+            self.settings.name = Some((input, subscription));
+        }
+        if self.settings.search.is_none() {
+            let input = cx.new(|cx| TextInput::new(search_config(), window, cx));
+            let subscription = cx.subscribe(&input, |_, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed = event {
+                    cx.notify();
+                }
+            });
+            self.settings.search = Some((input, subscription));
+        }
+    }
+
+    /// The modal, when open (drawn by `render_overlays`).
+    pub(super) fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.settings.open {
+            return None;
+        }
+        self.ensure_fields(window, cx);
+        let theme = self.theme.clone();
+        let blocks = match self.settings.page {
+            Page::General => self.general_page(cx),
+            Page::Appearance => self.appearance_page(cx),
+            Page::Keyboard => self.keyboard_page(cx),
+            Page::Harnesses => self.harnesses_page(cx),
+            Page::Models => self.models_page(cx),
+            Page::Tools => self.tools_page(cx),
+            Page::Skills => self.skills_page(cx),
+            Page::Extensions => self.extensions_page(cx),
+        };
+        let nav = self.settings_nav(cx);
+        // One scroll state per page, so a page opens at its top.
+        let body = div()
+            .id(self.settings.page.label())
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(28.))
+            .px(px(36.))
+            .pt(px(8.))
+            .pb(px(48.))
+            .children(blocks);
+        let content = div()
+            .flex_1()
+            .min_w(px(0.))
+            .flex()
+            .flex_col()
+            .child(self.settings_header(cx))
+            .child(body);
+        let dialog = div()
+            .flex()
+            .flex_none()
+            .w(px(1320.))
+            .h(px(880.))
+            .rounded(px(14.))
+            .bg(theme.pop.to_hsla())
+            .border_1()
+            .border_color(theme.line2.to_hsla())
+            .shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.65),
+                offset: point(px(0.), px(40.)),
+                blur_radius: px(120.),
+                spread_radius: px(0.),
+            }])
+            .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(nav)
+            .child(content);
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(hsla(0., 0., 0., 0.45))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.settings_close(cx)))
+                .child(dialog)
+                .into_any_element(),
+        )
+    }
+
+    /// The nav column: logo and title, then the pages with their counts, and the version footer.
+    fn settings_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme.clone();
+        let logo = self.icon_logo();
+        let active = self.settings.page;
+        let counts = self.nav_counts();
+        let mut nav = div()
+            .w(px(236.))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pt(px(22.))
+            .pb(px(18.))
+            .px(px(12.))
+            .border_r_1()
+            .border_color(theme.line.to_hsla())
+            .bg(theme.line.to_hsla())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(10.))
+                    .pb(px(10.))
+                    .when_some(logo, |row, logo| {
+                        row.child(img(logo).w(px(22.)).h(px(22.)).flex_none().object_fit(ObjectFit::Contain))
+                    })
+                    .child(
+                        div()
+                            .font_family(theme.display_font.clone())
+                            .text_size(px(26.))
+                            .line_height(px(26.))
+                            .child("Settings"),
+                    ),
+            );
+        for entry in NAV.iter() {
+            nav = match entry {
+                NavEntry::Head(title) => nav.child(
+                    div()
+                        .pt(px(16.))
+                        .pb(px(6.))
+                        .px(px(12.))
+                        .text_size(px(10.5))
+                        .text_color(theme.muted.to_hsla())
+                        .child(*title),
+                ),
+                NavEntry::Page(page) => {
+                    let page = *page;
+                    let is_active = page == active;
+                    let count = counts.get(&page).copied();
+                    nav.child(
+                        div()
+                            .id(("settings-nav", page as usize))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .px(px(12.))
+                            .py(px(9.))
+                            .rounded(px(7.))
+                            .text_size(px(13.5))
+                            .cursor_pointer()
+                            .when(is_active, |d| d.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
+                            .when(!is_active, |d| {
+                                d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla()))
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.settings.page = page;
+                                if page == Page::Tools {
+                                    this.check_mcp(None, cx);
+                                }
+                                cx.notify();
+                            }))
+                            .child(page.label())
+                            .when_some(count, |row, n| {
+                                row.child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
+                            }),
+                    )
+                }
+            };
+        }
+        nav.child(div().flex_1()).child(
+            div()
+                .px(px(12.))
+                .text_size(px(11.))
+                .text_color(theme.muted.to_hsla())
+                .child(format!(
+                    "{} {} · {}",
+                    self.state.settings.app_name,
+                    env!("CARGO_PKG_VERSION"),
+                    channel_name(self.state.settings.update_channel)
+                )),
+        )
+        .into_any_element()
+    }
+
+    /// The page title and subtitle, with the close button on the right.
+    fn settings_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let page = self.settings.page;
+        div()
+            .flex()
+            .items_start()
+            .gap(px(16.))
+            .pt(px(26.))
+            .pr(px(22.))
+            .pl(px(36.))
+            .pb(px(20.))
+            .border_b_1()
+            .border_color(theme.line.to_hsla())
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .font_family(theme.display_font.clone())
+                            .text_size(px(36.))
+                            .line_height(px(36.))
+                            .child(page.label()),
+                    )
+                    .child(div().text_size(px(13.)).text_color(theme.muted.to_hsla()).child(page.desc())),
+            )
+            .child(
+                div()
+                    .id("settings-close")
+                    .flex_none()
+                    .w(px(32.))
+                    .h(px(32.))
+                    .rounded(px(7.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme.muted.to_hsla())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
+                    .on_click(cx.listener(|this, _, _, cx| this.settings_close(cx)))
+                    .child(div().text_size(px(17.)).child("✕")),
+            )
+            .into_any_element()
+    }
+
+    /// The count beside each page: harnesses ready, models on, MCP servers on, skills on, extensions installed.
+    fn nav_counts(&self) -> HashMap<Page, usize> {
+        let s = &self.state.settings;
+        let mut counts = HashMap::new();
+        counts.insert(Page::Harnesses, self.agents.iter().filter(|a| a.enabled).count());
+        let models: usize = self
+            .agents
+            .iter()
+            .filter(|a| a.enabled)
+            .map(|a| {
+                let id = a.harness.id();
+                self.caps.get(id).and_then(Option::as_ref).map_or(0, |caps| {
+                    caps.models.iter().filter(|m| s.model_enabled(id, &m.id)).count()
+                })
+            })
+            .sum();
+        counts.insert(Page::Models, models);
+        counts.insert(Page::Tools, s.mcp_servers.iter().filter(|m| m.enabled).count());
+        // Skills and extensions show no count until their discovery has finished, rather than a misleading 0.
+        if let Some(skills) = &self.settings.skills {
+            counts.insert(Page::Skills, skills.iter().filter(|k| s.skills_enabled.get(&k.id).copied().unwrap_or(true)).count());
+        }
+        if let Some((installed, _)) = &self.settings.plugins {
+            counts.insert(Page::Extensions, installed.len());
+        }
+        counts
+    }
+
+    /// The app's logo: the chosen icon, or the theme's logo when the icon follows the theme.
+    pub(super) fn icon_logo(&mut self) -> Option<Arc<Image>> {
+        match self.state.settings.icon.clone() {
+            AppIcon::Custom(path) if path.is_file() => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.cached_image(format!("file:{}", path.display()), || {
+                    let bytes = std::fs::read(&path).ok()?;
+                    Some(Arc::new(Image::from_bytes(appearance::image_format(&name), bytes)))
+                })
+            }
+            AppIcon::Preset(id) => self.logo_image(id.preset().logo),
+            AppIcon::Theme | AppIcon::Custom(_) => {
+                let name = self.theme.logo;
+                self.logo_image(name)
+            }
+        }
+    }
+
+    /// The embedded logo `name`, decoded once.
+    pub(super) fn logo_image(&mut self, name: &str) -> Option<Arc<Image>> {
+        let bytes = glass_logo(name)?;
+        self.cached_image(format!("logo:{name}"), || {
+            Some(Arc::new(Image::from_bytes(appearance::image_format(name), bytes.to_vec())))
+        })
+    }
+
+    /// Keys while the modal is open. Escape closes it or cancels a rebinding; keys stay inside the modal.
+    /// Closed, Ctrl+, opens it. Returns true when consumed.
+    pub(super) fn settings_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let m = ev.keystroke.modifiers;
+        let key = ev.keystroke.key.as_str();
+        if !self.settings.open {
+            if key == "," && m.control && !m.alt && !m.shift && !m.platform {
+                self.settings_open(cx);
+                return true;
+            }
+            return false;
+        }
+        if let Some(action) = self.settings.capture {
+            if key == "escape" {
+                self.settings.capture = None;
+            } else if key == "backspace" {
+                self.state.settings.keys.insert(action, String::new());
+                self.settings.capture = None;
+                self.save(cx);
+            } else if !MODIFIER_KEYS.contains(&key) {
+                self.state.settings.keys.insert(action, ev.keystroke.unparse());
+                self.settings.capture = None;
+                self.save(cx);
+            }
+            cx.notify();
+            return true;
+        }
+        if key == "escape" {
+            if self.settings.picker.is_some() {
+                self.settings.picker = None;
+                cx.notify();
+            } else {
+                self.settings_close(cx);
+            }
+            return true;
+        }
+        // A focused field takes its own keys; everything else stays inside the modal.
+        !self.settings_field_focused(window, cx)
+    }
+
+    fn settings_field_focused(&self, window: &Window, cx: &App) -> bool {
+        [self.settings.name.as_ref(), self.settings.search.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|(input, _)| input.read(cx).focus_handle().is_focused(window))
+    }
+}
+
+/// The embedded theme logo `name`, or `None` for an unknown name.
+fn glass_logo(name: &str) -> Option<&'static [u8]> {
+    super::glass::logo_bytes(name)
+}
+
+/// The update channel's label in the nav footer.
+fn channel_name(channel: crate::app::settings::UpdateChannel) -> &'static str {
+    use crate::app::settings::UpdateChannel;
+    match channel {
+        UpdateChannel::Stable => "Stable",
+        UpdateChannel::Beta => "Beta",
+        UpdateChannel::Nightly => "Nightly",
+    }
+}
+
+fn name_config() -> TextInputConfig {
+    TextInputConfig {
+        placeholder: "archonui".into(),
+        max_len: Some(18),
+        font_size: px(34.),
+        line_height: px(41.),
+        ..Default::default()
+    }
+}
+
+fn search_config() -> TextInputConfig {
+    TextInputConfig {
+        placeholder: "Search plugins and extensions".into(),
+        font_size: px(13.),
+        line_height: px(18.),
+        ..Default::default()
+    }
+}

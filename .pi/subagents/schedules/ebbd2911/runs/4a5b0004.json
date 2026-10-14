@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "4a5b0004",
+  "scheduleId": "ebbd2911",
+  "plannedAt": "2026-10-13T11:43:01.382Z",
+  "dueReason": "timer",
+  "state": "completed",
+  "startedAt": "2026-10-13T11:43:01.384Z",
+  "asyncId": "e5efaca7-c35e-4a31-9e38-824c7c9632d4",
+  "asyncDir": "/home/archonminipc/.cache/tmp/pi-subagents-uid-1000/async-subagent-runs/e5efaca7-c35e-4a31-9e38-824c7c9632d4",
+  "completedAt": "2026-10-13T11:43:13.670Z"
+}

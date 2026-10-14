@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "600838fa",
+  "scheduleId": "ebbd2911",
+  "plannedAt": "2026-10-13T06:28:01.382Z",
+  "dueReason": "timer",
+  "state": "failed_launch",
+  "startedAt": "2026-10-13T06:28:01.384Z",
+  "completedAt": "2026-10-13T06:28:01.597Z",
+  "error": "UNKNOWN: unknown error, write"
+}

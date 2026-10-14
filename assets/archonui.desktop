@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ArchonUI
+Comment=AI coding agents
+Exec=archonui %F
+Icon=archonui
+Terminal=false
+Categories=Development;
+StartupWMClass=archonui

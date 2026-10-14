@@ -1,0 +1,1396 @@
+{
+ "out": [
+  {
+   "name": "ArchonUI",
+   "base": {
+    "wall": "assets/fhd/archonui4.jpg",
+    "render": "auto",
+    "bg": "#050505",
+    "panel": "rgba(8,8,8,0.80)",
+    "pop": "rgba(14,14,14,0.97)",
+    "fg": "#ededed",
+    "muted": "#8a8a8a",
+    "faint": "#3a3a3a",
+    "line": "rgba(237,237,237,0.06)",
+    "line2": "rgba(237,237,237,0.15)",
+    "acc": "#d8d8d8",
+    "acc2": "#ffffff",
+    "deep": "#4a4a4a",
+    "alt": "#b0b0b0",
+    "on": "#050505",
+    "soft": "rgba(255,255,255,0.12)",
+    "logo": "assets/sword-logo-diag.png",
+    "border": "linear-gradient(135deg,#ffffff,#d8d8d8 50%,#4a4a4a)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/archonui4.jpg",
+    "render": "auto",
+    "bg": "#050505",
+    "panel": "#0a0a0a",
+    "pop": "#181818",
+    "fg": "#ededed",
+    "muted": "#a8a8a8",
+    "faint": "#4f4f4f",
+    "line": "rgba(237,237,237,0.06)",
+    "line2": "rgba(237,237,237,0.15)",
+    "acc": "#d8d8d8",
+    "acc2": "#ffffff",
+    "deep": "#4a4a4a",
+    "alt": "#b0b0b0",
+    "on": "#050505",
+    "soft": "rgba(255,255,255,0.12)",
+    "logo": "assets/sword-logo-diag.png",
+    "border": "linear-gradient(135deg,#ffffff,#d8d8d8 50%,#4a4a4a)",
+    "tile": "#111111"
+   },
+   "derived": {
+    "line": "rgba(237,237,237,0.09)",
+    "line2": "rgba(237,237,237,0.22)",
+    "border": "linear-gradient(135deg,#ffffff,#d8d8d8 50%,#4a4a4a)"
+   },
+   "bands": [
+    {
+     "hex": "#d8d8d8",
+     "alphaFocused": "rgba(216,216,216,0.42)",
+     "alphaNormal": "rgba(216,216,216,0.20)"
+    },
+    {
+     "hex": "#dbdbdb",
+     "alphaFocused": "rgba(219,219,219,0.42)",
+     "alphaNormal": "rgba(219,219,219,0.20)"
+    },
+    {
+     "hex": "#dddddd",
+     "alphaFocused": "rgba(221,221,221,0.42)",
+     "alphaNormal": "rgba(221,221,221,0.20)"
+    },
+    {
+     "hex": "#e0e0e0",
+     "alphaFocused": "rgba(224,224,224,0.42)",
+     "alphaNormal": "rgba(224,224,224,0.20)"
+    },
+    {
+     "hex": "#e3e3e3",
+     "alphaFocused": "rgba(227,227,227,0.42)",
+     "alphaNormal": "rgba(227,227,227,0.20)"
+    },
+    {
+     "hex": "#e6e6e6",
+     "alphaFocused": "rgba(230,230,230,0.42)",
+     "alphaNormal": "rgba(230,230,230,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Grenze",
+     "d": "'Grenze Gotisch', serif",
+     "u": "'IBM Plex Mono', monospace"
+    },
+    {
+     "n": "Bodoni",
+     "d": "'Bodoni Moda', serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Italiana",
+     "d": "'Italiana', serif",
+     "u": "'DM Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Blood Moon",
+   "base": {
+    "wall": "assets/fhd/bloodmoon2.jpg",
+    "render": "auto",
+    "bg": "#0d0a08",
+    "panel": "rgba(13,10,8,0.80)",
+    "pop": "rgba(18,13,10,0.97)",
+    "fg": "#eadfcc",
+    "muted": "#9a8c78",
+    "faint": "#43382c",
+    "line": "rgba(234,223,204,0.06)",
+    "line2": "rgba(234,223,204,0.15)",
+    "acc": "#b0141e",
+    "acc2": "#d9b56a",
+    "deep": "#5a0a10",
+    "alt": "#c9a77a",
+    "on": "#f6ecdc",
+    "soft": "rgba(176,20,30,0.24)",
+    "logo": "assets/logo-bm.png",
+    "border": "linear-gradient(135deg,#d9b56a,#b0141e 50%,#5a0a10)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/bloodmoon2.jpg",
+    "render": "auto",
+    "bg": "#0d0a08",
+    "panel": "#0f0b09",
+    "pop": "#1b1411",
+    "fg": "#f3ead8",
+    "muted": "#bfae94",
+    "faint": "#6a5a48",
+    "line": "rgba(234,223,204,0.06)",
+    "line2": "rgba(234,223,204,0.15)",
+    "acc": "#c81e2a",
+    "acc2": "#d9b56a",
+    "deep": "#5a0a10",
+    "alt": "#c9a77a",
+    "on": "#f6ecdc",
+    "soft": "rgba(176,20,30,0.32)",
+    "logo": "assets/logo-bm.png",
+    "border": "linear-gradient(135deg,#d9b56a,#b0141e 50%,#5a0a10)",
+    "tile": "#16100d"
+   },
+   "derived": {
+    "line": "rgba(243,234,216,0.09)",
+    "line2": "rgba(243,234,216,0.22)",
+    "border": "linear-gradient(135deg,#d9b56a,#c81e2a 50%,#5a0a10)"
+   },
+   "bands": [
+    {
+     "hex": "#c81e2a",
+     "alphaFocused": "rgba(200,30,42,0.42)",
+     "alphaNormal": "rgba(200,30,42,0.20)"
+    },
+    {
+     "hex": "#c9292e",
+     "alphaFocused": "rgba(201,41,46,0.42)",
+     "alphaNormal": "rgba(201,41,46,0.20)"
+    },
+    {
+     "hex": "#ca3333",
+     "alphaFocused": "rgba(202,51,51,0.42)",
+     "alphaNormal": "rgba(202,51,51,0.20)"
+    },
+    {
+     "hex": "#cc3e37",
+     "alphaFocused": "rgba(204,62,55,0.42)",
+     "alphaNormal": "rgba(204,62,55,0.20)"
+    },
+    {
+     "hex": "#cd483c",
+     "alphaFocused": "rgba(205,72,60,0.42)",
+     "alphaNormal": "rgba(205,72,60,0.20)"
+    },
+    {
+     "hex": "#ce5340",
+     "alphaFocused": "rgba(206,83,64,0.42)",
+     "alphaNormal": "rgba(206,83,64,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Fraktur",
+     "d": "'UnifrakturCook', serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Pirata",
+     "d": "'Pirata One', serif",
+     "u": "'Space Mono', monospace"
+    },
+    {
+     "n": "Grenze",
+     "d": "'Grenze Gotisch', serif",
+     "u": "'IBM Plex Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Moonlight",
+   "base": {
+    "wall": "assets/fhd/moonlight2.jpg",
+    "render": "auto",
+    "bg": "#050a14",
+    "panel": "rgba(6,12,24,0.72)",
+    "pop": "rgba(8,14,28,0.97)",
+    "fg": "#e3ecf8",
+    "muted": "#8392aa",
+    "faint": "#2c3a52",
+    "line": "rgba(227,236,248,0.06)",
+    "line2": "rgba(227,236,248,0.16)",
+    "acc": "#8fb8e8",
+    "acc2": "#dceaff",
+    "deep": "#33557f",
+    "alt": "#b4c6e0",
+    "on": "#06101f",
+    "soft": "rgba(143,184,232,0.20)",
+    "logo": "assets/logo-moon.png",
+    "border": "linear-gradient(135deg,#dceaff,#8fb8e8 50%,#33557f)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/moonlight2.jpg",
+    "render": "auto",
+    "bg": "#050a14",
+    "panel": "#090f19",
+    "pop": "#171c26",
+    "fg": "#e3ecf8",
+    "muted": "#a0adc1",
+    "faint": "#424f66",
+    "line": "rgba(227,236,248,0.06)",
+    "line2": "rgba(227,236,248,0.16)",
+    "acc": "#8fb8e8",
+    "acc2": "#dceaff",
+    "deep": "#33557f",
+    "alt": "#b4c6e0",
+    "on": "#06101f",
+    "soft": "rgba(143,184,232,0.20)",
+    "logo": "assets/logo-moon.png",
+    "border": "linear-gradient(135deg,#dceaff,#8fb8e8 50%,#33557f)",
+    "tile": "#10151f"
+   },
+   "derived": {
+    "line": "rgba(227,236,248,0.09)",
+    "line2": "rgba(227,236,248,0.22)",
+    "border": "linear-gradient(135deg,#dceaff,#8fb8e8 50%,#33557f)"
+   },
+   "bands": [
+    {
+     "hex": "#8fb8e8",
+     "alphaFocused": "rgba(143,184,232,0.42)",
+     "alphaNormal": "rgba(143,184,232,0.20)"
+    },
+    {
+     "hex": "#94bcea",
+     "alphaFocused": "rgba(148,188,234,0.42)",
+     "alphaNormal": "rgba(148,188,234,0.20)"
+    },
+    {
+     "hex": "#9abfeb",
+     "alphaFocused": "rgba(154,191,235,0.42)",
+     "alphaNormal": "rgba(154,191,235,0.20)"
+    },
+    {
+     "hex": "#9fc3ed",
+     "alphaFocused": "rgba(159,195,237,0.42)",
+     "alphaNormal": "rgba(159,195,237,0.20)"
+    },
+    {
+     "hex": "#a5c6ee",
+     "alphaFocused": "rgba(165,198,238,0.42)",
+     "alphaNormal": "rgba(165,198,238,0.20)"
+    },
+    {
+     "hex": "#aacaf0",
+     "alphaFocused": "rgba(170,202,240,0.42)",
+     "alphaNormal": "rgba(170,202,240,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Cormorant",
+     "d": "'Cormorant Garamond', serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Italiana",
+     "d": "'Italiana', serif",
+     "u": "'DM Mono', monospace"
+    },
+    {
+     "n": "Bodoni",
+     "d": "'Bodoni Moda', serif",
+     "u": "'IBM Plex Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Wreck",
+   "base": {
+    "wall": "assets/fhd/wreck2.jpg",
+    "render": "auto",
+    "bg": "#1e140a",
+    "panel": "rgba(30,20,10,0.78)",
+    "pop": "rgba(34,23,12,0.97)",
+    "fg": "#f3e6cc",
+    "muted": "#a8916c",
+    "faint": "#5a4428",
+    "line": "rgba(243,230,204,0.06)",
+    "line2": "rgba(243,230,204,0.15)",
+    "acc": "#c8893a",
+    "acc2": "#f0c27a",
+    "deep": "#6b4420",
+    "alt": "#e3cfa4",
+    "on": "#1e140a",
+    "soft": "rgba(200,137,58,0.22)",
+    "logo": "assets/logo-sand.png",
+    "border": "linear-gradient(135deg,#f0c27a,#c8893a 50%,#6b4420)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/wreck2.jpg",
+    "render": "auto",
+    "bg": "#1e140a",
+    "panel": "#22180e",
+    "pop": "#2f251a",
+    "fg": "#f3e6cc",
+    "muted": "#bfab89",
+    "faint": "#6c573c",
+    "line": "rgba(243,230,204,0.06)",
+    "line2": "rgba(243,230,204,0.15)",
+    "acc": "#c8893a",
+    "acc2": "#f0c27a",
+    "deep": "#6b4420",
+    "alt": "#e3cfa4",
+    "on": "#1e140a",
+    "soft": "rgba(200,137,58,0.22)",
+    "logo": "assets/logo-sand.png",
+    "border": "linear-gradient(135deg,#f0c27a,#c8893a 50%,#6b4420)",
+    "tile": "#291f14"
+   },
+   "derived": {
+    "line": "rgba(243,230,204,0.09)",
+    "line2": "rgba(243,230,204,0.22)",
+    "border": "linear-gradient(135deg,#f0c27a,#c8893a 50%,#6b4420)"
+   },
+   "bands": [
+    {
+     "hex": "#c8893a",
+     "alphaFocused": "rgba(200,137,58,0.42)",
+     "alphaNormal": "rgba(200,137,58,0.20)"
+    },
+    {
+     "hex": "#cb8d3e",
+     "alphaFocused": "rgba(203,141,62,0.42)",
+     "alphaNormal": "rgba(203,141,62,0.20)"
+    },
+    {
+     "hex": "#ce9143",
+     "alphaFocused": "rgba(206,145,67,0.42)",
+     "alphaNormal": "rgba(206,145,67,0.20)"
+    },
+    {
+     "hex": "#d09547",
+     "alphaFocused": "rgba(208,149,71,0.42)",
+     "alphaNormal": "rgba(208,149,71,0.20)"
+    },
+    {
+     "hex": "#d3994c",
+     "alphaFocused": "rgba(211,153,76,0.42)",
+     "alphaNormal": "rgba(211,153,76,0.20)"
+    },
+    {
+     "hex": "#d69d50",
+     "alphaFocused": "rgba(214,157,80,0.42)",
+     "alphaNormal": "rgba(214,157,80,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Bebas",
+     "d": "'Bebas Neue', sans-serif",
+     "u": "'Space Mono', monospace"
+    },
+    {
+     "n": "Orbitron",
+     "d": "'Orbitron', sans-serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Gloock",
+     "d": "'Gloock', serif",
+     "u": "'DM Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Citadel",
+   "base": {
+    "wall": "assets/fhd/citadel2.jpg",
+    "render": "auto",
+    "bg": "#0d0f18",
+    "panel": "rgba(13,15,24,0.76)",
+    "pop": "rgba(16,18,28,0.97)",
+    "fg": "#f2e6d0",
+    "muted": "#8f8ea4",
+    "faint": "#383a52",
+    "line": "rgba(242,230,208,0.06)",
+    "line2": "rgba(242,230,208,0.15)",
+    "acc": "#e09a3a",
+    "acc2": "#ffcc70",
+    "deep": "#7a3d14",
+    "alt": "#9fb0d8",
+    "on": "#140c04",
+    "soft": "rgba(224,154,58,0.22)",
+    "logo": "assets/logo-drg-black.png",
+    "border": "linear-gradient(135deg,#ffcc70,#e09a3a 50%,#7a3d14)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/citadel2.jpg",
+    "render": "auto",
+    "bg": "#0d0f18",
+    "panel": "#12131c",
+    "pop": "#1f2027",
+    "fg": "#f2e6d0",
+    "muted": "#ada8b1",
+    "faint": "#4e4f61",
+    "line": "rgba(242,230,208,0.06)",
+    "line2": "rgba(242,230,208,0.15)",
+    "acc": "#e09a3a",
+    "acc2": "#ffcc70",
+    "deep": "#7a3d14",
+    "alt": "#9fb0d8",
+    "on": "#140c04",
+    "soft": "rgba(224,154,58,0.22)",
+    "logo": "assets/logo-drg-black.png",
+    "border": "linear-gradient(135deg,#ffcc70,#e09a3a 50%,#7a3d14)",
+    "tile": "#181a21"
+   },
+   "derived": {
+    "line": "rgba(242,230,208,0.09)",
+    "line2": "rgba(242,230,208,0.22)",
+    "border": "linear-gradient(135deg,#ffcc70,#e09a3a 50%,#7a3d14)"
+   },
+   "bands": [
+    {
+     "hex": "#e09a3a",
+     "alphaFocused": "rgba(224,154,58,0.42)",
+     "alphaNormal": "rgba(224,154,58,0.20)"
+    },
+    {
+     "hex": "#e29e3e",
+     "alphaFocused": "rgba(226,158,62,0.42)",
+     "alphaNormal": "rgba(226,158,62,0.20)"
+    },
+    {
+     "hex": "#e4a142",
+     "alphaFocused": "rgba(228,161,66,0.42)",
+     "alphaNormal": "rgba(228,161,66,0.20)"
+    },
+    {
+     "hex": "#e7a545",
+     "alphaFocused": "rgba(231,165,69,0.42)",
+     "alphaNormal": "rgba(231,165,69,0.20)"
+    },
+    {
+     "hex": "#e9a849",
+     "alphaFocused": "rgba(233,168,73,0.42)",
+     "alphaNormal": "rgba(233,168,73,0.20)"
+    },
+    {
+     "hex": "#ebac4d",
+     "alphaFocused": "rgba(235,172,77,0.42)",
+     "alphaNormal": "rgba(235,172,77,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Grenze",
+     "d": "'Grenze Gotisch', serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Cinzel",
+     "d": "Cinzel, serif",
+     "u": "'IBM Plex Mono', monospace"
+    },
+    {
+     "n": "Fraktur",
+     "d": "'UnifrakturCook', serif",
+     "u": "'Space Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Neon",
+   "base": {
+    "wall": "assets/fhd/neon2.jpg",
+    "render": "auto",
+    "bg": "#0e0718",
+    "panel": "rgba(14,7,24,0.74)",
+    "pop": "rgba(18,9,30,0.97)",
+    "fg": "#f1e6ff",
+    "muted": "#9d8bb8",
+    "faint": "#3d2a5a",
+    "line": "rgba(241,230,255,0.06)",
+    "line2": "rgba(241,230,255,0.15)",
+    "acc": "#b04cff",
+    "acc2": "#ff6ad5",
+    "deep": "#4b1d7a",
+    "alt": "#93a8ff",
+    "on": "#ffffff",
+    "soft": "rgba(176,76,255,0.24)",
+    "logo": "assets/logo-cat.png",
+    "border": "linear-gradient(135deg,#ff6ad5,#b04cff 50%,#4b1d7a)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/neon2.jpg",
+    "render": "auto",
+    "bg": "#0e0718",
+    "panel": "#130b1d",
+    "pop": "#20192a",
+    "fg": "#f1e6ff",
+    "muted": "#b6a6cd",
+    "faint": "#53416e",
+    "line": "rgba(241,230,255,0.06)",
+    "line2": "rgba(241,230,255,0.15)",
+    "acc": "#b04cff",
+    "acc2": "#ff6ad5",
+    "deep": "#4b1d7a",
+    "alt": "#93a8ff",
+    "on": "#ffffff",
+    "soft": "rgba(176,76,255,0.24)",
+    "logo": "assets/logo-cat.png",
+    "border": "linear-gradient(135deg,#ff6ad5,#b04cff 50%,#4b1d7a)",
+    "tile": "#191224"
+   },
+   "derived": {
+    "line": "rgba(241,230,255,0.09)",
+    "line2": "rgba(241,230,255,0.22)",
+    "border": "linear-gradient(135deg,#ff6ad5,#b04cff 50%,#4b1d7a)"
+   },
+   "bands": [
+    {
+     "hex": "#b04cff",
+     "alphaFocused": "rgba(176,76,255,0.42)",
+     "alphaNormal": "rgba(176,76,255,0.20)"
+    },
+    {
+     "hex": "#b64efc",
+     "alphaFocused": "rgba(182,78,252,0.42)",
+     "alphaNormal": "rgba(182,78,252,0.20)"
+    },
+    {
+     "hex": "#bb50f9",
+     "alphaFocused": "rgba(187,80,249,0.42)",
+     "alphaNormal": "rgba(187,80,249,0.20)"
+    },
+    {
+     "hex": "#c152f6",
+     "alphaFocused": "rgba(193,82,246,0.42)",
+     "alphaNormal": "rgba(193,82,246,0.20)"
+    },
+    {
+     "hex": "#c654f3",
+     "alphaFocused": "rgba(198,84,243,0.42)",
+     "alphaNormal": "rgba(198,84,243,0.20)"
+    },
+    {
+     "hex": "#cc57f0",
+     "alphaFocused": "rgba(204,87,240,0.42)",
+     "alphaNormal": "rgba(204,87,240,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Orbitron",
+     "d": "'Orbitron', sans-serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Mincho",
+     "d": "'Zen Old Mincho', serif",
+     "u": "'DM Mono', monospace"
+    },
+    {
+     "n": "Bebas",
+     "d": "'Bebas Neue', sans-serif",
+     "u": "'Fira Code', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Violet",
+   "base": {
+    "wall": "assets/fhd/violet2.jpg",
+    "render": "auto",
+    "bg": "#0c0a20",
+    "panel": "rgba(12,10,32,0.74)",
+    "pop": "rgba(15,13,38,0.97)",
+    "fg": "#ece8ff",
+    "muted": "#9590c0",
+    "faint": "#36316a",
+    "line": "rgba(236,232,255,0.06)",
+    "line2": "rgba(236,232,255,0.15)",
+    "acc": "#7a6cff",
+    "acc2": "#c9b8ff",
+    "deep": "#33287a",
+    "alt": "#e08ab8",
+    "on": "#ffffff",
+    "soft": "rgba(122,108,255,0.24)",
+    "logo": "assets/logo-portal.png",
+    "border": "linear-gradient(135deg,#c9b8ff,#7a6cff 50%,#33287a)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/violet2.jpg",
+    "render": "auto",
+    "bg": "#0c0a20",
+    "panel": "#100e24",
+    "pop": "#1e1c32",
+    "fg": "#ece8ff",
+    "muted": "#afaad3",
+    "faint": "#4c477c",
+    "line": "rgba(236,232,255,0.06)",
+    "line2": "rgba(236,232,255,0.15)",
+    "acc": "#7a6cff",
+    "acc2": "#c9b8ff",
+    "deep": "#33287a",
+    "alt": "#e08ab8",
+    "on": "#ffffff",
+    "soft": "rgba(122,108,255,0.24)",
+    "logo": "assets/logo-portal.png",
+    "border": "linear-gradient(135deg,#c9b8ff,#7a6cff 50%,#33287a)",
+    "tile": "#17152b"
+   },
+   "derived": {
+    "line": "rgba(236,232,255,0.09)",
+    "line2": "rgba(236,232,255,0.22)",
+    "border": "linear-gradient(135deg,#c9b8ff,#7a6cff 50%,#33287a)"
+   },
+   "bands": [
+    {
+     "hex": "#7a6cff",
+     "alphaFocused": "rgba(122,108,255,0.42)",
+     "alphaNormal": "rgba(122,108,255,0.20)"
+    },
+    {
+     "hex": "#8071ff",
+     "alphaFocused": "rgba(128,113,255,0.42)",
+     "alphaNormal": "rgba(128,113,255,0.20)"
+    },
+    {
+     "hex": "#8577ff",
+     "alphaFocused": "rgba(133,119,255,0.42)",
+     "alphaNormal": "rgba(133,119,255,0.20)"
+    },
+    {
+     "hex": "#8b7cff",
+     "alphaFocused": "rgba(139,124,255,0.42)",
+     "alphaNormal": "rgba(139,124,255,0.20)"
+    },
+    {
+     "hex": "#9081ff",
+     "alphaFocused": "rgba(144,129,255,0.42)",
+     "alphaNormal": "rgba(144,129,255,0.20)"
+    },
+    {
+     "hex": "#9687ff",
+     "alphaFocused": "rgba(150,135,255,0.42)",
+     "alphaNormal": "rgba(150,135,255,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Cormorant",
+     "d": "'Cormorant Garamond', serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Metamorphous",
+     "d": "'Metamorphous', serif",
+     "u": "'DM Mono', monospace"
+    },
+    {
+     "n": "Cinzel",
+     "d": "Cinzel, serif",
+     "u": "'IBM Plex Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Ink",
+   "base": {
+    "wall": "assets/fhd/ink2.jpg",
+    "render": "auto",
+    "bg": "#f2f0ea",
+    "panel": "rgba(246,244,238,0.86)",
+    "pop": "rgba(250,248,243,0.98)",
+    "fg": "#16130f",
+    "muted": "#6b665d",
+    "faint": "#bdb8ad",
+    "line": "rgba(22,19,15,0.06)",
+    "line2": "rgba(22,19,15,0.15)",
+    "acc": "#c8201e",
+    "acc2": "#e0322a",
+    "deep": "#16130f",
+    "alt": "#3d3a35",
+    "on": "#ffffff",
+    "soft": "rgba(200,32,30,0.12)",
+    "logo": "assets/logo-tree.png",
+    "border": "linear-gradient(135deg,#e0322a,#c8201e 50%,#16130f)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/ink2.jpg",
+    "render": "auto",
+    "bg": "#f2f0ea",
+    "panel": "#eeece6",
+    "pop": "#e0ded8",
+    "fg": "#16130f",
+    "muted": "#524d46",
+    "faint": "#a9a49a",
+    "line": "rgba(22,19,15,0.06)",
+    "line2": "rgba(22,19,15,0.15)",
+    "acc": "#c8201e",
+    "acc2": "#e0322a",
+    "deep": "#16130f",
+    "alt": "#3d3a35",
+    "on": "#ffffff",
+    "soft": "rgba(200,32,30,0.12)",
+    "logo": "assets/logo-tree.png",
+    "border": "linear-gradient(135deg,#e0322a,#c8201e 50%,#16130f)",
+    "tile": "#e7e5df"
+   },
+   "derived": {
+    "line": "rgba(22,19,15,0.09)",
+    "line2": "rgba(22,19,15,0.22)",
+    "border": "linear-gradient(135deg,#e0322a,#c8201e 50%,#16130f)"
+   },
+   "bands": [
+    {
+     "hex": "#c8201e",
+     "alphaFocused": "rgba(200,32,30,0.42)",
+     "alphaNormal": "rgba(200,32,30,0.20)"
+    },
+    {
+     "hex": "#ca211f",
+     "alphaFocused": "rgba(202,33,31,0.42)",
+     "alphaNormal": "rgba(202,33,31,0.20)"
+    },
+    {
+     "hex": "#cb2320",
+     "alphaFocused": "rgba(203,35,32,0.42)",
+     "alphaNormal": "rgba(203,35,32,0.20)"
+    },
+    {
+     "hex": "#cd2421",
+     "alphaFocused": "rgba(205,36,33,0.42)",
+     "alphaNormal": "rgba(205,36,33,0.20)"
+    },
+    {
+     "hex": "#cf2521",
+     "alphaFocused": "rgba(207,37,33,0.42)",
+     "alphaNormal": "rgba(207,37,33,0.20)"
+    },
+    {
+     "hex": "#d02622",
+     "alphaFocused": "rgba(208,38,34,0.42)",
+     "alphaNormal": "rgba(208,38,34,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Mincho",
+     "d": "'Zen Old Mincho', serif",
+     "u": "'DM Mono', monospace"
+    },
+    {
+     "n": "Cormorant",
+     "d": "'Cormorant Garamond', serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Bodoni",
+     "d": "'Bodoni Moda', serif",
+     "u": "'IBM Plex Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Bonfire",
+   "base": {
+    "wall": "assets/fhd/bonfire.jpg",
+    "render": "pixelated",
+    "bg": "#141b20",
+    "panel": "rgba(20,28,34,0.80)",
+    "pop": "rgba(24,32,38,0.97)",
+    "fg": "#dbe6ea",
+    "muted": "#8a9ba3",
+    "faint": "#3a4a52",
+    "line": "rgba(219,230,234,0.06)",
+    "line2": "rgba(219,230,234,0.16)",
+    "acc": "#e8762c",
+    "acc2": "#ffb24a",
+    "deep": "#8a3a1c",
+    "alt": "#9cc8d2",
+    "on": "#1a0f08",
+    "soft": "rgba(232,118,44,0.22)",
+    "logo": "assets/logo-bonfire.png",
+    "border": "linear-gradient(135deg,#ffb24a,#e8762c 50%,#8a3a1c)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/bonfire.jpg",
+    "render": "pixelated",
+    "bg": "#141b20",
+    "panel": "#181f24",
+    "pop": "#242b30",
+    "fg": "#dbe6ea",
+    "muted": "#a2b2b8",
+    "faint": "#4d5d64",
+    "line": "rgba(219,230,234,0.06)",
+    "line2": "rgba(219,230,234,0.16)",
+    "acc": "#e8762c",
+    "acc2": "#ffb24a",
+    "deep": "#8a3a1c",
+    "alt": "#9cc8d2",
+    "on": "#1a0f08",
+    "soft": "rgba(232,118,44,0.22)",
+    "logo": "assets/logo-bonfire.png",
+    "border": "linear-gradient(135deg,#ffb24a,#e8762c 50%,#8a3a1c)",
+    "tile": "#1e252a"
+   },
+   "derived": {
+    "line": "rgba(219,230,234,0.09)",
+    "line2": "rgba(219,230,234,0.22)",
+    "border": "linear-gradient(135deg,#ffb24a,#e8762c 50%,#8a3a1c)"
+   },
+   "bands": [
+    {
+     "hex": "#e8762c",
+     "alphaFocused": "rgba(232,118,44,0.42)",
+     "alphaNormal": "rgba(232,118,44,0.20)"
+    },
+    {
+     "hex": "#ea7a2e",
+     "alphaFocused": "rgba(234,122,46,0.42)",
+     "alphaNormal": "rgba(234,122,46,0.20)"
+    },
+    {
+     "hex": "#eb7e30",
+     "alphaFocused": "rgba(235,126,48,0.42)",
+     "alphaNormal": "rgba(235,126,48,0.20)"
+    },
+    {
+     "hex": "#ed8332",
+     "alphaFocused": "rgba(237,131,50,0.42)",
+     "alphaNormal": "rgba(237,131,50,0.20)"
+    },
+    {
+     "hex": "#ee8734",
+     "alphaFocused": "rgba(238,135,52,0.42)",
+     "alphaNormal": "rgba(238,135,52,0.20)"
+    },
+    {
+     "hex": "#f08b37",
+     "alphaFocused": "rgba(240,139,55,0.42)",
+     "alphaNormal": "rgba(240,139,55,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Pixelify",
+     "d": "'Pixelify Sans', monospace",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Silkscreen",
+     "d": "'Silkscreen', monospace",
+     "u": "'Space Mono', monospace"
+    },
+    {
+     "n": "Press Start",
+     "d": "'Press Start 2P', monospace",
+     "u": "'IBM Plex Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Hunter",
+   "base": {
+    "wall": "assets/fhd/hunter2.jpg",
+    "render": "pixelated",
+    "bg": "#0f1622",
+    "panel": "rgba(15,22,34,0.80)",
+    "pop": "rgba(18,26,40,0.97)",
+    "fg": "#e4e8f0",
+    "muted": "#8794ad",
+    "faint": "#323d55",
+    "line": "rgba(228,232,240,0.06)",
+    "line2": "rgba(228,232,240,0.15)",
+    "acc": "#c23a3a",
+    "acc2": "#f0e2c0",
+    "deep": "#6e1e24",
+    "alt": "#8fa6cc",
+    "on": "#0f1622",
+    "soft": "rgba(194,58,58,0.24)",
+    "logo": "assets/logo-helm.png",
+    "border": "linear-gradient(135deg,#f0e2c0,#c23a3a 50%,#6e1e24)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/hunter2.jpg",
+    "render": "pixelated",
+    "bg": "#0f1622",
+    "panel": "#131a26",
+    "pop": "#202732",
+    "fg": "#e4e8f0",
+    "muted": "#a3adc1",
+    "faint": "#475268",
+    "line": "rgba(228,232,240,0.06)",
+    "line2": "rgba(228,232,240,0.15)",
+    "acc": "#c23a3a",
+    "acc2": "#f0e2c0",
+    "deep": "#6e1e24",
+    "alt": "#8fa6cc",
+    "on": "#0f1622",
+    "soft": "rgba(194,58,58,0.24)",
+    "logo": "assets/logo-helm.png",
+    "border": "linear-gradient(135deg,#f0e2c0,#c23a3a 50%,#6e1e24)",
+    "tile": "#1a212c"
+   },
+   "derived": {
+    "line": "rgba(228,232,240,0.09)",
+    "line2": "rgba(228,232,240,0.22)",
+    "border": "linear-gradient(135deg,#f0e2c0,#c23a3a 50%,#6e1e24)"
+   },
+   "bands": [
+    {
+     "hex": "#c23a3a",
+     "alphaFocused": "rgba(194,58,58,0.42)",
+     "alphaNormal": "rgba(194,58,58,0.20)"
+    },
+    {
+     "hex": "#c54643",
+     "alphaFocused": "rgba(197,70,67,0.42)",
+     "alphaNormal": "rgba(197,70,67,0.20)"
+    },
+    {
+     "hex": "#c8524d",
+     "alphaFocused": "rgba(200,82,77,0.42)",
+     "alphaNormal": "rgba(200,82,77,0.20)"
+    },
+    {
+     "hex": "#cc5d56",
+     "alphaFocused": "rgba(204,93,86,0.42)",
+     "alphaNormal": "rgba(204,93,86,0.20)"
+    },
+    {
+     "hex": "#cf6960",
+     "alphaFocused": "rgba(207,105,96,0.42)",
+     "alphaNormal": "rgba(207,105,96,0.20)"
+    },
+    {
+     "hex": "#d27569",
+     "alphaFocused": "rgba(210,117,105,0.42)",
+     "alphaNormal": "rgba(210,117,105,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Silkscreen",
+     "d": "'Silkscreen', monospace",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Pixelify",
+     "d": "'Pixelify Sans', monospace",
+     "u": "'Space Mono', monospace"
+    },
+    {
+     "n": "Press Start",
+     "d": "'Press Start 2P', monospace",
+     "u": "'IBM Plex Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Shards",
+   "base": {
+    "wall": "assets/fhd/shards2.jpg",
+    "render": "auto",
+    "bg": "#0a0a0c",
+    "panel": "rgba(10,10,12,0.78)",
+    "pop": "rgba(14,14,17,0.97)",
+    "fg": "#eef0f4",
+    "muted": "#8c92a0",
+    "faint": "#353944",
+    "line": "rgba(238,240,244,0.06)",
+    "line2": "rgba(238,240,244,0.15)",
+    "acc": "#9aa4b8",
+    "acc2": "#ffffff",
+    "deep": "#3a3f4c",
+    "alt": "#c2c8d6",
+    "on": "#0a0a0c",
+    "soft": "rgba(154,164,184,0.20)",
+    "logo": "assets/logo-snow.png",
+    "border": "linear-gradient(135deg,#ffffff,#9aa4b8 50%,#3a3f4c)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/shards2.jpg",
+    "render": "auto",
+    "bg": "#0a0a0c",
+    "panel": "#0f0f11",
+    "pop": "#1c1c1f",
+    "fg": "#eef0f4",
+    "muted": "#a9aeb9",
+    "faint": "#4b4f59",
+    "line": "rgba(238,240,244,0.06)",
+    "line2": "rgba(238,240,244,0.15)",
+    "acc": "#9aa4b8",
+    "acc2": "#ffffff",
+    "deep": "#3a3f4c",
+    "alt": "#c2c8d6",
+    "on": "#0a0a0c",
+    "soft": "rgba(154,164,184,0.20)",
+    "logo": "assets/logo-snow.png",
+    "border": "linear-gradient(135deg,#ffffff,#9aa4b8 50%,#3a3f4c)",
+    "tile": "#151618"
+   },
+   "derived": {
+    "line": "rgba(238,240,244,0.09)",
+    "line2": "rgba(238,240,244,0.22)",
+    "border": "linear-gradient(135deg,#ffffff,#9aa4b8 50%,#3a3f4c)"
+   },
+   "bands": [
+    {
+     "hex": "#9aa4b8",
+     "alphaFocused": "rgba(154,164,184,0.42)",
+     "alphaNormal": "rgba(154,164,184,0.20)"
+    },
+    {
+     "hex": "#a1aabd",
+     "alphaFocused": "rgba(161,170,189,0.42)",
+     "alphaNormal": "rgba(161,170,189,0.20)"
+    },
+    {
+     "hex": "#a8b1c2",
+     "alphaFocused": "rgba(168,177,194,0.42)",
+     "alphaNormal": "rgba(168,177,194,0.20)"
+    },
+    {
+     "hex": "#afb7c7",
+     "alphaFocused": "rgba(175,183,199,0.42)",
+     "alphaNormal": "rgba(175,183,199,0.20)"
+    },
+    {
+     "hex": "#b6bdcc",
+     "alphaFocused": "rgba(182,189,204,0.42)",
+     "alphaNormal": "rgba(182,189,204,0.20)"
+    },
+    {
+     "hex": "#bdc4d1",
+     "alphaFocused": "rgba(189,196,209,0.42)",
+     "alphaNormal": "rgba(189,196,209,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Orbitron",
+     "d": "'Orbitron', sans-serif",
+     "u": "'Space Mono', monospace"
+    },
+    {
+     "n": "Bebas",
+     "d": "'Bebas Neue', sans-serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Italiana",
+     "d": "'Italiana', serif",
+     "u": "'DM Mono', monospace"
+    }
+   ]
+  },
+  {
+   "name": "Vale",
+   "base": {
+    "wall": "assets/fhd/vale2.jpg",
+    "render": "auto",
+    "bg": "#0d150c",
+    "panel": "rgba(13,21,12,0.76)",
+    "pop": "rgba(16,25,15,0.97)",
+    "fg": "#eef2e0",
+    "muted": "#94a283",
+    "faint": "#34442c",
+    "line": "rgba(238,242,224,0.06)",
+    "line2": "rgba(238,242,224,0.15)",
+    "acc": "#d0882e",
+    "acc2": "#f2c36a",
+    "deep": "#5a3a14",
+    "alt": "#8cc06a",
+    "on": "#140c04",
+    "soft": "rgba(208,136,46,0.22)",
+    "logo": "assets/logo-galaxy.png",
+    "border": "linear-gradient(135deg,#f2c36a,#d0882e 50%,#5a3a14)"
+   },
+   "tuned": {
+    "wall": "assets/fhd/vale2.jpg",
+    "render": "auto",
+    "bg": "#0d150c",
+    "panel": "#121910",
+    "pop": "#1f271d",
+    "fg": "#eef2e0",
+    "muted": "#afba9f",
+    "faint": "#4a5942",
+    "line": "rgba(238,242,224,0.06)",
+    "line2": "rgba(238,242,224,0.15)",
+    "acc": "#d0882e",
+    "acc2": "#f2c36a",
+    "deep": "#5a3a14",
+    "alt": "#8cc06a",
+    "on": "#140c04",
+    "soft": "rgba(208,136,46,0.22)",
+    "logo": "assets/logo-galaxy.png",
+    "border": "linear-gradient(135deg,#f2c36a,#d0882e 50%,#5a3a14)",
+    "tile": "#182017"
+   },
+   "derived": {
+    "line": "rgba(238,242,224,0.09)",
+    "line2": "rgba(238,242,224,0.22)",
+    "border": "linear-gradient(135deg,#f2c36a,#d0882e 50%,#5a3a14)"
+   },
+   "bands": [
+    {
+     "hex": "#d0882e",
+     "alphaFocused": "rgba(208,136,46,0.42)",
+     "alphaNormal": "rgba(208,136,46,0.20)"
+    },
+    {
+     "hex": "#d28c32",
+     "alphaFocused": "rgba(210,140,50,0.42)",
+     "alphaNormal": "rgba(210,140,50,0.20)"
+    },
+    {
+     "hex": "#d59036",
+     "alphaFocused": "rgba(213,144,54,0.42)",
+     "alphaNormal": "rgba(213,144,54,0.20)"
+    },
+    {
+     "hex": "#d7943b",
+     "alphaFocused": "rgba(215,148,59,0.42)",
+     "alphaNormal": "rgba(215,148,59,0.20)"
+    },
+    {
+     "hex": "#da993f",
+     "alphaFocused": "rgba(218,153,63,0.42)",
+     "alphaNormal": "rgba(218,153,63,0.20)"
+    },
+    {
+     "hex": "#dc9d43",
+     "alphaFocused": "rgba(220,157,67,0.42)",
+     "alphaNormal": "rgba(220,157,67,0.20)"
+    }
+   ],
+   "fonts": [
+    {
+     "n": "Metamorphous",
+     "d": "'Metamorphous', serif",
+     "u": "'JetBrains Mono', monospace"
+    },
+    {
+     "n": "Young Serif",
+     "d": "'Young Serif', serif",
+     "u": "'DM Mono', monospace"
+    },
+    {
+     "n": "Philosopher",
+     "d": "'Philosopher', sans-serif",
+     "u": "'Fira Code', monospace"
+    }
+   ]
+  }
+ ],
+ "DISPLAY": [
+  [
+   "Geist",
+   "'Geist', sans-serif"
+  ],
+  [
+   "Plex Sans",
+   "'IBM Plex Sans', sans-serif"
+  ],
+  [
+   "DM Sans",
+   "'DM Sans', sans-serif"
+  ],
+  [
+   "Instrument",
+   "'Instrument Sans', sans-serif"
+  ],
+  [
+   "Manrope",
+   "'Manrope', sans-serif"
+  ],
+  [
+   "Grotesk",
+   "'Space Grotesk', sans-serif"
+  ],
+  [
+   "Fraktur",
+   "'UnifrakturCook', serif"
+  ],
+  [
+   "Pirata",
+   "'Pirata One', serif"
+  ],
+  [
+   "Grenze",
+   "'Grenze Gotisch', serif"
+  ],
+  [
+   "Cinzel",
+   "Cinzel, serif"
+  ],
+  [
+   "Cormorant",
+   "'Cormorant Garamond', serif"
+  ],
+  [
+   "Italiana",
+   "'Italiana', serif"
+  ],
+  [
+   "Bodoni",
+   "'Bodoni Moda', serif"
+  ],
+  [
+   "Gloock",
+   "'Gloock', serif"
+  ],
+  [
+   "Mincho",
+   "'Zen Old Mincho', serif"
+  ],
+  [
+   "Metamorphous",
+   "'Metamorphous', serif"
+  ],
+  [
+   "Young Serif",
+   "'Young Serif', serif"
+  ],
+  [
+   "Philosopher",
+   "'Philosopher', sans-serif"
+  ],
+  [
+   "Bebas",
+   "'Bebas Neue', sans-serif"
+  ],
+  [
+   "Orbitron",
+   "'Orbitron', sans-serif"
+  ],
+  [
+   "Pixelify",
+   "'Pixelify Sans', monospace"
+  ],
+  [
+   "Silkscreen",
+   "'Silkscreen', monospace"
+  ],
+  [
+   "Press Start",
+   "'Press Start 2P', monospace"
+  ]
+ ],
+ "MONO": [
+  [
+   "JetBrains Mono",
+   "'JetBrains Mono', monospace"
+  ],
+  [
+   "IBM Plex Mono",
+   "'IBM Plex Mono', monospace"
+  ],
+  [
+   "Space Mono",
+   "'Space Mono', monospace"
+  ],
+  [
+   "DM Mono",
+   "'DM Mono', monospace"
+  ],
+  [
+   "Fira Code",
+   "'Fira Code', monospace"
+  ],
+  [
+   "Geist Mono",
+   "'Geist Mono', monospace"
+  ],
+  [
+   "Geist",
+   "'Geist', sans-serif"
+  ],
+  [
+   "IBM Plex Sans",
+   "'IBM Plex Sans', sans-serif"
+  ],
+  [
+   "DM Sans",
+   "'DM Sans', sans-serif"
+  ],
+  [
+   "Instrument Sans",
+   "'Instrument Sans', sans-serif"
+  ],
+  [
+   "Manrope",
+   "'Manrope', sans-serif"
+  ],
+  [
+   "Space Grotesk",
+   "'Space Grotesk', sans-serif"
+  ]
+ ],
+ "SANS_D": [
+  [
+   "Geist",
+   "'Geist', sans-serif"
+  ],
+  [
+   "Plex Sans",
+   "'IBM Plex Sans', sans-serif"
+  ],
+  [
+   "DM Sans",
+   "'DM Sans', sans-serif"
+  ],
+  [
+   "Instrument",
+   "'Instrument Sans', sans-serif"
+  ],
+  [
+   "Manrope",
+   "'Manrope', sans-serif"
+  ],
+  [
+   "Grotesk",
+   "'Space Grotesk', sans-serif"
+  ]
+ ],
+ "MIN_PAIRS": [
+  [
+   "Geist",
+   "'Geist', sans-serif",
+   "'Geist', sans-serif"
+  ],
+  [
+   "IBM Plex",
+   "'IBM Plex Sans', sans-serif",
+   "'IBM Plex Sans', sans-serif"
+  ],
+  [
+   "DM Sans",
+   "'DM Sans', sans-serif",
+   "'DM Sans', sans-serif"
+  ],
+  [
+   "Instrument",
+   "'Instrument Sans', sans-serif",
+   "'Geist Mono', monospace"
+  ],
+  [
+   "Manrope",
+   "'Manrope', sans-serif",
+   "'JetBrains Mono', monospace"
+  ],
+  [
+   "Grotesk",
+   "'Space Grotesk', sans-serif",
+   "'Space Mono', monospace"
+  ]
+ ],
+ "NAMES": [
+  "ArchonUI",
+  "Blood Moon",
+  "Moonlight",
+  "Wreck",
+  "Citadel",
+  "Neon",
+  "Violet",
+  "Ink",
+  "Bonfire",
+  "Hunter",
+  "Shards",
+  "Vale"
+ ]
+}

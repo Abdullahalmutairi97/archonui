@@ -1,0 +1,2 @@
+[["click","[title=\"Split new session\"]"],["wait",800],["shot","tiles4-empty"],
+ ["click","[title=\"Split new session\"]"],["wait",900],["shot","tiles5"]]

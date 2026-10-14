@@ -1,0 +1,20 @@
+{
+ "id": "archonui-test-s6",
+ "agent": "codex",
+ "title": "Investigate memory leak",
+ "cwd": "/tmp/iq/proj",
+ "agent_session": null,
+ "created": 1791325259,
+ "updated": 1791325359,
+ "messages": [
+  {
+   "role": "user",
+   "text": "Why does memory grow?"
+  },
+  {
+   "role": "error",
+   "text": "Agent exited with an error:\nexit status: 1"
+  }
+ ],
+ "icon": 85
+}

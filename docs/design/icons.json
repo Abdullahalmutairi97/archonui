@@ -1,0 +1,3837 @@
+{
+  "_source": "design/ArchonUI Agent v3.dc.html",
+  "_note": "The 100 session icons are not bitmap dot-grids: each is an SVG path (a sigil) traced through a 3x3 lattice, with stroked circle/square end-markers. Generated deterministically by a seeded PRNG at L1164-L1184. All 100 final path strings below were produced by running the exact generator in the browser (Playwright) and verified against the paths rendered in the DOM (seed sessions 0,17,34,51,68,85 all matched).",
+  "signature": {
+    "startLine": 1164,
+    "endLine": 1184,
+    "constName": "SIGILS"
+  },
+  "lattice": {
+    "values": [
+      3,
+      8,
+      13
+    ],
+    "count": 9,
+    "spacing": 5,
+    "viewBox": "0 0 16 16",
+    "points": [
+      [
+        3,
+        3
+      ],
+      [
+        8,
+        3
+      ],
+      [
+        13,
+        3
+      ],
+      [
+        3,
+        8
+      ],
+      [
+        8,
+        8
+      ],
+      [
+        13,
+        8
+      ],
+      [
+        3,
+        13
+      ],
+      [
+        8,
+        13
+      ],
+      [
+        13,
+        13
+      ]
+    ],
+    "indexFormula": "idx = row*3 + col; x = 3 + 5*col; y = 3 + 5*row"
+  },
+  "algorithm": {
+    "prng": "Lehmer / Park-Miller minimal standard: seed=7; rnd = () => (seed = (seed*16807) % 2147483647) / 2147483647",
+    "steps": [
+      "G=[3,8,13]; pts=[]; for y in G: for x in G: pts.push([x,y])  // 9 lattice points",
+      "let seed=7; rnd as above",
+      "out=[]; seen=Set()",
+      "while out.length < 100:",
+      "  len = 3 + floor(rnd()*3)            // 3, 4 or 5 points",
+      "  path = [floor(rnd()*9)]              // first lattice point",
+      "  while path.length < len: n=floor(rnd()*9); if n not in path: path.push(n)   // distinct points",
+      "  k = path.join('')",
+      "  if seen.has(k) || seen.has(reverse(path).join('')): continue   // dedupe path and its mirror",
+      "  seen.add(k)",
+      "  [sx,sy]=pts[path[0]]; [ex,ey]=pts[path[len-1]]",
+      "  v = out.length % 5; closed = (len > 3 && v === 1)",
+      "  d = 'M' + path.map(i=>pts[i].join(' ')).join('L') + (closed?'Z':'')",
+      "  d += v===2 ? circle(sx,sy,1.9) : v===3 ? square(sx,sy) : circle(sx,sy,0.9)",
+      "  if v===4: d += circle(ex,ey,0.9)",
+      "  if v===0 && rnd()>0.5: m=pts[path[1]]; d += circle(m[0],m[1],1.6)",
+      "  out.push(d)"
+    ],
+    "markers": {
+      "circle": "(x,y,r) => M{x-r} {y} a{r} {r} 0 1 0 {2r} 0 a{r} {r} 0 1 0 {-2r} 0   // full circle subpath (stroked, fill:none => ring)",
+      "square": "(x,y) => M{x-1.4} {y-1.4} h2.8 v2.8 h-2.8 z   // 2.8x2.8 square",
+      "rules": "v=idx%5: 0 => r0.9 circle at start (+ optional r1.6 circle at path[1] if rnd()>0.5); 1 => r0.9 circle at start (closed path if len>3); 2 => r1.9 circle at start; 3 => 2.8 square at start; 4 => r0.9 circle at start AND r0.9 circle at end."
+    },
+    "prngConsumption": "rnd() is called: once per len, once for path[0], once per rejected/added candidate point, plus (for v===0 candidates only) once for the middle-dot coin flip. The coin-flip draw happens in sequence and shifts all later patterns."
+  },
+  "rendering": {
+    "element": "<svg width=\"W\" height=\"W\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"{sigil}\"></path></svg>",
+    "stroke": "currentColor, width 1.5 (viewBox units), fill:none, round cap+join. NB: markers are stroked outlines (rings/squares), NOT filled dots.",
+    "colorByContext": "color = focused ? theme.acc2 : open ? theme.fg : theme.muted  (tile header: focused ? acc2 : fg). No per-dot opacity; single currentColor.",
+    "statusDot": "8x8 circle, border-radius:50%, background = running?acc2 : done?alt : faint, border:2px solid panel/tile",
+    "computedProof": "Blood Moon default: focused #d9b56a (acc2), open #f3ead8 (fg/TUNE), unfocused #bfae94 (muted/TUNE). getComputedStyle color matched rgb(217,181,106)/rgb(243,234,216)/rgb(191,174,148)."
+  },
+  "assignment": {
+    "initialSeed": "state.sessions = seed().map((x,i)=>({...x, icon:[0,17,34,51,68,85][i]}))   // L1191 - 6 sessions get spread-out sigils",
+    "newSession": "const used=new Set(sessions.map(x=>x.icon)); let icon=SIGILS.findIndex((_,k)=>!used.has(k)); if(icon<0) icon=sessions.length % SIGILS.length;   // L1273 - first unused index, else round-robin"
+  },
+  "renderSites": [
+    {
+      "id": "sidebar-expanded-row",
+      "htmlLines": "L70",
+      "container": "20x20 grid span (position:relative)",
+      "svg": "16x16, stroke-width 1.5",
+      "color": "foc?acc2 : open?fg : muted",
+      "notes": "status dot at right:-2 bottom:-2"
+    },
+    {
+      "id": "sidebar-collapsed-rail",
+      "htmlLines": "L36",
+      "container": "36x36 button, border-radius 9px, display:grid place-items:center",
+      "svg": "17x17, stroke-width 1.5",
+      "color": "foc?acc2 : open?fg : muted",
+      "notes": "button background = rgba(mix(acc,acc2,(i%6)*0.07), foc?0.42:0.2)  (the accent band); status dot at right:1 bottom:1, border 2px t.panel"
+    },
+    {
+      "id": "tile-header",
+      "htmlLines": "L121",
+      "container": "20x20 grid span",
+      "svg": "16x16, stroke-width 1.5",
+      "color": "foc?acc2 : fg",
+      "notes": "status dot at right:-2 bottom:-2, border 2px t.tile"
+    }
+  ],
+  "logoWordmark": {
+    "text": "appName (default 'archonui', editable, maxlength 18)",
+    "font": "theme.display = s.dispFont || FONTS[theme][fontIdx].d  (per-theme display font)",
+    "defaultTheme": "Blood Moon => 'UnifrakturCook', serif",
+    "occurrences": [
+      {
+        "where": "Sidebar header (expanded)",
+        "htmlLines": "L47-L48",
+        "logo": "22x22 div, background url(t.logo) center/contain",
+        "wordmark": "24px, line-height:1"
+      },
+      {
+        "where": "Empty workspace (no tiles)",
+        "htmlLines": "L111-L112",
+        "logo": "72x72, opacity .8, image-rendering t.render",
+        "wordmark": "56px, text-shadow 0 2px 24px rgba(0,0,0,.6)"
+      },
+      {
+        "where": "Tile empty state",
+        "htmlLines": "L133-L134",
+        "logo": "44x44, opacity .55",
+        "wordmark": "28px: 'What should {appName} work on?'"
+      },
+      {
+        "where": "Login screen",
+        "htmlLines": "L366/L369",
+        "wordmark": "nav 'archonui' 18px; heading 'Sign in to continue' 36px, text-shadow 0 2px 18px rgba(0,0,0,.7)"
+      },
+      {
+        "where": "Settings > Appearance IDENTITY name input",
+        "htmlLines": "L616/L619",
+        "wordmark": "input 34px; Sidebar preview 22px"
+      }
+    ]
+  },
+  "identityPresetIcons": {
+    "location": "Settings > Appearance > IDENTITY > Icon  (task brief said General; source places it under Appearance, pg.appearance)",
+    "grid": "repeat(7, minmax(0,1fr)), gap 8px; each cell aspect-ratio:1, border-radius 8px, image inside at 58% x 58%",
+    "sourceLine": "L628 (template) / L1428 (icons list)",
+    "list": "[...new Set(NAMES.map(nm => THEMES[nm].logo)), ...uploadedIcons]  - 12 theme logos + any user uploads",
+    "items": [
+      {
+        "theme": "ArchonUI",
+        "file": "assets/sword-logo-diag.png"
+      },
+      {
+        "theme": "Blood Moon",
+        "file": "assets/logo-bm.png"
+      },
+      {
+        "theme": "Moonlight",
+        "file": "assets/logo-moon.png"
+      },
+      {
+        "theme": "Wreck",
+        "file": "assets/logo-sand.png"
+      },
+      {
+        "theme": "Citadel",
+        "file": "assets/logo-drg-black.png"
+      },
+      {
+        "theme": "Neon",
+        "file": "assets/logo-cat.png"
+      },
+      {
+        "theme": "Violet",
+        "file": "assets/logo-portal.png"
+      },
+      {
+        "theme": "Ink",
+        "file": "assets/logo-tree.png"
+      },
+      {
+        "theme": "Bonfire",
+        "file": "assets/logo-bonfire.png"
+      },
+      {
+        "theme": "Hunter",
+        "file": "assets/logo-helm.png"
+      },
+      {
+        "theme": "Shards",
+        "file": "assets/logo-snow.png"
+      },
+      {
+        "theme": "Vale",
+        "file": "assets/logo-galaxy.png"
+      }
+    ],
+    "behavior": "pick sets state.logo; selected cell: outline 2px theme.acc, bg theme.soft, else outline transparent, bg theme.line. 'Use theme icon' resets (opacity .4 when already default). '+' label opens a file input (image/*) -> URL.createObjectURL -> appended to upIcons and set as logo."
+  },
+  "patterns": [
+    {
+      "index": 0,
+      "path": [
+        8,
+        2,
+        1
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "000",
+        "001"
+      ],
+      "len": 3,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 13L13 3L8 3M12.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M11.4 3a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0"
+    },
+    {
+      "index": 1,
+      "path": [
+        2,
+        6,
+        4,
+        5
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "011",
+        "100"
+      ],
+      "len": 4,
+      "variant": 1,
+      "closed": true,
+      "d": "M13 3L3 13L8 8L13 8ZM12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 2,
+      "path": [
+        2,
+        3,
+        6,
+        0,
+        4
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "110",
+        "100"
+      ],
+      "len": 5,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 3L3 8L3 13L3 3L8 8M11.1 3a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 3,
+      "path": [
+        7,
+        1,
+        4,
+        8,
+        6
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          13
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "010",
+        "111"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M8 13L8 3L8 8L13 13L3 13M6.6 11.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 4,
+      "path": [
+        5,
+        8,
+        3,
+        7
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "101",
+        "011"
+      ],
+      "len": 4,
+      "variant": 4,
+      "closed": false,
+      "d": "M13 8L13 13L3 8L8 13M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 5,
+      "path": [
+        1,
+        2,
+        3
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "100",
+        "000"
+      ],
+      "len": 3,
+      "variant": 0,
+      "closed": false,
+      "d": "M8 3L13 3L3 8M7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 6,
+      "path": [
+        5,
+        6,
+        7,
+        0,
+        2
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "001",
+        "110"
+      ],
+      "len": 5,
+      "variant": 1,
+      "closed": true,
+      "d": "M13 8L3 13L8 13L3 3L13 3ZM12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 7,
+      "path": [
+        4,
+        3,
+        1,
+        8
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "110",
+        "001"
+      ],
+      "len": 4,
+      "variant": 2,
+      "closed": false,
+      "d": "M8 8L3 8L8 3L13 13M6.1 8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 8,
+      "path": [
+        3,
+        5,
+        8
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "101",
+        "001"
+      ],
+      "len": 3,
+      "variant": 3,
+      "closed": false,
+      "d": "M3 8L13 8L13 13M1.6 6.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 9,
+      "path": [
+        1,
+        3,
+        2,
+        4
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "110",
+        "000"
+      ],
+      "len": 4,
+      "variant": 4,
+      "closed": false,
+      "d": "M8 3L3 8L13 3L8 8M7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 10,
+      "path": [
+        2,
+        8,
+        4,
+        7
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "010",
+        "011"
+      ],
+      "len": 4,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 3L13 13L8 8L8 13M12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M11.4 13a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0"
+    },
+    {
+      "index": 11,
+      "path": [
+        4,
+        6,
+        8,
+        3
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "110",
+        "101"
+      ],
+      "len": 4,
+      "variant": 1,
+      "closed": true,
+      "d": "M8 8L3 13L13 13L3 8ZM7.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 12,
+      "path": [
+        2,
+        5,
+        3,
+        7,
+        0
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "101",
+        "010"
+      ],
+      "len": 5,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 3L13 8L3 8L8 13L3 3M11.1 3a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 13,
+      "path": [
+        0,
+        3,
+        1,
+        8,
+        5
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "101",
+        "001"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M3 3L3 8L8 3L13 13L13 8M1.6 1.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 14,
+      "path": [
+        4,
+        5,
+        1
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "011",
+        "000"
+      ],
+      "len": 3,
+      "variant": 4,
+      "closed": false,
+      "d": "M8 8L13 8L8 3M7.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 15,
+      "path": [
+        7,
+        8,
+        6,
+        2,
+        0
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "000",
+        "111"
+      ],
+      "len": 5,
+      "variant": 0,
+      "closed": false,
+      "d": "M8 13L13 13L3 13L13 3L3 3M7.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 16,
+      "path": [
+        0,
+        5,
+        2
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "001",
+        "000"
+      ],
+      "len": 3,
+      "variant": 1,
+      "closed": false,
+      "d": "M3 3L13 8L13 3M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 17,
+      "path": [
+        4,
+        6,
+        2,
+        7,
+        3
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "110",
+        "110"
+      ],
+      "len": 5,
+      "variant": 2,
+      "closed": false,
+      "d": "M8 8L3 13L13 3L8 13L3 8M6.1 8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 18,
+      "path": [
+        1,
+        4,
+        0,
+        8,
+        5
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "011",
+        "001"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M8 3L8 8L3 3L13 13L13 8M6.6 1.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 19,
+      "path": [
+        0,
+        8,
+        1,
+        5,
+        6
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "001",
+        "101"
+      ],
+      "len": 5,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 3L13 13L8 3L13 8L3 13M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 20,
+      "path": [
+        2,
+        1,
+        5
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "001",
+        "000"
+      ],
+      "len": 3,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 3L8 3L13 8M12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 21,
+      "path": [
+        6,
+        4,
+        0,
+        8,
+        1
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "010",
+        "101"
+      ],
+      "len": 5,
+      "variant": 1,
+      "closed": true,
+      "d": "M3 13L8 8L3 3L13 13L8 3ZM2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 22,
+      "path": [
+        8,
+        0,
+        7,
+        6,
+        3
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "100",
+        "111"
+      ],
+      "len": 5,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 13L3 3L8 13L3 13L3 8M11.1 13a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 23,
+      "path": [
+        6,
+        7,
+        3
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "100",
+        "110"
+      ],
+      "len": 3,
+      "variant": 3,
+      "closed": false,
+      "d": "M3 13L8 13L3 8M1.6 11.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 24,
+      "path": [
+        3,
+        7,
+        5
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "101",
+        "010"
+      ],
+      "len": 3,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 8L8 13L13 8M2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 25,
+      "path": [
+        5,
+        6,
+        3,
+        1
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "101",
+        "100"
+      ],
+      "len": 4,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 8L3 13L3 8L8 3M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 26,
+      "path": [
+        8,
+        5,
+        7,
+        1,
+        4
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "011",
+        "011"
+      ],
+      "len": 5,
+      "variant": 1,
+      "closed": true,
+      "d": "M13 13L13 8L8 13L8 3L8 8ZM12.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 27,
+      "path": [
+        6,
+        8,
+        4,
+        1
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "010",
+        "101"
+      ],
+      "len": 4,
+      "variant": 2,
+      "closed": false,
+      "d": "M3 13L13 13L8 8L8 3M1.1 13a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 28,
+      "path": [
+        1,
+        5,
+        4,
+        6
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          13
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "011",
+        "100"
+      ],
+      "len": 4,
+      "variant": 3,
+      "closed": false,
+      "d": "M8 3L13 8L8 8L3 13M6.6 1.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 29,
+      "path": [
+        6,
+        0,
+        2,
+        4
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "010",
+        "100"
+      ],
+      "len": 4,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 13L3 3L13 3L8 8M2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 30,
+      "path": [
+        6,
+        2,
+        5
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "001",
+        "100"
+      ],
+      "len": 3,
+      "variant": 0,
+      "closed": false,
+      "d": "M3 13L13 3L13 8M2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 31,
+      "path": [
+        6,
+        7,
+        8
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "000",
+        "111"
+      ],
+      "len": 3,
+      "variant": 1,
+      "closed": false,
+      "d": "M3 13L8 13L13 13M2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 32,
+      "path": [
+        6,
+        8,
+        0,
+        5,
+        1
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "001",
+        "101"
+      ],
+      "len": 5,
+      "variant": 2,
+      "closed": false,
+      "d": "M3 13L13 13L3 3L13 8L8 3M1.1 13a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 33,
+      "path": [
+        0,
+        5,
+        8
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "001",
+        "001"
+      ],
+      "len": 3,
+      "variant": 3,
+      "closed": false,
+      "d": "M3 3L13 8L13 13M1.6 1.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 34,
+      "path": [
+        1,
+        6,
+        2
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "000",
+        "100"
+      ],
+      "len": 3,
+      "variant": 4,
+      "closed": false,
+      "d": "M8 3L3 13L13 3M7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 35,
+      "path": [
+        8,
+        3,
+        6,
+        0
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "100",
+        "101"
+      ],
+      "len": 4,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 13L3 8L3 13L3 3M12.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 36,
+      "path": [
+        8,
+        1,
+        4,
+        5,
+        0
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "011",
+        "001"
+      ],
+      "len": 5,
+      "variant": 1,
+      "closed": true,
+      "d": "M13 13L8 3L8 8L13 8L3 3ZM12.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 37,
+      "path": [
+        5,
+        4,
+        8
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "011",
+        "001"
+      ],
+      "len": 3,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 8L8 8L13 13M11.1 8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 38,
+      "path": [
+        3,
+        2,
+        0
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "100",
+        "000"
+      ],
+      "len": 3,
+      "variant": 3,
+      "closed": false,
+      "d": "M3 8L13 3L3 3M1.6 6.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 39,
+      "path": [
+        3,
+        0,
+        2
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "100",
+        "000"
+      ],
+      "len": 3,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 8L3 3L13 3M2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 40,
+      "path": [
+        6,
+        3,
+        7,
+        8,
+        5
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "101",
+        "111"
+      ],
+      "len": 5,
+      "variant": 0,
+      "closed": false,
+      "d": "M3 13L3 8L8 13L13 13L13 8M2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M1.4 8a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0"
+    },
+    {
+      "index": 41,
+      "path": [
+        3,
+        4,
+        5,
+        6
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "111",
+        "100"
+      ],
+      "len": 4,
+      "variant": 1,
+      "closed": true,
+      "d": "M3 8L8 8L13 8L3 13ZM2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 42,
+      "path": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "001",
+        "111"
+      ],
+      "len": 4,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 8L3 13L8 13L13 13M11.1 8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 43,
+      "path": [
+        4,
+        8,
+        3,
+        0
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "110",
+        "001"
+      ],
+      "len": 4,
+      "variant": 3,
+      "closed": false,
+      "d": "M8 8L13 13L3 8L3 3M6.6 6.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 44,
+      "path": [
+        7,
+        6,
+        8,
+        1
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "000",
+        "111"
+      ],
+      "len": 4,
+      "variant": 4,
+      "closed": false,
+      "d": "M8 13L3 13L13 13L8 3M7.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 45,
+      "path": [
+        7,
+        0,
+        8
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "000",
+        "011"
+      ],
+      "len": 3,
+      "variant": 0,
+      "closed": false,
+      "d": "M8 13L3 3L13 13M7.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M1.4 3a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0"
+    },
+    {
+      "index": 46,
+      "path": [
+        6,
+        4,
+        3,
+        7
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "110",
+        "110"
+      ],
+      "len": 4,
+      "variant": 1,
+      "closed": true,
+      "d": "M3 13L8 8L3 8L8 13ZM2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 47,
+      "path": [
+        7,
+        2,
+        6,
+        3
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "100",
+        "110"
+      ],
+      "len": 4,
+      "variant": 2,
+      "closed": false,
+      "d": "M8 13L13 3L3 13L3 8M6.1 13a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 48,
+      "path": [
+        1,
+        5,
+        2,
+        8
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "001",
+        "001"
+      ],
+      "len": 4,
+      "variant": 3,
+      "closed": false,
+      "d": "M8 3L13 8L13 3L13 13M6.6 1.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 49,
+      "path": [
+        3,
+        6,
+        7,
+        1,
+        2
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "100",
+        "110"
+      ],
+      "len": 5,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 8L3 13L8 13L8 3L13 3M2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 50,
+      "path": [
+        0,
+        1,
+        3,
+        6,
+        8
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "100",
+        "101"
+      ],
+      "len": 5,
+      "variant": 0,
+      "closed": false,
+      "d": "M3 3L8 3L3 8L3 13L13 13M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 51,
+      "path": [
+        8,
+        6,
+        1
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "000",
+        "101"
+      ],
+      "len": 3,
+      "variant": 1,
+      "closed": false,
+      "d": "M13 13L3 13L8 3M12.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 52,
+      "path": [
+        5,
+        0,
+        7
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "001",
+        "010"
+      ],
+      "len": 3,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 8L3 3L8 13M11.1 8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 53,
+      "path": [
+        6,
+        1,
+        2,
+        8
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "000",
+        "101"
+      ],
+      "len": 4,
+      "variant": 3,
+      "closed": false,
+      "d": "M3 13L8 3L13 3L13 13M1.6 11.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 54,
+      "path": [
+        5,
+        6,
+        0,
+        2
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "001",
+        "100"
+      ],
+      "len": 4,
+      "variant": 4,
+      "closed": false,
+      "d": "M13 8L3 13L3 3L13 3M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 55,
+      "path": [
+        2,
+        5,
+        7,
+        8
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "001",
+        "011"
+      ],
+      "len": 4,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 3L13 8L8 13L13 13M12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 56,
+      "path": [
+        3,
+        7,
+        5,
+        0,
+        8
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "101",
+        "011"
+      ],
+      "len": 5,
+      "variant": 1,
+      "closed": true,
+      "d": "M3 8L8 13L13 8L3 3L13 13ZM2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 57,
+      "path": [
+        7,
+        3,
+        6,
+        8
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "100",
+        "111"
+      ],
+      "len": 4,
+      "variant": 2,
+      "closed": false,
+      "d": "M8 13L3 8L3 13L13 13M6.1 13a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 58,
+      "path": [
+        1,
+        6,
+        8,
+        0,
+        2
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "111",
+        "000",
+        "101"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M8 3L3 13L13 13L3 3L13 3M6.6 1.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 59,
+      "path": [
+        7,
+        8,
+        2,
+        1,
+        0
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "111",
+        "000",
+        "011"
+      ],
+      "len": 5,
+      "variant": 4,
+      "closed": false,
+      "d": "M8 13L13 13L13 3L8 3L3 3M7.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 60,
+      "path": [
+        5,
+        1,
+        2,
+        4
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "011",
+        "000"
+      ],
+      "len": 4,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 8L8 3L13 3L8 8M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 61,
+      "path": [
+        0,
+        5,
+        4
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "011",
+        "000"
+      ],
+      "len": 3,
+      "variant": 1,
+      "closed": false,
+      "d": "M3 3L13 8L8 8M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 62,
+      "path": [
+        6,
+        4,
+        3,
+        5,
+        8
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "111",
+        "101"
+      ],
+      "len": 5,
+      "variant": 2,
+      "closed": false,
+      "d": "M3 13L8 8L3 8L13 8L13 13M1.1 13a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 63,
+      "path": [
+        8,
+        6,
+        5,
+        7,
+        1
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "001",
+        "111"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M13 13L3 13L13 8L8 13L8 3M11.6 11.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 64,
+      "path": [
+        6,
+        5,
+        3
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "101",
+        "100"
+      ],
+      "len": 3,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 13L13 8L3 8M2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 65,
+      "path": [
+        3,
+        4,
+        1,
+        0
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "110",
+        "000"
+      ],
+      "len": 4,
+      "variant": 0,
+      "closed": false,
+      "d": "M3 8L8 8L8 3L3 3M2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 66,
+      "path": [
+        3,
+        1,
+        5,
+        0
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "101",
+        "000"
+      ],
+      "len": 4,
+      "variant": 1,
+      "closed": true,
+      "d": "M3 8L8 3L13 8L3 3ZM2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 67,
+      "path": [
+        7,
+        0,
+        6
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          3,
+          13
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "000",
+        "110"
+      ],
+      "len": 3,
+      "variant": 2,
+      "closed": false,
+      "d": "M8 13L3 3L3 13M6.1 13a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 68,
+      "path": [
+        3,
+        8,
+        7
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "100",
+        "011"
+      ],
+      "len": 3,
+      "variant": 3,
+      "closed": false,
+      "d": "M3 8L13 13L8 13M1.6 6.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 69,
+      "path": [
+        8,
+        1,
+        5
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "001",
+        "001"
+      ],
+      "len": 3,
+      "variant": 4,
+      "closed": false,
+      "d": "M13 13L8 3L13 8M12.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 70,
+      "path": [
+        0,
+        1,
+        6,
+        2
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "111",
+        "000",
+        "100"
+      ],
+      "len": 4,
+      "variant": 0,
+      "closed": false,
+      "d": "M3 3L8 3L3 13L13 3M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M6.4 3a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0"
+    },
+    {
+      "index": 71,
+      "path": [
+        2,
+        4,
+        7,
+        6,
+        8
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "010",
+        "111"
+      ],
+      "len": 5,
+      "variant": 1,
+      "closed": true,
+      "d": "M13 3L8 8L8 13L3 13L13 13ZM12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 72,
+      "path": [
+        2,
+        6,
+        7,
+        1,
+        5
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "001",
+        "110"
+      ],
+      "len": 5,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 3L3 13L8 13L8 3L13 8M11.1 3a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 73,
+      "path": [
+        4,
+        7,
+        0,
+        2,
+        1
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "111",
+        "010",
+        "010"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M8 8L8 13L3 3L13 3L8 3M6.6 6.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 74,
+      "path": [
+        5,
+        7,
+        1
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "001",
+        "010"
+      ],
+      "len": 3,
+      "variant": 4,
+      "closed": false,
+      "d": "M13 8L8 13L8 3M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 75,
+      "path": [
+        4,
+        3,
+        6,
+        2
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          3
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "110",
+        "100"
+      ],
+      "len": 4,
+      "variant": 0,
+      "closed": false,
+      "d": "M8 8L3 8L3 13L13 3M7.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M1.4 8a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0"
+    },
+    {
+      "index": 76,
+      "path": [
+        2,
+        5,
+        4,
+        8,
+        1
+      ],
+      "cells": [
+        [
+          13,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "011",
+        "001"
+      ],
+      "len": 5,
+      "variant": 1,
+      "closed": true,
+      "d": "M13 3L13 8L8 8L13 13L8 3ZM12.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 77,
+      "path": [
+        1,
+        3,
+        5
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "101",
+        "000"
+      ],
+      "len": 3,
+      "variant": 2,
+      "closed": false,
+      "d": "M8 3L3 8L13 8M6.1 3a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 78,
+      "path": [
+        5,
+        3,
+        1,
+        0,
+        4
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "111",
+        "000"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M13 8L3 8L8 3L3 3L8 8M11.6 6.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 79,
+      "path": [
+        0,
+        5,
+        3,
+        4
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "111",
+        "000"
+      ],
+      "len": 4,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 3L13 8L3 8L8 8M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 80,
+      "path": [
+        7,
+        2,
+        1
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "000",
+        "010"
+      ],
+      "len": 3,
+      "variant": 0,
+      "closed": false,
+      "d": "M8 13L13 3L8 3M7.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 81,
+      "path": [
+        1,
+        5,
+        6,
+        7
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "001",
+        "110"
+      ],
+      "len": 4,
+      "variant": 1,
+      "closed": true,
+      "d": "M8 3L13 8L3 13L8 13ZM7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 82,
+      "path": [
+        7,
+        6,
+        1,
+        5
+      ],
+      "cells": [
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "010",
+        "001",
+        "110"
+      ],
+      "len": 4,
+      "variant": 2,
+      "closed": false,
+      "d": "M8 13L3 13L8 3L13 8M6.1 13a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 83,
+      "path": [
+        8,
+        5,
+        2,
+        0,
+        7
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "001",
+        "011"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M13 13L13 8L13 3L3 3L8 13M11.6 11.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 84,
+      "path": [
+        6,
+        4,
+        2,
+        1,
+        7
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "010",
+        "110"
+      ],
+      "len": 5,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 13L8 8L13 3L8 3L8 13M2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 85,
+      "path": [
+        5,
+        8,
+        2,
+        0,
+        6
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          3,
+          13
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "001",
+        "101"
+      ],
+      "len": 5,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 8L13 13L13 3L3 3L3 13M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M11.4 13a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0"
+    },
+    {
+      "index": 86,
+      "path": [
+        6,
+        0,
+        8,
+        7
+      ],
+      "cells": [
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "000",
+        "111"
+      ],
+      "len": 4,
+      "variant": 1,
+      "closed": true,
+      "d": "M3 13L3 3L13 13L8 13ZM2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 87,
+      "path": [
+        5,
+        1,
+        3,
+        0,
+        7
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "101",
+        "010"
+      ],
+      "len": 5,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 8L8 3L3 8L3 3L8 13M11.1 8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 88,
+      "path": [
+        8,
+        2,
+        6,
+        5
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "001",
+        "001",
+        "101"
+      ],
+      "len": 4,
+      "variant": 3,
+      "closed": false,
+      "d": "M13 13L13 3L3 13L13 8M11.6 11.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 89,
+      "path": [
+        1,
+        2,
+        4,
+        3
+      ],
+      "cells": [
+        [
+          8,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "011",
+        "110",
+        "000"
+      ],
+      "len": 4,
+      "variant": 4,
+      "closed": false,
+      "d": "M8 3L13 3L8 8L3 8M7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 90,
+      "path": [
+        5,
+        7,
+        0
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "001",
+        "010"
+      ],
+      "len": 3,
+      "variant": 0,
+      "closed": false,
+      "d": "M13 8L8 13L3 3M12.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 91,
+      "path": [
+        3,
+        2,
+        0,
+        5
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "101",
+        "000"
+      ],
+      "len": 4,
+      "variant": 1,
+      "closed": true,
+      "d": "M3 8L13 3L3 3L13 8ZM2.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 92,
+      "path": [
+        4,
+        3,
+        5,
+        8
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "111",
+        "001"
+      ],
+      "len": 4,
+      "variant": 2,
+      "closed": false,
+      "d": "M8 8L3 8L13 8L13 13M6.1 8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 93,
+      "path": [
+        4,
+        7,
+        8,
+        5,
+        3
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          8
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "111",
+        "011"
+      ],
+      "len": 5,
+      "variant": 3,
+      "closed": false,
+      "d": "M8 8L8 13L13 13L13 8L3 8M6.6 6.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 94,
+      "path": [
+        0,
+        2,
+        7,
+        1
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "111",
+        "000",
+        "010"
+      ],
+      "len": 4,
+      "variant": 4,
+      "closed": false,
+      "d": "M3 3L13 3L8 13L8 3M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M7.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 95,
+      "path": [
+        0,
+        7,
+        8,
+        6,
+        1
+      ],
+      "cells": [
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          8,
+          3
+        ]
+      ],
+      "bitmap": [
+        "110",
+        "000",
+        "111"
+      ],
+      "len": 5,
+      "variant": 0,
+      "closed": false,
+      "d": "M3 3L8 13L13 13L3 13L8 3M2.1 3a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 96,
+      "path": [
+        4,
+        2,
+        7,
+        6,
+        0
+      ],
+      "cells": [
+        [
+          8,
+          8
+        ],
+        [
+          13,
+          3
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "101",
+        "010",
+        "110"
+      ],
+      "len": 5,
+      "variant": 1,
+      "closed": true,
+      "d": "M8 8L13 3L8 13L3 13L3 3ZM7.1 8a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    },
+    {
+      "index": 97,
+      "path": [
+        5,
+        6,
+        0
+      ],
+      "cells": [
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "bitmap": [
+        "100",
+        "001",
+        "100"
+      ],
+      "len": 3,
+      "variant": 2,
+      "closed": false,
+      "d": "M13 8L3 13L3 3M11.1 8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0"
+    },
+    {
+      "index": 98,
+      "path": [
+        3,
+        6,
+        5
+      ],
+      "cells": [
+        [
+          3,
+          8
+        ],
+        [
+          3,
+          13
+        ],
+        [
+          13,
+          8
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "101",
+        "100"
+      ],
+      "len": 3,
+      "variant": 3,
+      "closed": false,
+      "d": "M3 8L3 13L13 8M1.6 6.6h2.8v2.8h-2.8z"
+    },
+    {
+      "index": 99,
+      "path": [
+        8,
+        5,
+        6
+      ],
+      "cells": [
+        [
+          13,
+          13
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          3,
+          13
+        ]
+      ],
+      "bitmap": [
+        "000",
+        "001",
+        "101"
+      ],
+      "len": 3,
+      "variant": 4,
+      "closed": false,
+      "d": "M13 13L13 8L3 13M12.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0M2.1 13a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0"
+    }
+  ]
+}

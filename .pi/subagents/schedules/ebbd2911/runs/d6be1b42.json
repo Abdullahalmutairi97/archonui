@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "d6be1b42",
+  "scheduleId": "ebbd2911",
+  "plannedAt": "2026-10-13T08:43:01.382Z",
+  "dueReason": "timer",
+  "state": "completed",
+  "startedAt": "2026-10-13T08:43:01.384Z",
+  "asyncId": "a7b0721d-22ec-4b4b-bb08-b083fe9f24d4",
+  "asyncDir": "/tmp/pi-subagents-uid-1000/async-subagent-runs/a7b0721d-22ec-4b4b-bb08-b083fe9f24d4",
+  "completedAt": "2026-10-13T08:43:14.177Z"
+}

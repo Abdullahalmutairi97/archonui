@@ -1,0 +1,5 @@
+["shot","01-default",
+ "eval","Array.from(document.querySelectorAll('textarea')).map(t=>t.placeholder)",
+ ["eval","Array.from(document.querySelectorAll('button')).map(b=>b.textContent.trim()).filter(x=>x).slice(0,80)"],
+ ["eval","Array.from(document.querySelectorAll('*')).filter(e=>e.children.length===0&&/Opus 4\\.5|Sonnet 4\\.5|Haiku 4\\.5|GPT-5/.test(e.textContent)).map(e=>e.tagName+'.'+e.className+':'+e.textContent).slice(0,20)"]
+]

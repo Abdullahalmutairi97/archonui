@@ -1,0 +1,586 @@
+//! Agent CLIs ("harnesses"). Each file here describes one CLI: how to run a
+//! turn with it, what it offers, and whether it is signed in. A new harness is
+//! one file plus a line in `HARNESSES`.
+
+mod claude;
+mod codex;
+mod gemini;
+mod opencode;
+mod pi;
+
+use super::{
+    approve::Route,
+    attach::{Attachment, Kind, TEXT_INLINE_BYTES},
+    discover::Capabilities,
+    parse::{Out, Protocol},
+    session::{spawn, Event},
+    skills::Skill,
+};
+use crate::app::settings::{McpServer, Permissions};
+use serde::{Deserialize, Serialize};
+use std::{
+    env,
+    io::Write,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+/// How much the agent may do in a turn. Each harness maps these to its own flags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// Edits and commands run without asking.
+    #[default]
+    Auto,
+    /// Investigate and propose a plan; no edits.
+    Plan,
+    /// Answer questions; no edits.
+    Ask,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 3] = [Mode::Auto, Mode::Plan, Mode::Ask];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Auto => "Auto",
+            Mode::Plan => "Plan",
+            Mode::Ask => "Ask",
+        }
+    }
+
+    /// One line for the palette.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Mode::Auto => "Edits and commands run without asking",
+            Mode::Plan => "Investigate and propose a plan; no edits",
+            Mode::Ask => "Answer questions; no edits",
+        }
+    }
+
+    /// The mode called `s`, ignoring case.
+    pub fn from_name(s: &str) -> Option<Mode> {
+        Self::ALL.into_iter().find(|m| m.name().eq_ignore_ascii_case(s))
+    }
+}
+
+/// Whether a CLI is ready to run, from a quick offline check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthStatus {
+    Ok,
+    Missing,
+    /// The check cannot tell, e.g. the CLI keeps its login in the macOS keychain.
+    Unknown,
+}
+
+impl AuthStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            AuthStatus::Ok => "signed in",
+            AuthStatus::Missing => "not signed in",
+            AuthStatus::Unknown => "unknown",
+        }
+    }
+}
+
+/// What the app's settings add to a turn. The default adds nothing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ToolSettings<'a> {
+    /// ArchonUI's MCP servers; only the enabled ones are passed to harnesses.
+    pub mcp: &'a [McpServer],
+    /// Every skill `skills::discover` found.
+    pub skills: &'a [Skill],
+    /// Ids of the skills switched off in settings.
+    pub disabled_skills: &'a [String],
+    pub permissions: Permissions,
+    /// Most agent steps per prompt; `None` leaves the CLI's own limit.
+    pub max_steps: Option<u32>,
+    /// Auto runs shell commands inside the CLI's sandbox. Plan and Ask keep their own limits.
+    pub sandbox: bool,
+    /// With `sandbox`: `true` keeps sandboxed commands off the network. `false` allows it.
+    /// The CLIs run headless and cannot ask, so the choice is made here.
+    pub ask_network: bool,
+    /// Where a harness that can ask sends its permission prompts. `None` answers nothing.
+    pub approval: Option<Route<'a>>,
+}
+
+/// Everything one turn needs from the chat.
+pub struct TurnInput<'a> {
+    /// Folder the agent runs in.
+    pub cwd: &'a Path,
+    pub prompt: &'a str,
+    /// The agent's own session id; `None` starts a new session.
+    pub session: Option<&'a str>,
+    pub files: &'a [Attachment],
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub mode: Mode,
+    pub tools: ToolSettings<'a>,
+}
+
+/// Writes the agent's stdin; runs on a background thread.
+pub type StdinWriter = Box<dyn FnOnce(&mut dyn Write) -> std::io::Result<()> + Send>;
+
+/// What to run for one turn.
+#[derive(Default)]
+pub struct Plan {
+    pub args: Vec<String>,
+    pub stdin: Option<StdinWriter>,
+    pub env: Vec<(String, String)>,
+    /// Files to write before the CLI starts, as (path, text). Written 0600.
+    pub files: Vec<(PathBuf, String)>,
+}
+
+pub trait Harness: Send + Sync {
+    /// Key stored in each chat, e.g. "claude".
+    fn id(&self) -> &'static str;
+    /// Display name, e.g. "Claude Code".
+    fn name(&self) -> &'static str;
+    /// SVG path data for the harness's line icon (16×16 viewBox, stroked). `None` falls back to its
+    /// two-letter monogram.
+    fn glyph(&self) -> Option<&'static str> {
+        None
+    }
+    /// Executable searched for on `PATH` unless a binary is configured.
+    fn binary(&self) -> &'static str;
+    fn protocol(&self) -> Protocol;
+    /// The modes this CLI enforces. The UI offers only these.
+    fn modes(&self) -> &'static [Mode];
+    /// The CLI accepts a caller-chosen session id, so one is assigned before
+    /// the first turn instead of being read back from its output.
+    fn preassign_session(&self) -> bool {
+        false
+    }
+    /// Arguments, environment and stdin for one turn.
+    fn plan(&self, input: &TurnInput) -> Plan;
+    /// Launch wiring for `servers`. Only enabled servers are passed. A harness
+    /// without MCP config returns nothing, so its own MCP settings still apply.
+    fn mcp_args(&self, _servers: &[McpServer]) -> Plan {
+        Plan::default()
+    }
+    /// What the CLI offers, from its own listings. Blocking; missing pieces
+    /// come back empty.
+    fn discover(&self, _path: &Path, _cwd: &Path) -> Capabilities {
+        Capabilities::default()
+    }
+    /// Offline check for credentials. Never touches the network.
+    fn auth_status(&self) -> AuthStatus;
+    /// Runs "Reply with exactly: ok" with the defaults and returns the reply,
+    /// or why it failed. Gives up after 60 seconds.
+    fn test_connection(&self, path: &Path, cwd: &Path) -> Result<String, String> {
+        const TIMEOUT: Duration = Duration::from_secs(60);
+        let input = TurnInput {
+            cwd,
+            prompt: "Reply with exactly: ok",
+            session: None,
+            files: &[],
+            model: None,
+            effort: None,
+            mode: Mode::Ask,
+            tools: ToolSettings::default(),
+        };
+        let turn = spawn(self, path, &input).map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + TIMEOUT;
+        let mut reply = String::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            // `None` means the timer won: the agent did not finish in time.
+            let next = smol::block_on(smol::future::or(
+                async { Some(turn.events.recv().await.ok()) },
+                async {
+                    smol::Timer::after(left).await;
+                    None
+                },
+            ));
+            match next {
+                None => return Err(format!("no reply within {} s", TIMEOUT.as_secs())),
+                Some(None) => return Err("the agent stopped without a reply".into()),
+                Some(Some(Event::Out(Out::Text(t)))) => reply.push_str(&t),
+                Some(Some(Event::Out(Out::Final(t)))) if reply.is_empty() => reply = t,
+                Some(Some(Event::Out(Out::Error(e)))) => return Err(e),
+                Some(Some(Event::Out(_))) => {}
+                Some(Some(Event::Finished(Ok(())))) => return Ok(reply.trim().to_string()),
+                Some(Some(Event::Finished(Err(e)))) => return Err(e),
+            }
+        }
+    }
+}
+
+/// Every harness ArchonUI knows. Add a new one here.
+pub static HARNESSES: &[&dyn Harness] = &[
+    &claude::Claude,
+    &codex::Codex,
+    &gemini::Gemini,
+    &opencode::OpenCode,
+    &pi::Pi,
+];
+
+pub fn harness(id: &str) -> Option<&'static dyn Harness> {
+    HARNESSES.iter().copied().find(|h| h.id() == id)
+}
+
+/// Read-only instruction for CLIs with no read-only mode of their own.
+const PLAN_PREAMBLE: &str = "Plan only: investigate and propose a plan; do not modify files.";
+
+/// `prompt`, with the plan-only instruction in front when planning.
+fn planned(mode: Mode, prompt: String) -> String {
+    match mode {
+        Mode::Plan => format!("{PLAN_PREAMBLE}\n\n{prompt}"),
+        Mode::Auto | Mode::Ask => prompt,
+    }
+}
+
+fn strs(xs: &[&str]) -> Vec<String> {
+    xs.iter().map(|s| s.to_string()).collect()
+}
+
+/// A prompt starting with `-` would be parsed as a flag; a leading space
+/// keeps it positional without changing what the model sees in practice.
+fn prompt_arg(p: &str) -> String {
+    if p.starts_with('-') {
+        format!(" {p}")
+    } else {
+        p.to_string()
+    }
+}
+
+fn small_text(a: &Attachment) -> bool {
+    a.kind == Kind::Text && a.size <= TEXT_INLINE_BYTES
+}
+
+/// `Ok` if any of `env_vars` is set or any of `home_files` (relative to the
+/// home directory) exists.
+fn signed_in(env_vars: &[&str], home_files: &[&str]) -> AuthStatus {
+    let set = env_vars.iter().any(|v| env::var_os(v).is_some_and(|x| !x.is_empty()));
+    let file = env::var_os("HOME")
+        .map(PathBuf::from)
+        .is_some_and(|home| home_files.iter().any(|f| home.join(f).is_file()));
+    if set || file {
+        AuthStatus::Ok
+    } else {
+        AuthStatus::Missing
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::settings::{McpTransport, Permission};
+    use std::collections::BTreeMap;
+
+    fn input(mode: Mode, session: Option<&str>) -> TurnInput<'_> {
+        TurnInput {
+            cwd: Path::new("/work"),
+            prompt: "do it",
+            session,
+            files: &[],
+            model: None,
+            effort: None,
+            mode,
+            tools: ToolSettings::default(),
+        }
+    }
+
+    fn args(id: &str, mode: Mode, session: Option<&str>) -> Vec<String> {
+        harness(id).unwrap().plan(&input(mode, session)).args
+    }
+
+    fn has_pair(args: &[String], flag: &str, value: &str) -> bool {
+        args.windows(2).any(|w| w[0] == flag && w[1] == value)
+    }
+
+    #[test]
+    fn mode_names_round_trip() {
+        for m in Mode::ALL {
+            assert_eq!(Mode::from_name(&m.name().to_lowercase()), Some(m));
+        }
+        assert_eq!(Mode::from_name("yolo"), None);
+        assert_eq!(Mode::default(), Mode::Auto);
+    }
+
+    #[test]
+    fn every_harness_ships_a_glyph_that_parses() {
+        for h in HARNESSES {
+            let d = h.glyph().unwrap_or_else(|| panic!("{} has no glyph", h.id()));
+            crate::ui::composer::icons::parse_path(d).unwrap_or_else(|e| panic!("{}: {e}", h.id()));
+        }
+    }
+
+    #[test]
+    fn every_harness_offers_only_known_modes_with_unique_ids() {
+        let mut ids: Vec<&str> = HARNESSES.iter().map(|h| h.id()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), HARNESSES.len());
+        for h in HARNESSES {
+            assert!(!h.modes().is_empty(), "{} offers no modes", h.id());
+        }
+    }
+
+    #[test]
+    fn claude_modes() {
+        let auto = args("claude", Mode::Auto, None);
+        assert!(has_pair(&auto, "--permission-mode", "acceptEdits"));
+        let plan = args("claude", Mode::Plan, None);
+        assert!(has_pair(&plan, "--permission-mode", "plan"));
+        let ask = args("claude", Mode::Ask, None);
+        assert!(has_pair(&ask, "--permission-mode", "dontAsk"));
+        // Bash is disallowed too, so a user's allow rule for it cannot write.
+        assert!(ask.contains(&"--disallowedTools=Edit,Write,NotebookEdit,Bash".to_string()));
+        assert_eq!(ask.last().map(String::as_str), Some("do it"));
+        assert!(has_pair(&args("claude", Mode::Auto, Some("s1")), "--resume", "s1"));
+    }
+
+    #[test]
+    fn codex_sets_sandbox_on_fresh_and_resumed_turns() {
+        let fresh = args("codex", Mode::Ask, None);
+        assert!(has_pair(&fresh, "-c", "sandbox_mode=\"read-only\""));
+        assert!(!fresh.contains(&"resume".to_string()));
+        let resumed = args("codex", Mode::Ask, Some("t1"));
+        assert!(resumed.contains(&"resume".to_string()));
+        assert!(has_pair(&resumed, "-c", "sandbox_mode=\"read-only\""));
+        assert!(!resumed.iter().any(|a| a == "-s"), "`exec resume` does not accept -s");
+        let auto = args("codex", Mode::Auto, Some("t1"));
+        assert!(!auto.iter().any(|a| a.starts_with("sandbox_mode")), "Auto keeps the user's sandbox");
+    }
+
+    #[test]
+    fn plan_mode_prepends_the_read_only_instruction() {
+        let plan = args("codex", Mode::Plan, None);
+        assert!(plan.last().unwrap().starts_with("Plan only:"));
+        assert!(plan.last().unwrap().ends_with("do it"));
+        assert_eq!(args("codex", Mode::Ask, None).last().map(String::as_str), Some("do it"));
+    }
+
+    #[test]
+    fn opencode_uses_the_plan_agent_outside_auto() {
+        assert!(has_pair(&args("opencode", Mode::Auto, None), "--dir", "/work"));
+        assert!(!args("opencode", Mode::Auto, None).contains(&"--agent".to_string()));
+        assert!(has_pair(&args("opencode", Mode::Ask, None), "--agent", "plan"));
+        assert!(has_pair(&args("opencode", Mode::Plan, None), "--agent", "plan"));
+    }
+
+    #[test]
+    fn pi_narrows_tools_outside_auto() {
+        let auto = args("pi", Mode::Auto, None);
+        assert!(!auto.contains(&"--tools".to_string()));
+        let ask = args("pi", Mode::Ask, None);
+        assert!(has_pair(&ask, "--tools", "read,grep,find,ls"));
+        assert!(ask.contains(&"--no-mcp".to_string()));
+        assert!(!ask.contains(&"--append-system-prompt".to_string()));
+        assert!(args("pi", Mode::Plan, None).contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn unverified_harnesses_map_modes_as_documented() {
+        assert!(has_pair(&args("gemini", Mode::Auto, None), "--approval-mode", "auto_edit"));
+        assert!(has_pair(&args("gemini", Mode::Ask, None), "--approval-mode", "plan"));
+    }
+
+    #[test]
+    fn prompts_starting_with_dash_stay_positional() {
+        let p = prompt_arg("-rf everything");
+        assert_eq!(p, " -rf everything");
+        assert_eq!(prompt_arg("fix it"), "fix it");
+    }
+
+    fn skill(id: &str, name: &str) -> Skill {
+        Skill {
+            id: id.into(),
+            name: name.into(),
+            description: String::new(),
+            command: format!("/{name}"),
+            source: "Personal".into(),
+            path: PathBuf::from(id),
+        }
+    }
+
+    #[test]
+    fn switched_off_tools_and_skills_reach_claude_and_pi() {
+        let skills = [skill("/s/review", "review"), skill("/s/fmt", "fmt")];
+        let off = ["/s/review".to_string()];
+        let tools = ToolSettings {
+            skills: &skills,
+            disabled_skills: &off,
+            permissions: Permissions { run: Permission::Off, web: Permission::Off, ..Permissions::default() },
+            ..Default::default()
+        };
+        let turn = TurnInput { tools, ..input(Mode::Auto, None) };
+        let claude = harness("claude").unwrap().plan(&turn).args;
+        assert!(claude.contains(&"--disallowedTools=Bash,WebSearch,Skill(review)".to_string()), "{claude:?}");
+        let pi = harness("pi").unwrap().plan(&turn).args;
+        assert!(has_pair(&pi, "--exclude-tools", "bash"));
+        assert!(pi.contains(&"--no-skills".to_string()));
+        assert!(has_pair(&pi, "--skill", "/s/fmt"));
+        assert!(!pi.contains(&"/s/review".to_string()));
+    }
+
+    #[test]
+    fn nothing_switched_off_leaves_launch_flags_alone() {
+        let pi = args("pi", Mode::Auto, None);
+        assert!(!pi.iter().any(|a| matches!(a.as_str(), "--exclude-tools" | "--no-skills" | "--skill" | "--mcp-config")), "{pi:?}");
+        let claude = args("claude", Mode::Auto, None);
+        assert!(!claude.iter().any(|a| a.starts_with("--disallowedTools")));
+    }
+
+    #[test]
+    fn servers_reach_claude_pi_and_codex() {
+        let servers = [
+            McpServer {
+                id: "docs".into(),
+                name: "docs".into(),
+                transport: McpTransport::Http {
+                    url: "https://d.test/mcp".into(),
+                    headers: BTreeMap::from([("Authorization".to_string(), "Bearer t".to_string())]),
+                },
+                enabled: true,
+            },
+            McpServer {
+                id: "pg".into(),
+                name: "pg".into(),
+                transport: McpTransport::Stdio { command: "psql".into(), args: vec!["-q".into()], env: BTreeMap::new() },
+                enabled: false,
+            },
+        ];
+        let tools = ToolSettings { mcp: &servers, ..Default::default() };
+        let turn = TurnInput { tools, ..input(Mode::Auto, None) };
+
+        let codex = harness("codex").unwrap().plan(&turn);
+        assert!(has_pair(&codex.args, "-c", "mcp_servers.\"docs\".url=\"https://d.test/mcp\""), "{:?}", codex.args);
+        assert!(has_pair(&codex.args, "-c", "mcp_servers.\"pg\".enabled=false"));
+        assert!(
+            codex.args.iter().any(|a| a.starts_with("mcp_servers.\"docs\".env_http_headers=")),
+            "headers are referenced by name: {:?}",
+            codex.args
+        );
+        assert!(!codex.args.iter().any(|a| a.contains("Bearer t")), "the secret stays off argv: {:?}", codex.args);
+        assert!(codex.env.contains(&("ARCHONUI_MCP_DOCS_AUTHORIZATION".to_string(), "Bearer t".to_string())), "{:?}", codex.env);
+
+        let claude = harness("claude").unwrap().plan(&turn);
+        assert!(has_pair(&claude.args, "--mcp-config", &claude.files[0].0.display().to_string()));
+        let doc: serde_json::Value = serde_json::from_str(&claude.files[0].1).unwrap();
+        assert_eq!(doc["mcpServers"]["docs"]["type"], "http");
+        assert!(doc["mcpServers"].get("pg").is_none(), "disabled servers are not passed");
+        assert!(claude.files[0].0.ends_with("mcp/claude.json"));
+
+        let pi = harness("pi").unwrap().plan(&turn);
+        let doc: serde_json::Value = serde_json::from_str(&pi.files[0].1).unwrap();
+        assert_eq!(doc["mcpServers"]["docs"]["url"], "https://d.test/mcp");
+        assert!(doc["mcpServers"]["docs"].get("type").is_none());
+    }
+
+    #[test]
+    fn codex_moves_stdio_env_off_the_command_line_by_name() {
+        let servers = [
+            McpServer {
+                id: "gh".into(),
+                name: "gh".into(),
+                transport: McpTransport::Stdio {
+                    command: "gh-mcp".into(),
+                    args: vec![],
+                    env: BTreeMap::from([("GITHUB_TOKEN".to_string(), "s3cret".to_string())]),
+                },
+                enabled: true,
+            },
+            McpServer {
+                id: "pg".into(),
+                name: "pg".into(),
+                transport: McpTransport::Stdio {
+                    command: "pg-mcp".into(),
+                    args: vec![],
+                    env: BTreeMap::from([("GITHUB_TOKEN".to_string(), "other".to_string())]),
+                },
+                enabled: true,
+            },
+        ];
+        let tools = ToolSettings { mcp: &servers, ..Default::default() };
+        let plan = harness("codex").unwrap().plan(&TurnInput { tools, ..input(Mode::Auto, None) });
+        assert!(plan.env.contains(&("GITHUB_TOKEN".to_string(), "s3cret".to_string())), "{:?}", plan.env);
+        assert!(plan.args.iter().any(|a| a == "mcp_servers.\"gh\".env_vars=[\"GITHUB_TOKEN\"]"), "{:?}", plan.args);
+        // The conflicting server is skipped rather than handed the other server's secret.
+        assert!(!plan.args.iter().any(|a| a == "mcp_servers.\"pg\".env_vars=[\"GITHUB_TOKEN\"]"), "{:?}", plan.args);
+        assert!(!plan.args.iter().any(|a| a.contains("s3cret") || a.contains("other")), "{:?}", plan.args);
+    }
+
+    fn plan_with(id: &str, mode: Mode, session: Option<&str>, tools: ToolSettings) -> Vec<String> {
+        harness(id).unwrap().plan(&TurnInput { tools, ..input(mode, session) }).args
+    }
+
+    #[test]
+    fn claude_caps_steps_and_sandboxes_auto_only() {
+        let sandbox = ToolSettings { sandbox: true, ask_network: false, max_steps: Some(40), ..Default::default() };
+        let auto = plan_with("claude", Mode::Auto, None, sandbox);
+        assert!(has_pair(&auto, "--max-turns", "40"));
+        assert_eq!(auto.iter().filter(|a| *a == "--settings").count(), 1, "{auto:?}");
+        let at = auto.iter().position(|a| a == "--settings").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&auto[at + 1]).unwrap();
+        assert_eq!(
+            doc,
+            serde_json::json!({"sandbox": {"enabled": true, "autoAllowBashIfSandboxed": true, "network": {"allowedDomains": ["*"]}}})
+        );
+
+        let blocked = plan_with("claude", Mode::Auto, None, ToolSettings { ask_network: true, ..sandbox });
+        let at = blocked.iter().position(|a| a == "--settings").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&blocked[at + 1]).unwrap();
+        assert_eq!(doc, serde_json::json!({"sandbox": {"enabled": true, "autoAllowBashIfSandboxed": true}}));
+
+        // Plan and Ask keep their own permission modes; the sandbox is for Auto only.
+        for mode in [Mode::Plan, Mode::Ask] {
+            let args = plan_with("claude", mode, None, sandbox);
+            assert!(!args.iter().any(|a| a == "--settings"), "{mode:?}: {args:?}");
+            assert!(has_pair(&args, "--max-turns", "40"));
+        }
+
+        let unset = plan_with("claude", Mode::Auto, None, ToolSettings { max_steps: None, ..Default::default() });
+        assert!(!unset.iter().any(|a| a == "--max-turns" || a == "--settings"), "{unset:?}");
+    }
+
+    #[test]
+    fn codex_sandboxes_auto_and_allows_network_only_when_asked_off() {
+        let sandbox = ToolSettings { sandbox: true, ask_network: false, ..Default::default() };
+        let auto = plan_with("codex", Mode::Auto, None, sandbox);
+        assert!(has_pair(&auto, "-c", "sandbox_mode=\"workspace-write\""));
+        assert!(has_pair(&auto, "-c", "sandbox_workspace_write.network_access=true"));
+
+        let resumed = plan_with("codex", Mode::Auto, Some("t1"), sandbox);
+        assert!(resumed.contains(&"resume".to_string()));
+        assert!(has_pair(&resumed, "-c", "sandbox_mode=\"workspace-write\""));
+        assert!(!resumed.iter().any(|a| a == "-s"), "`exec resume` does not accept -s");
+
+        let blocked = plan_with("codex", Mode::Auto, None, ToolSettings { ask_network: true, ..sandbox });
+        assert!(has_pair(&blocked, "-c", "sandbox_mode=\"workspace-write\""));
+        assert!(!blocked.iter().any(|a| a.contains("network_access")));
+
+        let ask = plan_with("codex", Mode::Ask, None, sandbox);
+        assert!(has_pair(&ask, "-c", "sandbox_mode=\"read-only\""));
+        assert!(!ask.iter().any(|a| a.contains("network_access")));
+
+        let off = plan_with("codex", Mode::Auto, None, ToolSettings::default());
+        assert!(!off.iter().any(|a| a.starts_with("sandbox_mode") || a.contains("network_access")));
+    }
+
+    #[test]
+    fn opencode_step_limit_reaches_the_config_for_each_mode() {
+        let steps = ToolSettings { max_steps: Some(40), ..Default::default() };
+        for (mode, agent) in [(Mode::Auto, "build"), (Mode::Plan, "plan"), (Mode::Ask, "plan")] {
+            let plan = harness("opencode").unwrap().plan(&TurnInput { tools: steps, ..input(mode, None) });
+            let (_, text) = plan.env.iter().find(|(k, _)| k == "OPENCODE_CONFIG_CONTENT").expect("config env");
+            let config: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(config["agent"][agent]["steps"], 40, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn codex_and_pi_ignore_the_step_limit() {
+        let steps = ToolSettings { max_steps: Some(40), ..Default::default() };
+        for id in ["codex", "pi"] {
+            assert_eq!(plan_with(id, Mode::Auto, None, steps), plan_with(id, Mode::Auto, None, ToolSettings::default()), "{id}");
+        }
+    }
+
+    #[test]
+    fn pi_ignores_the_sandbox_settings() {
+        let sandbox = ToolSettings { sandbox: true, ask_network: false, ..Default::default() };
+        assert_eq!(plan_with("pi", Mode::Auto, None, sandbox), plan_with("pi", Mode::Auto, None, ToolSettings::default()));
+    }
+}

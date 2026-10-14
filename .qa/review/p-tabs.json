@@ -1,0 +1,5 @@
+[["clickXY",1485,27],["wait",400],["shot","tab-browser"],
+ ["clickXY",1543,27],["wait",400],["shot","tab-ide"],
+ ["clickXY",1593,27],["wait",400],["shot","tab-files"],
+ ["clickXY",1643,27],["wait",400],["shot","tab-git"],
+ ["clickXY",1704,27],["wait",400],["shot","tab-terminal"]]

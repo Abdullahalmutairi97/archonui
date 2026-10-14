@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "ebbd2911",
+  "name": "archonui-heartbeat",
+  "cwd": "/home/archonminipc/ArchonUI",
+  "trigger": {
+    "kind": "interval",
+    "every": "45m",
+    "everyMs": 2700000,
+    "anchorAt": "2026-10-12T19:58:01.382Z",
+    "nextRunAt": "2026-10-13T13:58:01.382Z"
+  },
+  "target": {
+    "workflowScript": "return runs.run(\"heartbeat\", { agent: \"scout\", model: \"claude-bridge/claude-haiku-5-5\", task: \"Heartbeat for the ArchonUI UI-port supervisor. Do not read or change anything. Reply with exactly: heartbeat - resume the ArchonUI UI port (docs/UI_PORT_PLAN.md) if work is pending.\" });",
+    "args": {}
+  },
+  "overlap": "skip",
+  "catchUp": "latest",
+  "paused": false,
+  "createdAt": "2026-10-12T19:58:01.382Z",
+  "updatedAt": "2026-10-13T13:13:28.071Z",
+  "lastRunId": "b4bd5a10"
+}

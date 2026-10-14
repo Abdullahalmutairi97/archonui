@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a1321c-183f-7551-9f7a-26f3738369de"}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc \"sed -n '1,240p' Cargo.toml\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc \"sed -n '1,240p' Cargo.toml\"","aggregated_output":"hello = \"1\"\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/bin/bash -lc 'echo hi'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/bin/bash -lc 'echo hi'","aggregated_output":"hi\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_3","type":"file_change","changes":[{"path":"/home/archonminipc/ArchonUI/.qa/scratch-tools/x.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"file_change","changes":[{"path":"/home/archonminipc/ArchonUI/.qa/scratch-tools/x.txt","kind":"add"}],"status":"completed"}}

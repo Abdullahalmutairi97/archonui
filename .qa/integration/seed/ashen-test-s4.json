@@ -1,0 +1,20 @@
+{
+ "id": "archonui-test-s4",
+ "agent": "pi",
+ "title": "Port bonfire shader to WebGPU",
+ "cwd": "/tmp/iq/proj",
+ "agent_session": null,
+ "created": 1791670859,
+ "updated": 1791670959,
+ "messages": [
+  {
+   "role": "user",
+   "text": "Port the bonfire shader"
+  },
+  {
+   "role": "agent",
+   "text": "```chart Frame time (ms)\n{\"bars\":[{\"label\":\"WebGL\",\"value\":4.1},{\"label\":\"WebGPU\",\"value\":1.6}]}\n```\nFrame time dropped from 4.1 ms to 1.6 ms."
+  }
+ ],
+ "icon": 51
+}

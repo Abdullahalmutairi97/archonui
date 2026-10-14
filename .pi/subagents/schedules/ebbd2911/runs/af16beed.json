@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "af16beed",
+  "scheduleId": "ebbd2911",
+  "plannedAt": "2026-10-13T08:43:01.382Z",
+  "dueReason": "timer",
+  "state": "skipped",
+  "startedAt": "2026-10-13T08:43:01.384Z",
+  "completedAt": "2026-10-13T08:43:01.384Z"
+}

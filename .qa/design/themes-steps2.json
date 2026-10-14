@@ -1,0 +1,13 @@
+[
+  ["eval", "(()=>{const a=document.querySelector('aside');const r=a.parentElement;const c=getComputedStyle(r);const title=[...r.querySelectorAll('span')].find(s=>s.textContent==='archonui');return {tag:r.tagName,font:c.fontFamily,size:c.fontSize,color:c.color,bg:c.backgroundColor,titleFont:title?getComputedStyle(title).fontFamily:null,titleSize:title?getComputedStyle(title).fontSize:null};})()"],
+  ["eval", "(()=>{const root=document.querySelector('aside').parentElement;const cs=[...root.querySelectorAll('div')].filter(d=>getComputedStyle(d).fontFamily.includes('monospace')&&d.textContent.includes('const'));return cs.length?{sample:getComputedStyle(cs[0]).fontFamily,size:getComputedStyle(cs[0]).fontSize}:null;})()"],
+  ["click", "[title=\"Settings\"]"],
+  ["wait", 600],
+  ["eval", "(()=>{const t=[...document.querySelectorAll('button,span')].filter(e=>e.textContent.trim()==='Appearance');return t.length;})()"],
+  ["clickText", "Appearance"],
+  ["wait", 600],
+  ["shot", "appearance"],
+  ["eval", "(()=>{const labels=[...document.querySelectorAll('span')].map(s=>s.textContent.trim());const hexes=[...document.querySelectorAll('span')].map(s=>s.textContent.trim()).filter(s=>/^#|^rgba\\(/.test(s));return {hexes:hexes.slice(0,20)};})()"],
+  ["eval", "(()=>{const inp=[...document.querySelectorAll('input[type=color]')].map(i=>({v:i.value,label:(i.closest('label')||{}).innerText}));return inp;})()"],
+  ["eval", "(()=>{const fs=[...document.querySelectorAll('div')].map(d=>({f:getComputedStyle(d).fontFamily,s:d.textContent.slice(0,14)})).filter(x=>x.s&&/^Bl|^Ba|^Fo|^Ta|^Os|^Me|^He|^Al|^Ci|^Gr|^It|^Co|^Tr|^Un|^Or|^Pi|^Si|^Pr|^Bo|^Gl|^Mi|^Ph|^Yo|^DM|^In|^Sp|^Ge|^IBM/.test(x.s));return fs.slice(0,10);})()"]
+]
