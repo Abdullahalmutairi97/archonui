@@ -11,9 +11,10 @@
   models go by family (Claude 200k, or 1M with `[1m]`; GPT-5 and Codex 400k; Gemini 1M). Usage is the
   latest model call for Claude, Pi and OpenCode, and the turn's total for Codex and Gemini. Switching
   agent resets it; changing model drops the reported window.
-- Appearance › Effects › Window opacity (20–100%): below 100% the desktop shows through the
-  background, wallpaper, sidebars and sessions; text and popovers stay solid. A compositor blur rule
-  for the window blurs what shows through.
+- Appearance › Effects › Window opacity (20–100%): below 100% the desktop becomes the wallpaper.
+  Only the theme's base colour covers it, at that opacity, and sidebars and sessions add a light tint
+  over it; the background image and glass blur are left out, so layers don't stack into an uneven,
+  murky cover. Text and popovers stay solid. A compositor blur rule blurs what shows through.
 - IDE: scrolling no longer empties the editor. The code area drew a spacer for every row scrolled
   past above the visible rows, and since the area doesn't scroll itself, that pushed them below its
   bottom edge. Code text is smaller (11.5px on 17.5px rows, from 12.5px on 21.25px), so more fits.
