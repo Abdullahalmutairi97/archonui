@@ -20,7 +20,7 @@ them apart maps both to the same flags.
 
 | Harness | Auto | Plan | Ask | Status |
 | --- | --- | --- | --- | --- |
-| Claude Code 2.1.289 | `--permission-mode acceptEdits`; with an Ask permission: `--permission-mode default --permission-prompt-tool mcp__archonui__approve` (see Ask permissions) | `--permission-mode plan` | `--permission-mode dontAsk --disallowedTools=Edit,Write,NotebookEdit,Bash` | Verified live (haiku) |
+| Claude Code 2.1.300 | `--permission-mode auto` (Claude's own safety check decides each action; no prompt tool) | `--permission-mode plan` | `--permission-mode dontAsk --disallowedTools=Edit,Write,NotebookEdit,Bash` | Verified live (haiku) |
 | Codex CLI 0.154.0 | no sandbox flag (user's config applies) | `-c sandbox_mode="read-only"` + plan preamble | `-c sandbox_mode="read-only"` | Verified live |
 | OpenCode 1.18.34 | default `build` agent | `--agent plan` + plan preamble | `--agent plan` | Verified live |
 | Pi 1.2.0 | no tool flags | `--tools read,grep,find,ls --no-mcp --append-system-prompt <preamble>` | `--tools read,grep,find,ls --no-mcp` | Verified live |
@@ -45,8 +45,12 @@ the level before it reaches argv.
 Live runs used a scratch folder under `.qa/`, a prompt asking for a file
 named `made.txt`, and `archonui --ask`.
 
-- **Claude.** `--permission-mode auto` stalled in `-p` mode ("Permission
-  needed"), so Auto uses `acceptEdits`, which created the file. `dontAsk` with
+- **Claude.** On 2.1.289 `--permission-mode auto` stalled in `-p` mode
+  ("Permission needed"). On 2.1.300 it finishes: a turn that wrote a file and
+  ran `ls -la` completed in about 11 s with no denials, with the prompt in argv
+  and as stream-json on stdin, so Auto uses `auto`. Adding
+  `--permission-prompt-tool` makes `auto` hand every call to that tool, so it
+  is not passed. `dontAsk` with
   the write tools disallowed read files and created none. `plan` produced a plan
   and created none. `--disallowedTools` takes several values, so the `=` form is
   required; without it the prompt is swallowed.
@@ -103,11 +107,15 @@ the sessions folder, so tokens stay out of the process list.
 Each tool category (read, edit, grep, run, browser, web, fetch) can be Allow,
 Ask or Off. Ask only does something where the harness can pause for an answer.
 
-**Claude Code, Auto mode.** When any category is Ask, Claude runs with
-`--permission-mode default` and `--permission-prompt-tool mcp__archonui__approve`.
-Allow tools go in `--allowedTools`, Off tools in `--disallowedTools`, and Ask
-tools in neither list, so Claude asks before each use. `acceptEdits` is not used
-in that case, because it would approve edits before the prompt. ArchonUI serves
+**Claude Code, Auto mode.** Since 0.1.9 Auto is Claude's own `auto` mode, as
+in an interactive Claude Code session: Allow tools go in `--allowedTools`, Off
+tools in `--disallowedTools`, and Ask tools in neither list, so Claude's safety
+check approves or blocks them. Nothing stops to ask, and the approval route
+below is not used by any harness today. It is kept for a harness that can ask.
+
+Before 0.1.9, when any category was Ask, Claude ran with
+`--permission-mode default` and `--permission-prompt-tool mcp__archonui__approve`,
+so it asked before each use of an Ask tool. ArchonUI serves
 the `approve` tool itself: the turn starts `archonui --approval-mcp <socket>
 <chat id>` from the per-chat server file `mcp/claude-<chat id>.json`. Each
 request goes over a per-process Unix socket to the app, which shows an approval

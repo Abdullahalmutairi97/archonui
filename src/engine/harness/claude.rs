@@ -4,7 +4,6 @@
 use super::{signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
 use crate::app::settings::{McpServer, Permission, Permissions};
 use crate::engine::{
-    approve::{self, Route},
     attach::{Attachment, Delivery, Kind, CLAUDE_PDF_BYTES},
     discover::{list, probe_jsonl, strings, Capabilities, ModelInfo},
     mcp,
@@ -15,7 +14,7 @@ use serde_json::{json, Value};
 use std::{
     fs::File,
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
 };
 
@@ -59,10 +58,7 @@ impl Harness for Claude {
             _ => super::small_text(a),
         });
         let prompt = files.prompt(input.prompt);
-        let mcp = match prompt_route(input) {
-            Some(route) => approval_mcp(input.tools.mcp, route),
-            None => self.mcp_args(input.tools.mcp),
-        };
+        let mcp = self.mcp_args(input.tools.mcp);
         let mut a = strs(&["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
         a.extend(tool_flags(input));
         a.extend(mcp.args);
@@ -177,72 +173,36 @@ fn effort_from_settings(text: &str) -> Option<String> {
     settings["effortLevel"].as_str().map(String::from)
 }
 
-/// The approval route when this turn's Ask permissions need ArchonUI to prompt: Auto, a route from the app,
-/// and at least one permission on Ask. Plan and Ask already refuse the tools; a headless run has no one to ask.
-fn prompt_route<'a>(input: &TurnInput<'a>) -> Option<Route<'a>> {
-    let p = input.tools.permissions;
-    let asks = [p.read, p.edit, p.grep, p.run, p.browser, p.web, p.fetch].contains(&Permission::Ask);
-    (input.mode == Mode::Auto && asks).then_some(input.tools.approval).flatten()
-}
-
-/// `--mcp-config` with the enabled servers and the `archonui` approval server that `--permission-prompt-tool`
-/// names. The file is named for the chat: the server's arguments name the chat, so chats must not share it.
-/// The run's token rides in the server's environment, out of argv, and the app refuses a call without it.
-fn approval_mcp(servers: &[McpServer], route: Route) -> Plan {
-    let server = json!({
-        "type": "stdio",
-        "command": command_path(&std::env::current_exe().unwrap_or_else(|_| PathBuf::from("archonui"))),
-        "args": ["--approval-mcp", route.socket.display().to_string(), route.session],
-        "env": {approve::TOKEN_ENV: approve::token()},
-    });
-    let name = format!("claude-{}.json", route.session);
-    let (path, text) = mcp::config_file_with(&name, servers, true, vec![(approve::SERVER.into(), server)]);
-    Plan { args: vec![mcp_config_flag(&path)], files: vec![(path, text)], ..Default::default() }
-}
-
 /// `--mcp-config` takes several values, so a bare one followed by the prompt would read the prompt as
 /// another config file. The `=` form takes exactly one (checked against 2.1.300).
 fn mcp_config_flag(path: &Path) -> String {
     format!("--mcp-config={}", path.display())
 }
 
-/// The path to hand a child that runs this same program. `/proc/self/exe` gains a " (deleted)"
-/// suffix once the file is replaced (rebuilding or updating while ArchonUI runs) and no shell can
-/// execute that; the stripped path is the replacement, which is what a child should run.
-fn command_path(path: &Path) -> String {
-    let path = path.to_string_lossy();
-    path.strip_suffix(" (deleted)").unwrap_or(&path).to_string()
-}
-
-/// `--permission-mode` per mode, verified live. `auto` was tried and stalls
-/// in `-p` mode, so Auto uses `acceptEdits`. `dontAsk` refuses anything not
+/// `--permission-mode` per mode, verified live. Auto is Claude Code's own
+/// `auto` mode, as in an interactive session: its safety check approves or
+/// blocks each action, so nothing stops to ask (checked against 2.1.300 with
+/// `-p`, both argv and stream-json input). Tools on Allow skip the check
+/// through `--allowedTools`; tools on Ask are left to it. A permission prompt
+/// tool is not passed, because `auto` hands it every call and the turn would
+/// ask again. `dontAsk` refuses anything not
 /// already allowed; Ask also disallows the tools that change files or run
 /// shell commands, so a user's allow rule for Bash cannot write. Tools switched
 /// off in the settings and disabled skills join the same `--disallowedTools`
 /// list. The `=` form matters: `--disallowedTools` takes several values and
 /// would swallow the prompt.
-///
-/// Auto with an Ask permission uses `default`, because `acceptEdits` would approve edits before the prompt
-/// tool was asked. Allow tools go in `--allowedTools` so they run without a prompt; Ask tools are in neither
-/// list, so they reach the prompt tool.
 fn tool_flags(input: &TurnInput) -> Vec<String> {
     let p = input.tools.permissions;
-    let prompting = prompt_route(input).is_some();
-    let mut flags = match (input.mode, prompting) {
-        (Mode::Auto, true) => strs(&["--permission-mode", "default"]),
-        (Mode::Auto, false) => strs(&["--permission-mode", "acceptEdits"]),
-        (Mode::Plan, _) => strs(&["--permission-mode", "plan"]),
-        (Mode::Ask, _) => strs(&["--permission-mode", "dontAsk"]),
+    let mut flags = match input.mode {
+        Mode::Auto => strs(&["--permission-mode", "auto"]),
+        Mode::Plan => strs(&["--permission-mode", "plan"]),
+        Mode::Ask => strs(&["--permission-mode", "dontAsk"]),
     };
     if input.mode == Mode::Auto {
         let allowed = tools_at(p, Permission::Allow);
         if !allowed.is_empty() {
             flags.push(format!("--allowedTools={}", allowed.join(",")));
         }
-    }
-    if prompting {
-        flags.push("--permission-prompt-tool".into());
-        flags.push(format!("mcp__{}__{}", approve::SERVER, approve::TOOL));
     }
     let mut denied: Vec<String> = match input.mode {
         Mode::Ask => strs(&["Edit", "Write", "NotebookEdit", "Bash"]),
@@ -352,7 +312,7 @@ mod tests {
         }
     }
 
-    fn flags(mode: Mode, permissions: Permissions, route: Option<Route>) -> Vec<String> {
+    fn flags(mode: Mode, permissions: Permissions) -> Vec<String> {
         let input = TurnInput {
             cwd: Path::new("."),
             prompt: "",
@@ -361,7 +321,7 @@ mod tests {
             model: None,
             effort: None,
             mode,
-            tools: harness::ToolSettings { permissions, approval: route, ..Default::default() },
+            tools: harness::ToolSettings { permissions, ..Default::default() },
         };
         tool_flags(&input)
     }
@@ -374,12 +334,6 @@ mod tests {
         flags.iter().find_map(|f| f.strip_prefix(prefix))
     }
 
-    fn route() -> Route<'static> {
-        Route { socket: Path::new("/run/user/1000/archonui-1.sock"), session: "chat-a" }
-    }
-
-    const PROMPT_TOOL: &str = "mcp__archonui__approve";
-
     #[test]
     fn claude_default_effort_comes_from_its_settings() {
         assert_eq!(effort_from_settings(r#"{"effortLevel":"high"}"#), Some("high".into()));
@@ -389,90 +343,49 @@ mod tests {
     }
 
     #[test]
-    fn auto_without_ask_keeps_accept_edits_and_allows_the_allowed_tools() {
-        let f = flags(Mode::Auto, all(Permission::Allow), Some(route()));
-        assert!(has(&f, "--permission-mode") && has(&f, "acceptEdits"));
-        assert!(!has(&f, "--permission-prompt-tool"));
+    fn auto_is_claude_auto_mode_and_never_prompts() {
+        for p in [all(Permission::Allow), all(Permission::Ask), Permissions::default()] {
+            let f = flags(Mode::Auto, p);
+            let i = f.iter().position(|x| x == "--permission-mode").unwrap();
+            assert_eq!(f[i + 1], "auto", "{p:?}");
+            assert!(!has(&f, "--permission-prompt-tool"), "auto hands every call to a prompt tool");
+        }
+    }
+
+    #[test]
+    fn auto_allows_the_allowed_tools_and_leaves_ask_tools_to_the_check() {
+        let f = flags(Mode::Auto, all(Permission::Allow));
         assert_eq!(
             value_of(&f, "--allowedTools="),
             Some("Read,Grep,Glob,LS,Edit,Write,MultiEdit,NotebookEdit,Bash,WebSearch,WebFetch")
         );
         assert_eq!(value_of(&f, "--disallowedTools="), None);
-    }
-
-    #[test]
-    fn auto_with_ask_prompts_and_keeps_ask_tools_out_of_both_lists() {
-        // Default permissions: edit and run are Ask, browser has no Claude tool.
-        let f = flags(Mode::Auto, Permissions::default(), Some(route()));
-        assert!(has(&f, "default"), "acceptEdits would approve edits before the prompt");
-        assert!(!has(&f, "acceptEdits"));
-        assert_eq!(value_of(&f, "--allowedTools="), Some("Read,Grep,Glob,LS,WebSearch,WebFetch"));
-        let allowed = value_of(&f, "--allowedTools=").unwrap();
-        assert!(!allowed.contains("Bash") && !allowed.contains("Edit"));
-        assert_eq!(value_of(&f, "--disallowedTools="), None);
-        let i = f.iter().position(|x| x == "--permission-prompt-tool").unwrap();
-        assert_eq!(f[i + 1], PROMPT_TOOL);
-    }
-
-    #[test]
-    fn ask_run_is_neither_allowed_nor_disallowed() {
         let p = Permissions { run: Permission::Ask, ..all(Permission::Allow) };
-        let f = flags(Mode::Auto, p, Some(route()));
+        let f = flags(Mode::Auto, p);
         let allowed = value_of(&f, "--allowedTools=").unwrap();
         assert!(!allowed.split(',').any(|t| t == "Bash"));
-        assert!(has(&f, PROMPT_TOOL));
+        assert_eq!(value_of(&f, "--disallowedTools="), None);
     }
 
     #[test]
-    fn off_tools_are_disallowed_even_while_prompting() {
+    fn off_tools_stay_disallowed_in_auto() {
         let p = Permissions { read: Permission::Off, edit: Permission::Ask, ..all(Permission::Allow) };
-        let f = flags(Mode::Auto, p, Some(route()));
+        let f = flags(Mode::Auto, p);
         assert_eq!(value_of(&f, "--disallowedTools="), Some("Read"));
         assert!(!value_of(&f, "--allowedTools=").unwrap().split(',').any(|t| t == "Read"));
-        assert!(has(&f, PROMPT_TOOL));
-    }
-
-    #[test]
-    fn auto_with_ask_but_no_route_falls_back_to_accept_edits() {
-        let f = flags(Mode::Auto, Permissions::default(), None);
-        assert!(has(&f, "acceptEdits"));
-        assert!(!has(&f, "--permission-prompt-tool"));
     }
 
     #[test]
     fn plan_and_ask_modes_never_prompt() {
         for mode in [Mode::Plan, Mode::Ask] {
-            let f = flags(mode, Permissions::default(), Some(route()));
+            let f = flags(mode, Permissions::default());
             assert!(!has(&f, "--permission-prompt-tool"), "{mode:?}");
             assert!(value_of(&f, "--allowedTools=").is_none(), "{mode:?}");
         }
-        let plan = flags(Mode::Plan, Permissions::default(), Some(route()));
-        assert!(has(&plan, "plan"));
-        let ask = flags(Mode::Ask, Permissions::default(), Some(route()));
+        assert!(has(&flags(Mode::Plan, Permissions::default()), "plan"));
+        let ask = flags(Mode::Ask, Permissions::default());
         assert!(has(&ask, "dontAsk"));
         assert_eq!(value_of(&ask, "--disallowedTools="), Some("Edit,Write,NotebookEdit,Bash"));
-    }
-
-    #[test]
-    fn approval_config_names_the_archonui_server_with_the_chat() {
-        let servers = [McpServer {
-            id: "x".into(),
-            name: "docs".into(),
-            transport: McpTransport::Stdio { command: "docs-mcp".into(), args: vec![], env: Default::default() },
-            enabled: true,
-        }];
-        let plan = approval_mcp(&servers, route());
-        let (path, text) = plan.files.into_iter().next().unwrap();
-        assert!(path.ends_with("mcp/claude-chat-a.json"), "{}", path.display());
-        let config: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(config["mcpServers"]["docs"]["command"], "docs-mcp");
-        assert_eq!(config["mcpServers"]["archonui"]["type"], "stdio");
-        assert_eq!(
-            config["mcpServers"]["archonui"]["args"],
-            json!(["--approval-mcp", "/run/user/1000/archonui-1.sock", "chat-a"])
-        );
-        assert_eq!(config["mcpServers"]["archonui"]["env"][approve::TOKEN_ENV], approve::token());
-        assert_eq!(plan.args, [format!("--mcp-config={}", path.display())]);
     }
 
     #[test]
@@ -498,16 +411,5 @@ mod tests {
         assert!(args.last().unwrap().starts_with("do it"), "the prompt is last: {args:?}");
         assert!(!args.iter().any(|a| a == "--add-dir" || a == "--mcp-config"), "{args:?}");
         assert!(args.contains(&"--add-dir=/data".to_string()), "{args:?}");
-    }
-
-    #[test]
-    fn the_approval_command_is_a_runnable_path() {
-        assert_eq!(command_path(Path::new("/opt/archonui/archonui")), "/opt/archonui/archonui");
-        assert_eq!(command_path(Path::new("/opt/archonui/archonui (deleted)")), "/opt/archonui/archonui");
-        // Whatever binary is running, the path handed to the child names a file that still exists.
-        let exe = std::env::current_exe().unwrap();
-        let command = command_path(&exe);
-        assert_eq!(Path::new(&command), exe.as_path(), "a live path is unchanged");
-        assert!(Path::new(&command).is_file(), "the child can run {command}");
     }
 }

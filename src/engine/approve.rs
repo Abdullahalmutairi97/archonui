@@ -46,6 +46,7 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where a turn's approval requests go: this process's socket and the chat they belong to.
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // Read by a harness that asks; none does today (see `ToolSettings::approval`).
 pub struct Route<'a> {
     pub socket: &'a Path,
     pub session: &'a str,

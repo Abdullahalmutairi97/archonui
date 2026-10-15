@@ -100,7 +100,9 @@ pub struct ToolSettings<'a> {
     /// With `sandbox`: `true` keeps sandboxed commands off the network. `false` allows it.
     /// The CLIs run headless and cannot ask, so the choice is made here.
     pub ask_network: bool,
-    /// Where a harness that can ask sends its permission prompts. `None` answers nothing.
+    /// Where a harness that can ask sends its permission prompts. `None` answers nothing. No harness
+    /// asks today: Claude's Auto is its own `auto` mode, which a prompt tool would make ask again.
+    #[allow(dead_code)]
     pub approval: Option<Route<'a>>,
 }
 
@@ -320,7 +322,7 @@ mod tests {
     #[test]
     fn claude_modes() {
         let auto = args("claude", Mode::Auto, None);
-        assert!(has_pair(&auto, "--permission-mode", "acceptEdits"));
+        assert!(has_pair(&auto, "--permission-mode", "auto"));
         let plan = args("claude", Mode::Plan, None);
         assert!(has_pair(&plan, "--permission-mode", "plan"));
         let ask = args("claude", Mode::Ask, None);

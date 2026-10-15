@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9
+
+- Auto mode with Claude Code is now Claude's own `auto` permission mode, as in an interactive
+  Claude Code session: a safety check approves or blocks each action and nothing stops to ask.
+  Tools on Allow skip the check, tools on Off stay blocked, and tools on Ask are left to the check.
+  ArchonUI's approval card is no longer shown in Auto.
+
 ## 0.1.8
 
 - The terminal starts instantly with fish. The terminal now answers the device-attributes,
