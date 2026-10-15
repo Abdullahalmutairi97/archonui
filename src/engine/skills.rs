@@ -45,7 +45,9 @@ fn discover_in(home: &Path, cwd: &Path) -> Vec<Skill> {
     let mut out: Vec<Skill> = roots
         .iter()
         .flat_map(|(root, source)| skills_in(root, source))
-        .filter(|s| seen.insert(s.path.clone()))
+        // A symlinked skill (e.g. ~/.claude/skills/x -> ~/.agents/skills/x) is listed once, from
+        // the first root that reaches it.
+        .filter(|s| seen.insert(fs::canonicalize(&s.path).unwrap_or_else(|_| s.path.clone())))
         .collect();
     out.sort_by(|a, b| (&a.source, &a.name).cmp(&(&b.source, &b.name)));
     out
@@ -292,6 +294,20 @@ mod tests {
         skill_md(&home, "---\nname: home\n---\n");
         assert_eq!(import_in(&home, &home).unwrap_err().kind(), io::ErrorKind::InvalidInput);
         assert!(fs::read_dir(home.join(".agents/skills")).unwrap().next().is_none(), "nothing was copied");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_skill_is_listed_once() {
+        let home = scratch("listed-once");
+        let cwd = home.join("repo");
+        skill_md(&home.join(".agents/skills/fmt"), "---\nname: fmt\n---\n");
+        fs::create_dir_all(home.join(".claude/skills")).unwrap();
+        std::os::unix::fs::symlink(home.join(".agents/skills/fmt"), home.join(".claude/skills/fmt")).unwrap();
+        let found = discover_in(&home, &cwd);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].source, "Personal");
         let _ = fs::remove_dir_all(&home);
     }
 

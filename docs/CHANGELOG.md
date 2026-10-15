@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+- A skill reached through a symlink (for example `~/.claude/skills/x` linking to `~/.agents/skills/x`,
+  so every agent shares one copy) is listed once in Settings, under the folder it really lives in.
+
 ## 0.2.2
 
 - Switch agents mid-chat. The model picker has an AGENT row with every enabled agent, and `/agent`
