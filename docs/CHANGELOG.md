@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- IDE: scrolling no longer empties the editor. The code area drew a spacer for every row scrolled
+  past above the visible rows, and since the area doesn't scroll itself, that pushed them below its
+  bottom edge. Code text is smaller (11.5px on 17.5px rows, from 12.5px on 21.25px), so more fits.
 - The agent's task checklist shows in its reply, as in Claude Code: while it works, the task in
   progress as a heading, then ■ the current task, □ waiting ones and a green ✔ with strikethrough for
   finished ones; afterwards "Tasks · N of M done". Claude Code runs with

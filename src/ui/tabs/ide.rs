@@ -45,17 +45,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Height of one code row, from the design (line-height 21.25px).
-const LINE_H: f32 = 21.25;
+/// Height of one code row: 1.5 × the code size, tighter than the design's 21.25px.
+const LINE_H: f32 = 17.5;
 /// Padding above and below the code rows.
-const PAD_Y: f32 = 10.;
+const PAD_Y: f32 = 6.;
 /// Width of the line-number gutter.
 const GUTTER_W: f32 = 34.;
 /// Space between the gutter and the code.
 const GAP: f32 = 14.;
 /// Where the code starts, from the code area's left edge.
 const TEXT_X: f32 = GUTTER_W + GAP;
-const CODE_SIZE: f32 = 12.5;
+const CODE_SIZE: f32 = 11.5;
 /// Columns a tab is drawn as.
 const TAB_WIDTH: usize = 4;
 /// Rows the tab keeps in its AGENT CHANGES list.
@@ -1250,7 +1250,8 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The code area: the visible rows between spacers that stand for the rows scrolled past.
+    /// The code area: the visible rows from `doc.top`, drawn from the top edge. The area doesn't scroll
+    /// itself; the wheel moves `doc.top`, so rows scrolled past are simply not drawn.
     fn ide_code(&mut self, focused: bool, focus: &FocusHandle, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let ide = &mut self.tabs.ide;
         let (cell, visible) = (ide.cell, ide.visible_lines());
@@ -1266,7 +1267,9 @@ impl Shell {
         let left = doc.left;
         let Doc { buffer, .. } = doc;
         let style = RowStyle { theme, cell, left };
-        let mut rows = vec![div().h(px(PAD_Y + top as f32 * LINE_H)).into_any_element()];
+        // Only the top padding goes above the first drawn row: a spacer for the rows scrolled past pushed
+        // the visible rows below the bottom edge of this unscrolled area, so scrolling showed nothing.
+        let mut rows = vec![div().h(px(PAD_Y)).into_any_element()];
         for line in top..end {
             let raw = buffer.line(line);
             let text = shown(&raw);
@@ -1275,7 +1278,6 @@ impl Shell {
             let caret = (focused && cursor.line == line).then(|| visual_col(&raw, cursor.col));
             rows.push(code_row(&style, line, &text, &spans, marks.get(&line).copied(), selected, caret));
         }
-        rows.push(div().h(px((count - end) as f32 * LINE_H + PAD_Y)).into_any_element());
         div()
             .id("ide-code")
             .relative()
