@@ -93,7 +93,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = &self.theme;
-        let count = self.state.sessions().iter().filter(|s| s.project.as_deref() == Some(project.id.as_str())).count();
+        let count = self.state.sessions().iter().filter(|s| s.visible() && s.project.as_deref() == Some(project.id.as_str())).count();
         let info = match self.sidebar.probes.get(&project.path) {
             Some(Probe::Done(info)) => Some(info),
             _ => None,

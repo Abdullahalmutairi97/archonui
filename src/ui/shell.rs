@@ -392,6 +392,10 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A chat left with an unsent draft joins the sidebar; save it so it survives a crash.
+        if self.state.list_left_drafts(false) {
+            self.flush_sessions(cx);
+        }
         // rem-based sizes (`p_2`, `text_sm`…) follow the interface scale like `px` does.
         window.set_rem_size(gpui::px(16. * crate::ui::scale::zoom()));
         // The glass canvas is in design units, like the regions cut from it.

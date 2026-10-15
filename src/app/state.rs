@@ -166,6 +166,7 @@ impl AppState {
             self.stop(&id);
             self.apply(&id, Event::Finished(Ok(())));
         }
+        self.list_left_drafts(true);
         self.flush_sessions();
     }
 
@@ -276,9 +277,41 @@ impl AppState {
         doomed
     }
 
-    /// The sidebar's groups, most recently used first. Empty groups are left out.
+    /// The sidebar's groups, most recently used first. Empty groups are left out, and so are new
+    /// chats with nothing sent and no draft left behind (`Session::visible`).
     pub fn sections(&self, now: u64) -> Vec<(Section, Vec<&Session>)> {
         sections::sections(&self.sessions, now)
+            .into_iter()
+            .filter_map(|(section, sessions)| {
+                let sessions: Vec<&Session> = sessions.into_iter().filter(|s| s.visible()).collect();
+                (!sessions.is_empty()).then_some((section, sessions))
+            })
+            .collect()
+    }
+
+    /// Keeps the composer's unsent text for `id`, so it survives closing the tile or the app.
+    pub fn set_draft(&mut self, id: &str, text: &str) {
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return };
+        if s.draft != text {
+            s.draft = text.to_string();
+            self.dirty.insert(id.to_string());
+        }
+    }
+
+    /// Lists every chat the user has left with an unsent draft: one that isn't the focused tile,
+    /// or any at all when `all` (the window is closing). Once listed, a chat stays in the sidebar
+    /// until it is deleted. Returns whether any chat was newly listed.
+    pub fn list_left_drafts(&mut self, all: bool) -> bool {
+        let focus = self.workspace.layout.focus.clone();
+        let mut changed = false;
+        for s in &mut self.sessions {
+            if !s.listed && !s.draft.trim().is_empty() && (all || focus.as_deref() != Some(s.id.as_str())) {
+                s.listed = true;
+                self.dirty.insert(s.id.clone());
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Files to go with the next message to `id`.
@@ -339,6 +372,7 @@ impl AppState {
             session.title_auto = true;
         }
         session.push_with(Role::User, prompt, files.clone());
+        session.draft.clear();
         for e in file_errors {
             session.push(Role::Error, e);
         }
@@ -679,6 +713,53 @@ mod tests {
     }
 
     #[test]
+    fn new_chats_stay_out_of_the_sidebar_until_sent_or_left_with_a_draft() {
+        let mut app = state();
+        let now = store::now();
+        let listed = |app: &AppState| -> Vec<String> {
+            app.sections(now).into_iter().flat_map(|(_, v)| v.into_iter().map(|s| s.id.clone())).collect()
+        };
+        let a = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        assert!(listed(&app).is_empty());
+        // Typing in the focused chat doesn't list it.
+        app.set_draft(&a, "half a thought");
+        assert!(!app.list_left_drafts(false));
+        assert!(listed(&app).is_empty());
+        // Moving to another chat leaves the draft behind, so it is listed and the new one isn't.
+        let b = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        assert!(app.list_left_drafts(false));
+        assert_eq!(listed(&app), [a.clone()]);
+        // Coming back and clearing the draft keeps it listed until it is deleted.
+        app.workspace.layout.open_in_focused(&a);
+        app.set_draft(&a, "");
+        assert_eq!(listed(&app), [a.clone()]);
+        app.delete_session(&a);
+        assert!(listed(&app).is_empty());
+        // Closing the window lists the focused chat's draft too; an empty one stays hidden.
+        app.set_draft(&b, "on my way out");
+        app.new_session("pi", "/tmp".into(), Placement::Focused);
+        app.workspace.layout.open_in_focused(&b);
+        app.list_left_drafts(true);
+        assert_eq!(listed(&app), [b]);
+    }
+
+    #[test]
+    fn listed_drafts_load_back() {
+        let dir = std::env::temp_dir().join(format!("archonui-drafts-{}", store::new_id()));
+        let mut s = Session::new("pi", "/tmp".into());
+        s.draft = "unsent".into();
+        s.listed = true;
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{}.json", s.id)), serde_json::to_vec(&s).unwrap()).unwrap();
+        let hidden = Session::new("pi", "/tmp".into());
+        std::fs::write(dir.join(format!("{}.json", hidden.id)), serde_json::to_vec(&hidden).unwrap()).unwrap();
+        let loaded = store::load_from(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].draft, "unsent");
+    }
+
+    #[test]
     fn new_session_placement() {
         let mut app = state();
         let first = app.new_session("pi", "/tmp".into(), Placement::Focused);
@@ -769,6 +850,11 @@ mod tests {
         let mut older = Session::new("pi", "/tmp".into());
         older.updated = now - 5 * 86_400;
         app.sessions = vec![older, recent];
+        for s in &mut app.sessions {
+            s.push(Role::User, "hi");
+        }
+        app.sessions[0].updated = now - 5 * 86_400;
+        app.sessions[1].updated = now - 60;
         let groups = app.sections(now);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].0, Section::Today);

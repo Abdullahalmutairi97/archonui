@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- A new session stays out of the sessions list until its first message is sent.
+- Text typed but not sent is kept as a draft. Leave the session (focus another tile, close the tile or
+  close the window) and it joins the list, titled by the draft, and stays there until you delete it.
+  The draft is restored in the composer when you reopen it, even after a restart.
+
 ## 0.1.4 — first public beta
 
 - Bug fixes across the engine, chat, editor, tabs and widgets.

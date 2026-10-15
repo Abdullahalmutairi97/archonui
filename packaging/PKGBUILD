@@ -1,6 +1,6 @@
 # Maintainer: Abdullah Almutairi
 pkgname=archonui
-pkgver=0.1.4
+pkgver=0.1.5
 pkgrel=1
 pkgdesc='Tiled desktop workspace for coding-agent CLIs (Claude Code, Codex, Gemini, OpenCode, Pi)'
 arch=(x86_64)

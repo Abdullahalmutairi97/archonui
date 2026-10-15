@@ -103,7 +103,8 @@ impl Shell {
         if query.trim().is_empty() {
             rows.push(Row::New);
         }
-        rows.extend(rank(self.state.sessions(), query).into_iter().map(|s| Row::Session(s.id.clone())));
+        let visible = rank(self.state.sessions(), query).into_iter().filter(|s| s.visible());
+        rows.extend(visible.map(|s| Row::Session(s.id.clone())));
         rows
     }
 

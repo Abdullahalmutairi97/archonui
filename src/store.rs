@@ -111,6 +111,13 @@ pub struct Session {
     /// A terminal was opened for this chat, so the chat is kept even without messages.
     #[serde(default)]
     pub terminal: bool,
+    /// Text typed in the composer but not sent yet.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub draft: String,
+    /// The user left this chat with an unsent draft, so it stays in the sidebar, even without
+    /// messages, until it is deleted. A new chat is hidden until it has a message or this is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub listed: bool,
     pub created: u64,
     /// Last activity, in seconds since the epoch. The sidebar sorts by it ("last used").
     pub updated: u64,
@@ -134,10 +141,17 @@ impl Session {
             effort: None,
             mode: Mode::default(),
             terminal: false,
+            draft: String::new(),
+            listed: false,
             created: now,
             updated: now,
             messages: Vec::new(),
         }
+    }
+
+    /// Whether the sidebar lists this chat: it has a message, a terminal, or a draft the user left.
+    pub fn visible(&self) -> bool {
+        !self.messages.is_empty() || self.terminal || self.listed
     }
 
     pub fn push(&mut self, role: Role, text: impl Into<String>) {
@@ -440,7 +454,7 @@ fn free_path(session: &str, name: &str) -> io::Result<PathBuf> {
     Ok(dest)
 }
 
-fn load_from(dir: &Path) -> Vec<Session> {
+pub(crate) fn load_from(dir: &Path) -> Vec<Session> {
     let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
     let mut sessions: Vec<Session> = entries
         .filter_map(Result::ok)
@@ -454,7 +468,7 @@ fn load_from(dir: &Path) -> Vec<Session> {
             // A reply cut off by quitting mid-turn may have been saved empty. One with tool rows is kept,
             // as `AppState` keeps it at the end of a turn.
             s.messages.retain(|m| m.role != Role::Agent || !m.text.is_empty() || !m.tools.is_empty());
-            (!s.messages.is_empty() || s.terminal).then_some(s)
+            s.visible().then_some(s)
         })
         .collect();
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));

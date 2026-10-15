@@ -113,7 +113,11 @@ impl Shell {
                     })
                     .map(|s| Entry {
                         id: s.id.clone(),
-                        title: if s.title.trim().is_empty() { "New session".into() } else { s.title.clone() },
+                        title: match (s.title.trim().is_empty(), s.draft.trim().is_empty()) {
+                            (false, _) => s.title.clone(),
+                            (true, false) => crate::store::title_from(s.draft.trim()),
+                            (true, true) => "New session".into(),
+                        },
                         icon: s.icon,
                         harness: s.agent.clone(),
                         ago: ago(s.updated, now),

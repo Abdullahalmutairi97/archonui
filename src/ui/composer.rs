@@ -346,9 +346,14 @@ impl Shell {
             ..Default::default()
         };
         let input = cx.new(|cx| TextInput::new(config, window, cx));
+        // A draft left in this chat earlier, maybe before a restart.
+        if let Some(draft) = self.state.session(id).map(|s| s.draft.clone()).filter(|d| !d.is_empty()) {
+            input.update(cx, |input, cx| input.set_text(&draft, cx));
+        }
         let key = id.to_string();
-        let sub = cx.subscribe(&input, move |this, _, ev: &TextInputEvent, cx| match ev {
+        let sub = cx.subscribe(&input, move |this, input, ev: &TextInputEvent, cx| match ev {
             TextInputEvent::Changed => {
+                this.state.set_draft(&key, &input.read(cx).text());
                 this.composers.set_row(&key, 0);
                 cx.notify();
             }
