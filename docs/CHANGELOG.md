@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Gradient backgrounds are soft mesh blends: the theme's base colour with a glow of one colour from
+  the top-left and another from the bottom-right, plus faint noise so they don't band. Aurora, Sunset,
+  Ocean and Nebula have calm authored surfaces over their glows, Hermes a darker, less saturated navy,
+  and inline code a lighter background in every theme.
 - New neutral mark: a plain "A", for the app icon (all hicolor sizes) and the built-in themes' logo.
   The sword logo and the castle artwork are no longer in the repository.
 - Context meter: a small bar beside the model picker shows how full the agent's context is, with no

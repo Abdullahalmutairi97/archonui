@@ -106,20 +106,35 @@ impl WallpaperSource {
     }
 }
 
-/// Size of a generated gradient background. Smooth blends scale up without visible steps.
-const GRADIENT_SIZE: (u32, u32) = (480, 270);
+/// Size of a generated gradient background. Soft blends scale up without visible steps.
+const GRADIENT_SIZE: (u32, u32) = (640, 360);
 
-/// A background that blends `stops` from the top-left corner through the centre to the bottom-right.
+/// A mesh-style background: `stops[0]` as the base, with soft glows of `stops[1]` from the top-left
+/// and `stops[2]` from the bottom-right, and a fainter mix of both off-centre. A little noise keeps the
+/// blend from banding on 8-bit screens.
 fn gradient_image(stops: [u32; 3]) -> RgbaImage {
     let rgb = |c: u32| [(c >> 16) as f32, ((c >> 8) & 0xff) as f32, (c & 0xff) as f32];
-    let [a, b, c] = stops.map(rgb);
+    let [base, a, b] = stops.map(rgb);
+    let mid = [(a[0] + b[0]) / 2., (a[1] + b[1]) / 2., (a[2] + b[2]) / 2.];
     let (w, h) = GRADIENT_SIZE;
+    // (centre x, centre y, radius) as fractions of the width, then the colour and its strength.
+    let glows = [((0.08, 0.05, 0.85), a, 0.95), ((0.95, 0.98, 0.9), b, 0.95), ((0.72, 0.3, 0.45), mid, 0.4)];
     RgbaImage::from_fn(w, h, |x, y| {
-        // Position along the diagonal, 0 at the top-left, 1 at the bottom-right.
-        let t = (x as f32 / (w - 1) as f32 + y as f32 / (h - 1) as f32) / 2.;
-        let (from, to, u) = if t < 0.5 { (a, b, t * 2.) } else { (b, c, (t - 0.5) * 2.) };
-        let ch = |i: usize| (from[i] + (to[i] - from[i]) * u).round() as u8;
-        image::Rgba([ch(0), ch(1), ch(2), 255])
+        let (fx, fy) = (x as f32 / w as f32, y as f32 / w as f32);
+        let mut c = base;
+        for ((cx, cy, r), colour, strength) in glows {
+            let d = ((fx - cx).powi(2) + (fy - cy * h as f32 / w as f32).powi(2)).sqrt() / r;
+            // A smooth falloff: full at the centre, gone at the radius.
+            let t = (1. - d).clamp(0., 1.);
+            let k = t * t * (3. - 2. * t) * strength;
+            for i in 0..3 {
+                c[i] += (colour[i] - c[i]) * k;
+            }
+        }
+        // ±0.5 levels of hashed noise, below what the eye sees but enough to break bands.
+        let n = ((x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)) % 1000) as f32 / 1000. - 0.5;
+        let ch = |v: f32| (v + n).round().clamp(0., 255.) as u8;
+        image::Rgba([ch(c[0]), ch(c[1]), ch(c[2]), 255])
     })
 }
 
@@ -809,7 +824,7 @@ mod tests {
 
     #[test]
     fn dithering_uses_only_the_palette_in_square_dots() {
-        let ramp = gradient_image([0x000000, 0x808080, 0xffffff]);
+        let ramp = RgbaImage::from_fn(256, 64, |x, _| image::Rgba([x as u8, x as u8, x as u8, 255]));
         let dither = Dither { palette: vec![0x102030, 0xa0b0c0, 0xf0e0d0], pixel: 4 };
         let out = dither_image(&ramp, &dither);
         let allowed = [[0x10, 0x20, 0x30], [0xa0, 0xb0, 0xc0], [0xf0, 0xe0, 0xd0]];
@@ -827,10 +842,15 @@ mod tests {
     fn the_logo_and_gradients_need_no_wallpaper_files() {
         assert!(logo_bytes("archonui-mark.png").is_some());
         assert!(logo_bytes("logo-bm.png").is_none(), "personal logos are files, not embedded");
-        let blend = gradient_image([0x000000, 0x808080, 0xffffff]);
-        assert_eq!(blend.get_pixel(0, 0).0, [0, 0, 0, 255]);
+        // The glows' colours lead in their corners and the base shows between them.
+        let blend = gradient_image([0x000000, 0xff0000, 0x0000ff]);
         let (w, h) = GRADIENT_SIZE;
-        assert_eq!(blend.get_pixel(w - 1, h - 1).0, [255, 255, 255, 255]);
+        let [r, _, b, _] = blend.get_pixel(0, 0).0;
+        assert!(r > 200 && b < 40, "top-left is the first glow");
+        let [r, _, b, _] = blend.get_pixel(w - 1, h - 1).0;
+        assert!(b > 200 && r < 40, "bottom-right is the second glow");
+        let [r, g, b, _] = blend.get_pixel(w / 4, h - 1).0;
+        assert!(r < 90 && g < 10 && b < 90, "the base shows away from the glows: {r} {g} {b}");
     }
 
     #[test]

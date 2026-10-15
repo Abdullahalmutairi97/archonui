@@ -569,7 +569,8 @@ fn mark_style(mark: &Mark, theme: &Theme) -> HighlightStyle {
     match mark {
         Mark::Strong => HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() },
         Mark::Emphasis => HighlightStyle { font_style: Some(gpui::FontStyle::Italic), ..Default::default() },
-        Mark::Code => HighlightStyle { background_color: Some(theme.line2.to_hsla()), ..Default::default() },
+        // Lighter than `line2`, so a reply full of paths doesn't turn into a row of grey boxes.
+        Mark::Code => HighlightStyle { background_color: Some(theme.fg.alpha(0.12).to_hsla()), ..Default::default() },
         Mark::Link(_) => HighlightStyle {
             color: Some(theme.acc2.to_hsla()),
             underline: Some(UnderlineStyle { thickness: px(1.), color: None, wavy: false }),
