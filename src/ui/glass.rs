@@ -8,8 +8,8 @@
 use std::{
     collections::HashMap,
     panic::Location,
-    path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
 };
 
 use gpui::{
@@ -36,42 +36,23 @@ const IMAGE_CAP: usize = 8;
 /// Glass crops kept in memory. A crop is at most one surface at device resolution.
 const CROP_CAP: usize = 32;
 
-/// The theme wallpaper `name` (a file name such as `bloodmoon2.jpg`), embedded at build time.
-pub fn wallpaper_bytes(name: &str) -> Option<&'static [u8]> {
-    Some(match name {
-        "archonui4.jpg" => include_bytes!("../../assets/themes/wallpapers/archonui4.jpg"),
-        "bloodmoon2.jpg" => include_bytes!("../../assets/themes/wallpapers/bloodmoon2.jpg"),
-        "bonfire.jpg" => include_bytes!("../../assets/themes/wallpapers/bonfire.jpg"),
-        "citadel2.jpg" => include_bytes!("../../assets/themes/wallpapers/citadel2.jpg"),
-        "hunter2.jpg" => include_bytes!("../../assets/themes/wallpapers/hunter2.jpg"),
-        "ink2.jpg" => include_bytes!("../../assets/themes/wallpapers/ink2.jpg"),
-        "moonlight2.jpg" => include_bytes!("../../assets/themes/wallpapers/moonlight2.jpg"),
-        "neon2.jpg" => include_bytes!("../../assets/themes/wallpapers/neon2.jpg"),
-        "shards2.jpg" => include_bytes!("../../assets/themes/wallpapers/shards2.jpg"),
-        "vale2.jpg" => include_bytes!("../../assets/themes/wallpapers/vale2.jpg"),
-        "violet2.jpg" => include_bytes!("../../assets/themes/wallpapers/violet2.jpg"),
-        "wreck2.jpg" => include_bytes!("../../assets/themes/wallpapers/wreck2.jpg"),
-        _ => return None,
-    })
+/// A wallpaper embedded at build time, by file name. None ship yet; the backgrounds folder holds the
+/// user's.
+pub fn wallpaper_bytes(_name: &str) -> Option<&'static [u8]> {
+    None
 }
 
-/// The theme logo `name` (a file name such as `logo-bm.png`), embedded at build time.
-pub fn logo_bytes(name: &str) -> Option<&'static [u8]> {
-    Some(match name {
-        "logo-bm.png" => include_bytes!("../../assets/themes/logos/logo-bm.png"),
-        "logo-bonfire.png" => include_bytes!("../../assets/themes/logos/logo-bonfire.png"),
-        "logo-cat.png" => include_bytes!("../../assets/themes/logos/logo-cat.png"),
-        "logo-drg-black.png" => include_bytes!("../../assets/themes/logos/logo-drg-black.png"),
-        "logo-galaxy.png" => include_bytes!("../../assets/themes/logos/logo-galaxy.png"),
-        "logo-helm.png" => include_bytes!("../../assets/themes/logos/logo-helm.png"),
-        "logo-moon.png" => include_bytes!("../../assets/themes/logos/logo-moon.png"),
-        "logo-portal.png" => include_bytes!("../../assets/themes/logos/logo-portal.png"),
-        "logo-sand.png" => include_bytes!("../../assets/themes/logos/logo-sand.png"),
-        "logo-snow.png" => include_bytes!("../../assets/themes/logos/logo-snow.png"),
-        "logo-tree.png" => include_bytes!("../../assets/themes/logos/logo-tree.png"),
-        "sword-logo-diag.png" => include_bytes!("../../assets/themes/logos/sword-logo-diag.png"),
-        _ => return None,
-    })
+/// A theme's logo: the embedded ArchonUI mark by name, or a logo file by path. Files are read once.
+pub fn logo_bytes(name: &str) -> Option<Arc<[u8]>> {
+    static FILES: OnceLock<Mutex<HashMap<String, Option<Arc<[u8]>>>>> = OnceLock::new();
+    match name {
+        "sword-logo-diag.png" => Some(Arc::from(include_bytes!("../../assets/themes/logos/sword-logo-diag.png").as_slice())),
+        path if Path::new(path).is_absolute() => {
+            let mut files = FILES.get_or_init(Default::default).lock().ok()?;
+            files.entry(path.to_string()).or_insert_with(|| std::fs::read(path).ok().map(Arc::from)).clone()
+        }
+        _ => None,
+    }
 }
 
 /// Where a wallpaper image comes from.
@@ -81,12 +62,19 @@ pub enum WallpaperSource {
     Embedded(&'static str),
     /// A file the user picked.
     File(PathBuf),
+    /// A diagonal blend through three `0xrrggbb` colours, drawn when there is no image.
+    Gradient([u32; 3]),
 }
 
 impl WallpaperSource {
-    /// The embedded wallpaper for a theme path such as `fhd/bloodmoon2.jpg` (`theme::Preset::wallpaper`).
-    pub fn theme(path: &'static str) -> Self {
-        Self::Embedded(path.rsplit('/').next().unwrap_or(path))
+    /// A theme's background: its wallpaper file, else its gradient.
+    pub fn theme(theme: &crate::ui::theme::Theme) -> Self {
+        let path = Path::new(&theme.wallpaper);
+        if !theme.wallpaper.is_empty() && path.is_file() {
+            return Self::File(path.to_path_buf());
+        }
+        let hex = |c: crate::ui::theme::Rgba| (u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b);
+        Self::Gradient(theme.gradient.map(hex))
     }
 
     /// Decodes the image and scales it to at most [`MAX_WIDTH`]. `None` if it can't be read.
@@ -94,6 +82,7 @@ impl WallpaperSource {
         let decoded = match self {
             Self::Embedded(name) => image::load_from_memory(wallpaper_bytes(name)?),
             Self::File(path) => image::open(path),
+            Self::Gradient(stops) => return Some(gradient_image(*stops)),
         }
         .ok()?
         .into_rgba8();
@@ -104,6 +93,23 @@ impl WallpaperSource {
         let scaled_height = (u64::from(height) * u64::from(MAX_WIDTH) / u64::from(width)).max(1) as u32;
         Some(image::imageops::resize(&decoded, MAX_WIDTH, scaled_height, FilterType::Triangle))
     }
+}
+
+/// Size of a generated gradient background. Smooth blends scale up without visible steps.
+const GRADIENT_SIZE: (u32, u32) = (480, 270);
+
+/// A background that blends `stops` from the top-left corner through the centre to the bottom-right.
+fn gradient_image(stops: [u32; 3]) -> RgbaImage {
+    let rgb = |c: u32| [(c >> 16) as f32, ((c >> 8) & 0xff) as f32, (c & 0xff) as f32];
+    let [a, b, c] = stops.map(rgb);
+    let (w, h) = GRADIENT_SIZE;
+    RgbaImage::from_fn(w, h, |x, y| {
+        // Position along the diagonal, 0 at the top-left, 1 at the bottom-right.
+        let t = (x as f32 / (w - 1) as f32 + y as f32 / (h - 1) as f32) / 2.;
+        let (from, to, u) = if t < 0.5 { (a, b, t * 2.) } else { (b, c, (t - 0.5) * 2.) };
+        let ch = |i: usize| (from[i] + (to[i] - from[i]) * u).round() as u8;
+        image::Rgba([ch(0), ch(1), ch(2), 255])
+    })
 }
 
 /// One cached image: the source plus the look, with floats quantized to 0.01 so that float noise
@@ -743,11 +749,13 @@ mod tests {
     }
 
     #[test]
-    fn embedded_assets_resolve_by_file_name() {
-        assert!(wallpaper_bytes("bloodmoon2.jpg").is_some());
-        assert!(wallpaper_bytes("bloodmoon2.png").is_none());
+    fn the_logo_and_gradients_need_no_wallpaper_files() {
         assert!(logo_bytes("sword-logo-diag.png").is_some());
-        assert_eq!(WallpaperSource::theme("fhd/bloodmoon2.jpg"), WallpaperSource::Embedded("bloodmoon2.jpg"));
+        assert!(logo_bytes("logo-bm.png").is_none(), "personal logos are files, not embedded");
+        let blend = gradient_image([0x000000, 0x808080, 0xffffff]);
+        assert_eq!(blend.get_pixel(0, 0).0, [0, 0, 0, 255]);
+        let (w, h) = GRADIENT_SIZE;
+        assert_eq!(blend.get_pixel(w - 1, h - 1).0, [255, 255, 255, 255]);
     }
 
     #[test]
@@ -954,9 +962,9 @@ mod tests {
     }
 
     #[test]
-    fn decode_and_blur_timing_bloodmoon() {
+    fn decode_and_blur_timing_gradient() {
         // Run with `cargo test --release glass -- --nocapture` for the numbers in the report.
-        let source = WallpaperSource::theme("fhd/bloodmoon2.jpg");
+        let source = WallpaperSource::Gradient([0x0a0a0a, 0x4c1d95, 0xa21caf]);
         let start = std::time::Instant::now();
         let decoded = source.decode().unwrap();
         let decode = start.elapsed();
@@ -967,13 +975,13 @@ mod tests {
         let _ = render_image(blurred);
         let convert = start.elapsed();
         eprintln!(
-            "bloodmoon2.jpg {}x{}: decode {:?}, blur σ=24 {:?}, bgra {:?}",
+            "gradient {}x{}: generate {:?}, blur σ=24 {:?}, bgra {:?}",
             decoded.width(),
             decoded.height(),
             decode,
             blur,
             convert
         );
-        assert_eq!(decoded.dimensions(), (1920, 1080));
+        assert_eq!(decoded.dimensions(), GRADIENT_SIZE);
     }
 }

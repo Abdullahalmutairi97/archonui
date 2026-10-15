@@ -1,7 +1,12 @@
 //! ArchonUI's colour themes: the 12 presets, the pipeline that resolves them, and the background
 //! styles. Spec: `docs/design/themes.md`; `docs/design/themes.json` is its machine-readable twin.
 
-use std::collections::HashMap;
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -66,36 +71,8 @@ pub fn mix(a: Rgba, b: Rgba, t: f64) -> Rgba {
     Rgba::new(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b), 1.0)
 }
 
-/// Stable config id of a preset, serialised kebab-case (`blood-moon`). Order is the prototype's
-/// `NAMES` order, which `Alt+T` cycles through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ThemeId {
-    ArchonUI,
-    #[default]
-    BloodMoon,
-    Moonlight,
-    Wreck,
-    Citadel,
-    Neon,
-    Violet,
-    Ink,
-    Bonfire,
-    Hunter,
-    Shards,
-    Vale,
-    Codex,
-    ClaudeCode,
-    Gemini,
-    Hermes,
-}
-
-impl ThemeId {
-    /// The preset for this id; [`PRESETS`] is indexed by `ThemeId as usize`.
-    pub fn preset(self) -> Preset {
-        PRESETS[self as usize]
-    }
-}
+/// A theme's id: `nord`, `claude-code`, or the `id` in a theme file. Settings key by it.
+pub type ThemeId = String;
 
 /// `image-rendering` for the logo and hero art. Only Bonfire and Hunter are pixelated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,11 +94,13 @@ pub struct Tune {
     pub acc: Rgba,
 }
 
-/// A preset as authored in the prototype's `T()` factory (L882). `panel`, `pop`, `line`, `line2`
-/// and `border` are not stored: the pipeline always replaces them (themes.md §2.3, §2.5).
-#[derive(Debug, Clone, Copy)]
+/// A theme as authored: base colours plus how the window looks. Built-in themes are in [`BUILTIN`];
+/// theme files in the config dir's `themes` folder add more (see [`presets`]). `panel`, `pop`,
+/// `line`, `line2` and `border` are derived unless `tune` or `surfaces` set them.
+#[derive(Debug, Clone)]
 pub struct Preset {
-    pub id: ThemeId,
+    pub id: Cow<'static, str>,
+    pub name: Cow<'static, str>,
     pub bg: Rgba,
     pub fg: Rgba,
     pub muted: Rgba,
@@ -132,383 +111,325 @@ pub struct Preset {
     pub alt: Rgba,
     pub on: Rgba,
     pub soft: Rgba,
-    /// Only Blood Moon is hand-tuned; the other themes derive tile, panel, pop, muted and faint.
+    /// Hand-tuned overrides applied after the preset (themes.md §2.3).
     pub tune: Option<Tune>,
-    /// Path under `design/assets/`.
-    pub wallpaper: &'static str,
-    /// Path under `design/assets/`.
-    pub logo: &'static str,
+    /// Tile, sidebar and popover fills, when the theme sets them rather than deriving them.
+    pub surfaces: Option<[Rgba; 3]>,
+    /// The background image: a file path, or empty for the gradient.
+    pub wallpaper: Cow<'static, str>,
+    /// The background when there is no image: top-left, centre and bottom-right colours.
+    pub gradient: [Rgba; 3],
+    /// The logo: an embedded logo's name (see `glass::logo_bytes`) or a file path.
+    pub logo: Cow<'static, str>,
     pub render: Render,
     /// Three pairings, the first is the default.
     pub pairings: [FontPair; 3],
 }
 
-/// The 12 presets in the prototype's `NAMES` order (L883–896), then four look-alikes of other
-/// agent apps.
-pub const PRESETS: [Preset; 16] = [
+/// The ArchonUI mark every built-in theme uses.
+pub const DEFAULT_LOGO: &str = "sword-logo-diag.png";
+
+/// The theme a new install starts with, and the fallback for an id that no longer exists.
+pub const DEFAULT_THEME: &str = "archonui";
+
+/// A built-in theme. `colours` is bg, fg, muted, faint, acc, acc2, deep, alt, on; `surfaces` is tile,
+/// sidebar and popover; `gradient` is the background's three colours.
+#[allow(clippy::too_many_arguments)]
+const fn builtin(
+    id: &'static str,
+    name: &'static str,
+    colours: [u32; 9],
+    soft: Rgba,
+    surfaces: Option<[u32; 3]>,
+    gradient: [u32; 3],
+    pairings: [FontPair; 3],
+) -> Preset {
+    let c = colours;
     Preset {
-        id: ThemeId::ArchonUI,
-        bg: Rgba::hex(0x050505),
-        fg: Rgba::hex(0xededed),
-        muted: Rgba::hex(0x8a8a8a),
-        faint: Rgba::hex(0x3a3a3a),
-        acc: Rgba::hex(0xd8d8d8),
-        acc2: Rgba::hex(0xffffff),
-        deep: Rgba::hex(0x4a4a4a),
-        alt: Rgba::hex(0xb0b0b0),
-        on: Rgba::hex(0x050505),
-        soft: Rgba::new(255, 255, 255, 0.12),
+        id: Cow::Borrowed(id),
+        name: Cow::Borrowed(name),
+        bg: Rgba::hex(c[0]),
+        fg: Rgba::hex(c[1]),
+        muted: Rgba::hex(c[2]),
+        faint: Rgba::hex(c[3]),
+        acc: Rgba::hex(c[4]),
+        acc2: Rgba::hex(c[5]),
+        deep: Rgba::hex(c[6]),
+        alt: Rgba::hex(c[7]),
+        on: Rgba::hex(c[8]),
+        soft,
         tune: None,
-        wallpaper: "fhd/archonui4.jpg",
-        logo: "sword-logo-diag.png",
+        surfaces: match surfaces {
+            Some([t, p, o]) => Some([Rgba::hex(t), Rgba::hex(p), Rgba::hex(o)]),
+            None => None,
+        },
+        wallpaper: Cow::Borrowed(""),
+        gradient: [Rgba::hex(gradient[0]), Rgba::hex(gradient[1]), Rgba::hex(gradient[2])],
+        logo: Cow::Borrowed(DEFAULT_LOGO),
         render: Render::Auto,
-        pairings: [
-            FontPair { label: "Grenze", display: "Grenze Gotisch", ui: "IBM Plex Mono" },
-            FontPair { label: "Bodoni", display: "Bodoni Moda", ui: "JetBrains Mono" },
-            FontPair { label: "Italiana", display: "Italiana", ui: "DM Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::BloodMoon,
-        bg: Rgba::hex(0x0d0a08),
-        fg: Rgba::hex(0xeadfcc),
-        muted: Rgba::hex(0x9a8c78),
-        faint: Rgba::hex(0x43382c),
-        acc: Rgba::hex(0xb0141e),
-        acc2: Rgba::hex(0xd9b56a),
-        deep: Rgba::hex(0x5a0a10),
-        alt: Rgba::hex(0xc9a77a),
-        on: Rgba::hex(0xf6ecdc),
-        soft: Rgba::new(176, 20, 30, 0.24),
-        tune: Some(Tune {
-            tile: Rgba::hex(0x16100d),
-            panel: Rgba::hex(0x0f0b09),
-            pop: Rgba::hex(0x1b1411),
-            fg: Rgba::hex(0xf3ead8),
-            muted: Rgba::hex(0xbfae94),
-            faint: Rgba::hex(0x6a5a48),
-            soft: Rgba::new(176, 20, 30, 0.32),
-            acc: Rgba::hex(0xc81e2a),
-        }),
-        wallpaper: "fhd/bloodmoon2.jpg",
-        logo: "logo-bm.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Fraktur", display: "UnifrakturCook", ui: "JetBrains Mono" },
-            FontPair { label: "Pirata", display: "Pirata One", ui: "Space Mono" },
-            FontPair { label: "Grenze", display: "Grenze Gotisch", ui: "IBM Plex Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Moonlight,
-        bg: Rgba::hex(0x050a14),
-        fg: Rgba::hex(0xe3ecf8),
-        muted: Rgba::hex(0x8392aa),
-        faint: Rgba::hex(0x2c3a52),
-        acc: Rgba::hex(0x8fb8e8),
-        acc2: Rgba::hex(0xdceaff),
-        deep: Rgba::hex(0x33557f),
-        alt: Rgba::hex(0xb4c6e0),
-        on: Rgba::hex(0x06101f),
-        soft: Rgba::new(143, 184, 232, 0.20),
-        tune: None,
-        wallpaper: "fhd/moonlight2.jpg",
-        logo: "logo-moon.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Cormorant", display: "Cormorant Garamond", ui: "JetBrains Mono" },
-            FontPair { label: "Italiana", display: "Italiana", ui: "DM Mono" },
-            FontPair { label: "Bodoni", display: "Bodoni Moda", ui: "IBM Plex Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Wreck,
-        bg: Rgba::hex(0x1e140a),
-        fg: Rgba::hex(0xf3e6cc),
-        muted: Rgba::hex(0xa8916c),
-        faint: Rgba::hex(0x5a4428),
-        acc: Rgba::hex(0xc8893a),
-        acc2: Rgba::hex(0xf0c27a),
-        deep: Rgba::hex(0x6b4420),
-        alt: Rgba::hex(0xe3cfa4),
-        on: Rgba::hex(0x1e140a),
-        soft: Rgba::new(200, 137, 58, 0.22),
-        tune: None,
-        wallpaper: "fhd/wreck2.jpg",
-        logo: "logo-sand.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Bebas", display: "Bebas Neue", ui: "Space Mono" },
-            FontPair { label: "Orbitron", display: "Orbitron", ui: "JetBrains Mono" },
-            FontPair { label: "Gloock", display: "Gloock", ui: "DM Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Citadel,
-        bg: Rgba::hex(0x0d0f18),
-        fg: Rgba::hex(0xf2e6d0),
-        muted: Rgba::hex(0x8f8ea4),
-        faint: Rgba::hex(0x383a52),
-        acc: Rgba::hex(0xe09a3a),
-        acc2: Rgba::hex(0xffcc70),
-        deep: Rgba::hex(0x7a3d14),
-        alt: Rgba::hex(0x9fb0d8),
-        on: Rgba::hex(0x140c04),
-        soft: Rgba::new(224, 154, 58, 0.22),
-        tune: None,
-        wallpaper: "fhd/citadel2.jpg",
-        logo: "logo-drg-black.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Grenze", display: "Grenze Gotisch", ui: "JetBrains Mono" },
-            FontPair { label: "Cinzel", display: "Cinzel", ui: "IBM Plex Mono" },
-            FontPair { label: "Fraktur", display: "UnifrakturCook", ui: "Space Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Neon,
-        bg: Rgba::hex(0x0e0718),
-        fg: Rgba::hex(0xf1e6ff),
-        muted: Rgba::hex(0x9d8bb8),
-        faint: Rgba::hex(0x3d2a5a),
-        acc: Rgba::hex(0xb04cff),
-        acc2: Rgba::hex(0xff6ad5),
-        deep: Rgba::hex(0x4b1d7a),
-        alt: Rgba::hex(0x93a8ff),
-        on: Rgba::hex(0xffffff),
-        soft: Rgba::new(176, 76, 255, 0.24),
-        tune: None,
-        wallpaper: "fhd/neon2.jpg",
-        logo: "logo-cat.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Orbitron", display: "Orbitron", ui: "JetBrains Mono" },
-            FontPair { label: "Mincho", display: "Zen Old Mincho", ui: "DM Mono" },
-            FontPair { label: "Bebas", display: "Bebas Neue", ui: "Fira Code" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Violet,
-        bg: Rgba::hex(0x0c0a20),
-        fg: Rgba::hex(0xece8ff),
-        muted: Rgba::hex(0x9590c0),
-        faint: Rgba::hex(0x36316a),
-        acc: Rgba::hex(0x7a6cff),
-        acc2: Rgba::hex(0xc9b8ff),
-        deep: Rgba::hex(0x33287a),
-        alt: Rgba::hex(0xe08ab8),
-        on: Rgba::hex(0xffffff),
-        soft: Rgba::new(122, 108, 255, 0.24),
-        tune: None,
-        wallpaper: "fhd/violet2.jpg",
-        logo: "logo-portal.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Cormorant", display: "Cormorant Garamond", ui: "JetBrains Mono" },
-            FontPair { label: "Metamorphous", display: "Metamorphous", ui: "DM Mono" },
-            FontPair { label: "Cinzel", display: "Cinzel", ui: "IBM Plex Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Ink,
-        bg: Rgba::hex(0xf2f0ea),
-        fg: Rgba::hex(0x16130f),
-        muted: Rgba::hex(0x6b665d),
-        faint: Rgba::hex(0xbdb8ad),
-        acc: Rgba::hex(0xc8201e),
-        acc2: Rgba::hex(0xe0322a),
-        deep: Rgba::hex(0x16130f),
-        alt: Rgba::hex(0x3d3a35),
-        on: Rgba::hex(0xffffff),
-        soft: Rgba::new(200, 32, 30, 0.12),
-        tune: None,
-        wallpaper: "fhd/ink2.jpg",
-        logo: "logo-tree.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Mincho", display: "Zen Old Mincho", ui: "DM Mono" },
-            FontPair { label: "Cormorant", display: "Cormorant Garamond", ui: "JetBrains Mono" },
-            FontPair { label: "Bodoni", display: "Bodoni Moda", ui: "IBM Plex Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Bonfire,
-        bg: Rgba::hex(0x141b20),
-        fg: Rgba::hex(0xdbe6ea),
-        muted: Rgba::hex(0x8a9ba3),
-        faint: Rgba::hex(0x3a4a52),
-        acc: Rgba::hex(0xe8762c),
-        acc2: Rgba::hex(0xffb24a),
-        deep: Rgba::hex(0x8a3a1c),
-        alt: Rgba::hex(0x9cc8d2),
-        on: Rgba::hex(0x1a0f08),
-        soft: Rgba::new(232, 118, 44, 0.22),
-        tune: None,
-        wallpaper: "fhd/bonfire.jpg",
-        logo: "logo-bonfire.png",
-        render: Render::Pixelated,
-        pairings: [
-            FontPair { label: "Pixelify", display: "Pixelify Sans", ui: "JetBrains Mono" },
-            FontPair { label: "Silkscreen", display: "Silkscreen", ui: "Space Mono" },
-            FontPair { label: "Press Start", display: "Press Start 2P", ui: "IBM Plex Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Hunter,
-        bg: Rgba::hex(0x0f1622),
-        fg: Rgba::hex(0xe4e8f0),
-        muted: Rgba::hex(0x8794ad),
-        faint: Rgba::hex(0x323d55),
-        acc: Rgba::hex(0xc23a3a),
-        acc2: Rgba::hex(0xf0e2c0),
-        deep: Rgba::hex(0x6e1e24),
-        alt: Rgba::hex(0x8fa6cc),
-        on: Rgba::hex(0x0f1622),
-        soft: Rgba::new(194, 58, 58, 0.24),
-        tune: None,
-        wallpaper: "fhd/hunter2.jpg",
-        logo: "logo-helm.png",
-        render: Render::Pixelated,
-        pairings: [
-            FontPair { label: "Silkscreen", display: "Silkscreen", ui: "JetBrains Mono" },
-            FontPair { label: "Pixelify", display: "Pixelify Sans", ui: "Space Mono" },
-            FontPair { label: "Press Start", display: "Press Start 2P", ui: "IBM Plex Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Shards,
-        bg: Rgba::hex(0x0a0a0c),
-        fg: Rgba::hex(0xeef0f4),
-        muted: Rgba::hex(0x8c92a0),
-        faint: Rgba::hex(0x353944),
-        acc: Rgba::hex(0x9aa4b8),
-        acc2: Rgba::hex(0xffffff),
-        deep: Rgba::hex(0x3a3f4c),
-        alt: Rgba::hex(0xc2c8d6),
-        on: Rgba::hex(0x0a0a0c),
-        soft: Rgba::new(154, 164, 184, 0.20),
-        tune: None,
-        wallpaper: "fhd/shards2.jpg",
-        logo: "logo-snow.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Orbitron", display: "Orbitron", ui: "Space Mono" },
-            FontPair { label: "Bebas", display: "Bebas Neue", ui: "JetBrains Mono" },
-            FontPair { label: "Italiana", display: "Italiana", ui: "DM Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Vale,
-        bg: Rgba::hex(0x0d150c),
-        fg: Rgba::hex(0xeef2e0),
-        muted: Rgba::hex(0x94a283),
-        faint: Rgba::hex(0x34442c),
-        acc: Rgba::hex(0xd0882e),
-        acc2: Rgba::hex(0xf2c36a),
-        deep: Rgba::hex(0x5a3a14),
-        alt: Rgba::hex(0x8cc06a),
-        on: Rgba::hex(0x140c04),
-        soft: Rgba::new(208, 136, 46, 0.22),
-        tune: None,
-        wallpaper: "fhd/vale2.jpg",
-        logo: "logo-galaxy.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Metamorphous", display: "Metamorphous", ui: "JetBrains Mono" },
-            FontPair { label: "Young Serif", display: "Young Serif", ui: "DM Mono" },
-            FontPair { label: "Philosopher", display: "Philosopher", ui: "Fira Code" },
-        ],
-    },
-    // Look-alikes of other agent apps, built from the bundled wallpapers, logos and fonts.
-    Preset {
-        id: ThemeId::Codex,
-        bg: Rgba::hex(0x111111),
-        fg: Rgba::hex(0xececec),
-        muted: Rgba::hex(0x9b9b9b),
-        faint: Rgba::hex(0x3d3d3d),
-        acc: Rgba::hex(0x339cff),
-        acc2: Rgba::hex(0x9fd0ff),
-        deep: Rgba::hex(0x0b3a66),
-        alt: Rgba::hex(0xb4b4b4),
-        on: Rgba::hex(0xffffff),
-        soft: Rgba::new(51, 156, 255, 0.18),
-        tune: None,
-        wallpaper: "fhd/archonui4.jpg",
-        logo: "logo-portal.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Geist", display: "Geist", ui: "Geist" },
-            FontPair { label: "IBM Plex", display: "IBM Plex Sans", ui: "IBM Plex Mono" },
-            FontPair { label: "Manrope", display: "Manrope", ui: "JetBrains Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::ClaudeCode,
-        bg: Rgba::hex(0x262624),
-        fg: Rgba::hex(0xf5f4ed),
-        muted: Rgba::hex(0xa6a39a),
-        faint: Rgba::hex(0x4a4843),
-        acc: Rgba::hex(0xd97757),
-        acc2: Rgba::hex(0xf0b49c),
-        deep: Rgba::hex(0x7a3a24),
-        alt: Rgba::hex(0xc2c0b6),
-        on: Rgba::hex(0x1f1e1d),
-        soft: Rgba::new(217, 119, 87, 0.20),
-        tune: None,
-        wallpaper: "fhd/citadel2.jpg",
-        logo: "logo-sand.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Young Serif", display: "Young Serif", ui: "Geist" },
-            FontPair { label: "Cormorant", display: "Cormorant Garamond", ui: "IBM Plex Sans" },
-            FontPair { label: "Terminal", display: "Young Serif", ui: "JetBrains Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Gemini,
-        bg: Rgba::hex(0x131314),
-        fg: Rgba::hex(0xe3e3e3),
-        muted: Rgba::hex(0xa8abaf),
-        faint: Rgba::hex(0x3c4043),
-        acc: Rgba::hex(0x8ab4f8),
-        acc2: Rgba::hex(0xc58af9),
-        deep: Rgba::hex(0x1f3b6e),
-        alt: Rgba::hex(0xd96570),
-        on: Rgba::hex(0x131314),
-        soft: Rgba::new(138, 180, 248, 0.18),
-        tune: None,
-        wallpaper: "fhd/shards2.jpg",
-        logo: "logo-galaxy.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "DM Sans", display: "DM Sans", ui: "DM Sans" },
-            FontPair { label: "Manrope", display: "Manrope", ui: "Manrope" },
-            FontPair { label: "Grotesk", display: "Space Grotesk", ui: "Space Mono" },
-        ],
-    },
-    Preset {
-        id: ThemeId::Hermes,
-        bg: Rgba::hex(0x0b1530),
-        fg: Rgba::hex(0xf2e6c9),
-        muted: Rgba::hex(0xb7ae94),
-        faint: Rgba::hex(0x34405e),
-        acc: Rgba::hex(0x5b8cff),
-        acc2: Rgba::hex(0xf2e6c9),
-        deep: Rgba::hex(0x1c2f6b),
-        alt: Rgba::hex(0xdd8e35),
-        on: Rgba::hex(0x0b1530),
-        soft: Rgba::new(91, 140, 255, 0.20),
-        tune: None,
-        wallpaper: "fhd/moonlight2.jpg",
-        logo: "logo-helm.png",
-        render: Render::Auto,
-        pairings: [
-            FontPair { label: "Grotesk", display: "Space Grotesk", ui: "IBM Plex Mono" },
-            FontPair { label: "Cinzel", display: "Cinzel", ui: "JetBrains Mono" },
-            FontPair { label: "Pixelify", display: "Pixelify Sans", ui: "Space Mono" },
-        ],
-    },
+        pairings,
+    }
+}
+
+const fn pair(label: &'static str, display: &'static str, ui: &'static str) -> FontPair {
+    FontPair { label, display, ui }
+}
+
+/// The themes that ship with ArchonUI: a neutral default, look-alikes of other agent apps, classic
+/// editor palettes, and gradient themes whose background is a colour blend.
+pub const BUILTIN: &[Preset] = &[
+    builtin(
+        "archonui",
+        "ArchonUI",
+        [0x0a0a0a, 0xededed, 0x8a8a8a, 0x3a3a3a, 0xd8d8d8, 0xffffff, 0x4a4a4a, 0xb0b0b0, 0x0a0a0a],
+        Rgba::new(255, 255, 255, 0.10),
+        Some([0x141414, 0x0f0f0f, 0x1c1c1c]),
+        [0x0a0a0a, 0x161616, 0x0a0a0a],
+        [pair("Geist", "Geist", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Mono", "Geist", "JetBrains Mono")],
+    ),
+    // Claude's dark mode: warm charcoal, ivory text, the clay accent.
+    builtin(
+        "claude-code",
+        "Claude Code",
+        [0x262624, 0xfaf9f5, 0xa6a39a, 0x4a4843, 0xd97757, 0xebb39a, 0x8a3f26, 0xc2c0b6, 0x1f1e1d],
+        Rgba::new(217, 119, 87, 0.18),
+        Some([0x30302e, 0x1f1e1d, 0x3a3936]),
+        [0x262624, 0x2c2b28, 0x22211f],
+        [pair("Serif", "Young Serif", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Sans"), pair("Terminal", "Young Serif", "JetBrains Mono")],
+    ),
+    // ChatGPT's and Codex's dark greys, white controls, blue links.
+    builtin(
+        "codex",
+        "Codex",
+        [0x212121, 0xececec, 0xb4b4b4, 0x424242, 0xf3f3f3, 0x339cff, 0x5a5a5a, 0x9b9b9b, 0x0d0d0d],
+        Rgba::new(255, 255, 255, 0.10),
+        Some([0x2f2f2f, 0x171717, 0x303030]),
+        [0x212121, 0x262626, 0x1b1b1b],
+        [pair("Geist", "Geist", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Sans"), pair("Mono", "Geist", "Geist Mono")],
+    ),
+    // Gemini's dark surfaces with its blue to violet to rose spark.
+    builtin(
+        "gemini",
+        "Gemini",
+        [0x131314, 0xe3e3e3, 0xc4c7c5, 0x444746, 0xa8c7fa, 0xd7aefb, 0x0b57d0, 0xf2b8b5, 0x062e6f],
+        Rgba::new(168, 199, 250, 0.16),
+        Some([0x1e1f20, 0x131314, 0x282a2c]),
+        [0x131314, 0x1a1d2b, 0x1e1626],
+        [pair("DM Sans", "DM Sans", "DM Sans"), pair("Manrope", "Manrope", "Manrope"), pair("Grotesk", "Space Grotesk", "DM Mono")],
+    ),
+    // Hermes Desktop's default Nous look: a dark blue canvas, cream text, blue and cream accents.
+    builtin(
+        "hermes",
+        "Hermes",
+        [0x0b1530, 0xf3ead3, 0xb9b096, 0x34405e, 0x6b8cff, 0xf3ead3, 0x1c2f6b, 0xdd8e35, 0x0b1530],
+        Rgba::new(107, 140, 255, 0.18),
+        Some([0x111d3d, 0x0a1229, 0x16234a]),
+        [0x0b1530, 0x13224a, 0x0a1229],
+        [pair("Grotesk", "Space Grotesk", "IBM Plex Mono"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Pixel", "Pixelify Sans", "Space Mono")],
+    ),
+    builtin(
+        "nord",
+        "Nord",
+        [0x2e3440, 0xeceff4, 0xd8dee9, 0x4c566a, 0x88c0d0, 0x81a1c1, 0x5e81ac, 0xa3be8c, 0x2e3440],
+        Rgba::new(136, 192, 208, 0.18),
+        Some([0x3b4252, 0x2e3440, 0x434c5e]),
+        [0x2e3440, 0x343b49, 0x2b303b],
+        [pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Geist", "Geist", "Geist"), pair("Mono", "IBM Plex Sans", "JetBrains Mono")],
+    ),
+    // Catppuccin Mocha.
+    builtin(
+        "catppuccin",
+        "Catppuccin",
+        [0x1e1e2e, 0xcdd6f4, 0xa6adc8, 0x585b70, 0xcba6f7, 0xf5c2e7, 0x7f5ab6, 0x89b4fa, 0x1e1e2e],
+        Rgba::new(203, 166, 247, 0.18),
+        Some([0x313244, 0x181825, 0x313244]),
+        [0x1e1e2e, 0x24243a, 0x181825],
+        [pair("Manrope", "Manrope", "Manrope"), pair("DM Sans", "DM Sans", "DM Mono"), pair("Mono", "Manrope", "JetBrains Mono")],
+    ),
+    builtin(
+        "tokyo-night",
+        "Tokyo Night",
+        [0x1a1b26, 0xc0caf5, 0x9aa5ce, 0x414868, 0x7aa2f7, 0xbb9af7, 0x3d59a1, 0x7dcfff, 0x1a1b26],
+        Rgba::new(122, 162, 247, 0.18),
+        Some([0x24283b, 0x16161e, 0x292e42]),
+        [0x1a1b26, 0x1f2335, 0x16161e],
+        [pair("Grotesk", "Space Grotesk", "JetBrains Mono"), pair("Geist", "Geist", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono")],
+    ),
+    // Gruvbox dark.
+    builtin(
+        "gruvbox",
+        "Gruvbox",
+        [0x282828, 0xebdbb2, 0xa89984, 0x504945, 0xfe8019, 0xfabd2f, 0xaf3a03, 0x8ec07c, 0x1d2021],
+        Rgba::new(254, 128, 25, 0.18),
+        Some([0x32302f, 0x1d2021, 0x3c3836]),
+        [0x282828, 0x2e2a26, 0x1d2021],
+        [pair("Mono", "Space Mono", "JetBrains Mono"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Geist", "Geist", "Geist")],
+    ),
+    // Gradient themes: the background is a blend of their colours, under translucent surfaces.
+    builtin(
+        "aurora",
+        "Aurora",
+        [0x07131c, 0xe6f6f4, 0x9cc3c0, 0x2c4a52, 0x5eead4, 0xa78bfa, 0x0f766e, 0x93c5fd, 0x04201c],
+        Rgba::new(94, 234, 212, 0.18),
+        None,
+        [0x062a30, 0x0d3b4f, 0x3b1f6b],
+        [pair("Grotesk", "Space Grotesk", "Geist"), pair("Manrope", "Manrope", "Manrope"), pair("Mono", "Space Grotesk", "JetBrains Mono")],
+    ),
+    builtin(
+        "sunset",
+        "Sunset",
+        [0x1a0d16, 0xfdebe1, 0xd6a99a, 0x5a3340, 0xff8a5b, 0xffc66d, 0xa3324a, 0xf472b6, 0x2a0d12],
+        Rgba::new(255, 138, 91, 0.20),
+        None,
+        [0x2a0f2e, 0x7a2440, 0xd8643a],
+        [pair("Bebas", "Bebas Neue", "Manrope"), pair("Serif", "Young Serif", "DM Sans"), pair("Geist", "Geist", "Geist")],
+    ),
+    builtin(
+        "ocean",
+        "Ocean",
+        [0x04131f, 0xe2f1fb, 0x93b5cc, 0x23425a, 0x38bdf8, 0x67e8f9, 0x0e4f7a, 0x5eead4, 0x03121d],
+        Rgba::new(56, 189, 248, 0.18),
+        None,
+        [0x031a2e, 0x0a3d62, 0x0f6b6b],
+        [pair("Plex", "IBM Plex Sans", "IBM Plex Sans"), pair("Grotesk", "Space Grotesk", "Space Mono"), pair("Geist", "Geist", "Geist")],
+    ),
+    builtin(
+        "nebula",
+        "Nebula",
+        [0x110a1f, 0xf1e8ff, 0xb7a6d3, 0x43305f, 0xc084fc, 0xf472b6, 0x6b21a8, 0x818cf8, 0x14071f],
+        Rgba::new(192, 132, 252, 0.20),
+        None,
+        [0x140a2e, 0x4c1d95, 0xa21caf],
+        [pair("Orbitron", "Orbitron", "Space Mono"), pair("Grotesk", "Space Grotesk", "Geist"), pair("Manrope", "Manrope", "Manrope")],
+    ),
 ];
+
+/// Every theme: the built-in ones, then the theme files in the config dir's `themes` folder, read once
+/// at startup. A file whose id matches a built-in theme replaces it.
+pub fn presets() -> &'static [Preset] {
+    static ALL: OnceLock<Vec<Preset>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut all: Vec<Preset> = BUILTIN.to_vec();
+        for theme in user_themes(&crate::app::persist::Paths::current().config) {
+            match all.iter_mut().find(|p| p.id == theme.id) {
+                Some(slot) => *slot = theme,
+                None => all.push(theme),
+            }
+        }
+        all
+    })
+}
+
+/// The theme with `id`, or the default when no theme has it (a deleted theme file).
+pub fn preset(id: &str) -> &'static Preset {
+    let all = presets();
+    all.iter().find(|p| p.id == id).or_else(|| all.iter().find(|p| p.id == DEFAULT_THEME)).unwrap_or(&all[0])
+}
+
+/// The theme files in `config/themes`, in name order. Files that don't parse are skipped.
+pub fn user_themes(config: &Path) -> Vec<Preset> {
+    let Ok(entries) = std::fs::read_dir(config.join("themes")) else { return Vec::new() };
+    let mut paths: Vec<PathBuf> =
+        entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
+    paths.sort();
+    paths
+        .iter()
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            let file: ThemeFile = serde_json::from_str(&text).map_err(|e| eprintln!("theme {}: {e}", path.display())).ok()?;
+            file.into_preset(config)
+        })
+        .collect()
+}
+
+/// A theme file: `{"id", "name", "colors": {bg, fg, muted, faint, acc, acc2, deep, alt, on, soft},
+/// "tune"?, "gradient"?, "wallpaper"?, "logo"?, "pixelated"?, "fonts"?: [{label, display, ui}]}`.
+/// Colours are `#rrggbb` or `rgba(r,g,b,a)`. A relative wallpaper is in `backgrounds`, a relative
+/// logo in `logos`, both in the config dir.
+#[derive(Deserialize)]
+struct ThemeFile {
+    id: String,
+    name: Option<String>,
+    colors: HashMap<String, String>,
+    #[serde(default)]
+    tune: HashMap<String, String>,
+    #[serde(default)]
+    gradient: Vec<String>,
+    #[serde(default)]
+    wallpaper: Option<String>,
+    #[serde(default)]
+    logo: Option<String>,
+    #[serde(default)]
+    pixelated: bool,
+    #[serde(default)]
+    fonts: Vec<ThemeFonts>,
+}
+
+#[derive(Deserialize)]
+struct ThemeFonts {
+    label: String,
+    display: String,
+    ui: String,
+}
+
+impl ThemeFile {
+    fn into_preset(self, config: &Path) -> Option<Preset> {
+        let colour = |map: &HashMap<String, String>, key: &str| map.get(key).and_then(|c| Rgba::parse(c));
+        let base = |key: &str| colour(&self.colors, key);
+        let (bg, fg, acc) = (base("bg")?, base("fg")?, base("acc")?);
+        let muted = base("muted").unwrap_or_else(|| mix(bg, fg, 0.55));
+        let tune = (!self.tune.is_empty()).then(|| {
+            let t = |key: &str, fallback: Rgba| colour(&self.tune, key).unwrap_or(fallback);
+            Tune {
+                tile: t("tile", mix(bg, fg, 0.05)),
+                panel: t("panel", mix(bg, fg, 0.02)),
+                pop: t("pop", mix(bg, fg, 0.08)),
+                fg: t("fg", fg),
+                muted: t("muted", muted),
+                faint: t("faint", mix(bg, fg, 0.2)),
+                soft: t("soft", acc.alpha(0.24)),
+                acc: t("acc", acc),
+            }
+        });
+        let gradient = match self.gradient.iter().filter_map(|c| Rgba::parse(c)).collect::<Vec<_>>()[..] {
+            [a, b, c] => [a, b, c],
+            _ => [bg, mix(bg, fg, 0.05), bg],
+        };
+        let in_dir = |dir: &str, name: &str| {
+            let path = Path::new(name);
+            if path.is_absolute() { path.to_path_buf() } else { config.join(dir).join(path) }
+        };
+        let mut pairings = BUILTIN[0].pairings;
+        for (slot, f) in pairings.iter_mut().zip(&self.fonts) {
+            *slot = FontPair {
+                label: fonts::bundled_family(&f.label).unwrap_or_else(|| fonts::bundled_family(&f.display).unwrap_or("Theme")),
+                display: fonts::bundled_family(&f.display).unwrap_or(slot.display),
+                ui: fonts::bundled_family(&f.ui).unwrap_or(slot.ui),
+            };
+        }
+        Some(Preset {
+            name: Cow::Owned(self.name.clone().unwrap_or_else(|| self.id.clone())),
+            id: Cow::Owned(self.id),
+            bg,
+            fg,
+            muted,
+            faint: base("faint").unwrap_or_else(|| mix(bg, fg, 0.2)),
+            acc,
+            acc2: base("acc2").unwrap_or(acc),
+            deep: base("deep").unwrap_or_else(|| mix(bg, acc, 0.4)),
+            alt: base("alt").unwrap_or(muted),
+            on: base("on").unwrap_or(bg),
+            soft: base("soft").unwrap_or_else(|| acc.alpha(0.2)),
+            tune,
+            surfaces: None,
+            wallpaper: Cow::Owned(self.wallpaper.map(|w| in_dir("backgrounds", &w).display().to_string()).unwrap_or_default()),
+            gradient,
+            logo: Cow::Owned(self.logo.map_or_else(|| DEFAULT_LOGO.to_string(), |l| in_dir("logos", &l).display().to_string())),
+            render: if self.pixelated { Render::Pixelated } else { Render::Auto },
+            pairings,
+        })
+    }
+}
 
 /// The colour tokens a user can override per theme, as `(key, label)` (themes.md §5.1). The first
 /// twelve are base tokens; the last five are derived ones (`line`, `line2`, `soft`, and the focus
@@ -574,10 +495,12 @@ pub struct Theme {
     /// the theme's own interface font is monospace (see `fonts::reading_font`).
     pub chat_font: String,
     pub code_font: String,
-    /// Path under `design/assets/`.
-    pub wallpaper: &'static str,
-    /// Path under `design/assets/`.
-    pub logo: &'static str,
+    /// The theme's background image file, or empty for `gradient`.
+    pub wallpaper: String,
+    /// The background without an image: top-left, centre and bottom-right colours.
+    pub gradient: [Rgba; 3],
+    /// An embedded logo's name or a logo file's path.
+    pub logo: String,
     pub render: Render,
 }
 
@@ -610,9 +533,11 @@ struct Tokens {
 impl Tokens {
     /// Stages 1–2: the preset, then TUNE (themes.md §2.3).
     fn tuned(p: &Preset) -> Self {
-        let (tile, panel, pop, fg, muted, faint, soft, acc) = match p.tune {
-            Some(t) => (t.tile, t.panel, t.pop, t.fg, t.muted, t.faint, t.soft, t.acc),
-            None => (
+        let (tile, panel, pop, fg, muted, faint, soft, acc) = match (p.tune, p.surfaces) {
+            (Some(t), _) => (t.tile, t.panel, t.pop, t.fg, t.muted, t.faint, t.soft, t.acc),
+            // Authored surfaces come with authored text colours, so those are used as given.
+            (None, Some([tile, panel, pop])) => (tile, panel, pop, p.fg, p.muted, p.faint, p.soft, p.acc),
+            (None, None) => (
                 mix(p.bg, p.fg, 0.05),
                 mix(p.bg, p.fg, 0.02),
                 mix(p.bg, p.fg, 0.08),
@@ -693,7 +618,7 @@ pub fn resolve(
     let chat_font = if font_choice.ui.is_some() { ui_font.clone() } else { fonts::reading_font(&ui_font) };
 
     Theme {
-        id: preset.id,
+        id: preset.id.to_string(),
         bg: t0.bg,
         tile: t0.tile,
         panel: t0.panel,
@@ -715,8 +640,9 @@ pub fn resolve(
         ui_font,
         chat_font,
         code_font,
-        wallpaper: preset.wallpaper,
-        logo: preset.logo,
+        wallpaper: preset.wallpaper.to_string(),
+        gradient: preset.gradient,
+        logo: preset.logo.to_string(),
         render: preset.render,
     }
 }
@@ -856,15 +782,65 @@ impl BackgroundStyle {
 mod tests {
     use super::*;
 
-    const THEMES_JSON: &str = include_str!("../../docs/design/themes.json");
+    /// A hand-tuned theme as a theme file, so the pipeline tests cover tuning and the file loader.
+    const BLOOD_MOON: &str = r##"{
+  "id": "blood-moon",
+  "name": "Blood Moon",
+  "colors": {
+    "bg": "#0d0a08",
+    "fg": "#eadfcc",
+    "muted": "#9a8c78",
+    "faint": "#43382c",
+    "acc": "#b0141e",
+    "acc2": "#d9b56a",
+    "deep": "#5a0a10",
+    "alt": "#c9a77a",
+    "on": "#f6ecdc",
+    "soft": "rgba(176,20,30,0.24)"
+  },
+  "tune": {
+    "tile": "#16100d",
+    "panel": "#0f0b09",
+    "pop": "#1b1411",
+    "fg": "#f3ead8",
+    "muted": "#bfae94",
+    "faint": "#6a5a48",
+    "soft": "rgba(176,20,30,0.32)",
+    "acc": "#c81e2a"
+  },
+  "wallpaper": "bloodmoon2.jpg",
+  "logo": "logo-bm.png",
+  "pixelated": false,
+  "fonts": [
+    {
+      "label": "Fraktur",
+      "display": "UnifrakturCook",
+      "ui": "JetBrains Mono"
+    },
+    {
+      "label": "Pirata",
+      "display": "Pirata One",
+      "ui": "Space Mono"
+    },
+    {
+      "label": "Grenze",
+      "display": "Grenze Gotisch",
+      "ui": "IBM Plex Mono"
+    }
+  ]
+}"##;
 
-    fn resolved(id: ThemeId) -> Theme {
-        resolve(&id.preset(), &HashMap::new(), FontChoice::default())
+    fn resolved(id: &str) -> Theme {
+        resolve(preset(id), &HashMap::new(), FontChoice::default())
     }
 
-    /// The family name of a CSS stack such as `'Cinzel', serif`.
-    fn family(stack: &str) -> &str {
-        stack.split(',').next().unwrap().trim().trim_matches('\'')
+    fn blood_moon() -> Preset {
+        let file: ThemeFile = serde_json::from_str(BLOOD_MOON).unwrap();
+        file.into_preset(Path::new("/cfg")).unwrap()
+    }
+
+    fn blood() -> Theme {
+        resolve(&blood_moon(), &HashMap::new(), FontChoice::default())
     }
 
     #[test]
@@ -896,7 +872,7 @@ mod tests {
 
     #[test]
     fn blood_moon_resolves_to_spec_values() {
-        let t = resolved(ThemeId::BloodMoon);
+        let t = blood();
         assert_eq!(t.bg, Rgba::hex(0x0d0a08));
         assert_eq!(t.tile, Rgba::hex(0x16100d));
         assert_eq!(t.panel, Rgba::hex(0x0f0b09));
@@ -916,13 +892,14 @@ mod tests {
         assert_eq!(t.display_font, "UnifrakturCook");
         assert_eq!(t.ui_font, "JetBrains Mono");
         assert_eq!(t.code_font, "JetBrains Mono");
-        assert_eq!(t.wallpaper, "fhd/bloodmoon2.jpg");
-        assert_eq!(t.logo, "logo-bm.png");
+        // A theme file's relative names point into the config dir's folders.
+        assert_eq!(t.wallpaper, "/cfg/backgrounds/bloodmoon2.jpg");
+        assert_eq!(t.logo, "/cfg/logos/logo-bm.png");
     }
 
     #[test]
     fn blood_moon_bands_match_spec() {
-        let t = resolved(ThemeId::BloodMoon);
+        let t = blood();
         assert_eq!(t.band(0, true), Rgba::new(200, 30, 42, 0.42));
         assert_eq!(t.band(0, false), Rgba::new(200, 30, 42, 0.20));
         let rgb = [
@@ -940,16 +917,18 @@ mod tests {
     }
 
     #[test]
-    fn moonlight_resolves_to_spec_values() {
-        let t = resolved(ThemeId::Moonlight);
-        assert_eq!(t.bg, Rgba::hex(0x050a14));
-        assert_eq!(t.acc, Rgba::hex(0x8fb8e8));
+    fn authored_surfaces_are_used_as_given() {
+        let t = resolved("nord");
+        assert_eq!((t.bg, t.tile, t.panel, t.pop), (Rgba::hex(0x2e3440), Rgba::hex(0x3b4252), Rgba::hex(0x2e3440), Rgba::hex(0x434c5e)));
+        assert_eq!((t.muted, t.faint), (Rgba::hex(0xd8dee9), Rgba::hex(0x4c566a)));
+        assert!(t.wallpaper.is_empty(), "built-in themes draw their gradient");
+        assert_eq!(t.logo, DEFAULT_LOGO);
     }
 
     #[test]
     fn custom_accent_rederives_soft_and_border() {
         let custom = HashMap::from([("acc".to_string(), "#ff0000".to_string())]);
-        let t = resolve(&ThemeId::BloodMoon.preset(), &custom, FontChoice::default());
+        let t = resolve(&blood_moon(), &custom, FontChoice::default());
         assert_eq!(t.acc, Rgba::hex(0xff0000));
         assert_eq!(t.soft, Rgba::new(255, 0, 0, 0.28));
         assert_eq!(t.border[1], Rgba::hex(0xff0000));
@@ -960,7 +939,7 @@ mod tests {
     #[test]
     fn custom_text_colour_rederives_lines() {
         let custom = HashMap::from([("fg".to_string(), "#000000".to_string())]);
-        let t = resolve(&ThemeId::Ink.preset(), &custom, FontChoice::default());
+        let t = resolve(preset("nord"), &custom, FontChoice::default());
         assert_eq!(t.line, Rgba::new(0, 0, 0, 0.09));
         assert_eq!(t.line2, Rgba::new(0, 0, 0, 0.22));
     }
@@ -971,13 +950,13 @@ mod tests {
             ("bands".to_string(), "#ff0000".to_string()),
             ("acc".to_string(), "not-a-colour".to_string()),
         ]);
-        let t = resolve(&ThemeId::Moonlight.preset(), &custom, FontChoice::default());
-        assert_eq!(t, resolved(ThemeId::Moonlight));
+        let t = resolve(preset("nord"), &custom, FontChoice::default());
+        assert_eq!(t, resolved("nord"));
     }
 
     #[test]
     fn all_presets_resolve_with_every_pairing() {
-        for preset in &PRESETS {
+        for preset in BUILTIN {
             for pairing in 0..3 {
                 let choice = FontChoice { pairing, ..FontChoice::default() };
                 let t = resolve(preset, &HashMap::new(), choice);
@@ -987,64 +966,40 @@ mod tests {
     }
 
     #[test]
-    fn presets_match_themes_json() {
-        let spec: serde_json::Value = serde_json::from_str(THEMES_JSON).unwrap();
-        let themes = spec["themes"].as_array().unwrap();
-        // themes.json holds the prototype's twelve; the look-alike presets after them are not in it.
-        assert!(themes.len() >= 12);
-        for preset in &PRESETS[..12] {
-            let expected = themes.iter().find(|t| t["order"].as_u64() == Some(preset.id as u64));
-            let expected = expected.unwrap();
-            let t = resolve(preset, &HashMap::new(), FontChoice::default());
-            let tokens = &expected["tokens"];
-            let colour = |key: &str| Rgba::parse(tokens[key].as_str().unwrap()).unwrap();
-            let actual = [
-                ("bg", t.bg),
-                ("tile", t.tile),
-                ("panel", t.panel),
-                ("pop", t.pop),
-                ("fg", t.fg),
-                ("muted", t.muted),
-                ("faint", t.faint),
-                ("line", t.line),
-                ("line2", t.line2),
-                ("acc", t.acc),
-                ("acc2", t.acc2),
-                ("deep", t.deep),
-                ("alt", t.alt),
-                ("on", t.on),
-                ("soft", t.soft),
-            ];
-            for (key, value) in actual {
-                assert_eq!(value, colour(key), "{:?} {key}", preset.id);
-            }
-            for (i, band) in expected["bands"].as_array().unwrap().iter().enumerate() {
-                let band = Rgba::parse(band.as_str().unwrap()).unwrap();
-                assert_eq!(t.bands[i], band, "{:?} band {i}", preset.id);
-            }
-            assert_eq!(t.display_font, family(tokens["display"].as_str().unwrap()));
-            assert_eq!(t.ui_font, family(tokens["ui"].as_str().unwrap()));
-            assert_eq!(t.code_font, family(tokens["code"].as_str().unwrap()));
-            assert_eq!(expected["wallpaper"].as_str().unwrap(), format!("assets/{}", t.wallpaper));
-            assert_eq!(expected["logo"].as_str().unwrap(), format!("assets/{}", t.logo));
+    fn builtin_ids_are_unique_and_unknown_ids_fall_back() {
+        let mut ids: Vec<&str> = BUILTIN.iter().map(|p| p.id.as_ref()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), BUILTIN.len());
+        assert!(BUILTIN.iter().any(|p| p.id == DEFAULT_THEME));
+        assert_eq!(preset("no-such-theme").id, DEFAULT_THEME);
+        for id in ["claude-code", "codex", "gemini", "hermes", "nord", "catppuccin", "tokyo-night", "gruvbox"] {
+            assert_eq!(preset(id).id, id);
         }
     }
 
     #[test]
-    fn preset_ids_index_the_preset_table() {
-        for (i, preset) in PRESETS.iter().enumerate() {
-            assert_eq!(preset.id as usize, i);
-        }
+    fn theme_files_load_from_the_config_dir() {
+        let dir = std::env::temp_dir().join(format!("archonui-themes-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        std::fs::write(dir.join("themes/blood-moon.json"), BLOOD_MOON).unwrap();
+        std::fs::write(dir.join("themes/broken.json"), "{ not json").unwrap();
+        std::fs::write(dir.join("themes/plain.json"), r##"{"id":"plain","colors":{"bg":"#101010","fg":"#eeeeee","acc":"#ff0000"},"fonts":[{"label":"x","display":"cinzel","ui":"Not A Font"}]}"##).unwrap();
+        let themes = user_themes(&dir);
+        let ids: Vec<&str> = themes.iter().map(|p| p.id.as_ref()).collect();
+        assert_eq!(ids, ["blood-moon", "plain"], "a broken file is skipped");
+        let plain = &themes[1];
+        assert_eq!(plain.name, "plain");
+        assert_eq!(plain.logo, DEFAULT_LOGO);
+        // Font names match bundled families in any case; unknown ones keep the default.
+        assert_eq!((plain.pairings[0].display, plain.pairings[0].ui), ("Cinzel", BUILTIN[0].pairings[0].ui));
+        assert_eq!(plain.wallpaper, "");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn config_ids_round_trip_as_stable_names() {
-        assert_eq!(serde_json::to_string(&ThemeId::BloodMoon).unwrap(), "\"blood-moon\"");
+    fn background_styles_round_trip_as_stable_names() {
         assert_eq!(serde_json::to_string(&BackgroundStyle::Canvas).unwrap(), "\"canvas\"");
-        for preset in &PRESETS {
-            let json = serde_json::to_string(&preset.id).unwrap();
-            assert_eq!(serde_json::from_str::<ThemeId>(&json).unwrap(), preset.id);
-        }
         for style in [
             BackgroundStyle::Canvas,
             BackgroundStyle::Glass,
@@ -1060,7 +1015,7 @@ mod tests {
 
     #[test]
     fn canvas_surfaces_match_blood_moon_spec() {
-        let t = resolved(ThemeId::BloodMoon);
+        let t = blood();
         let surfaces = BackgroundStyle::Canvas.surfaces(&t, Effects::default());
         assert_eq!(surfaces.side, Rgba::new(15, 11, 9, 0.72));
         assert_eq!(surfaces.side_blur, Some(24.0));
@@ -1089,7 +1044,7 @@ mod tests {
 
     #[test]
     fn other_styles_match_blood_moon_spec() {
-        let t = resolved(ThemeId::BloodMoon);
+        let t = blood();
         let effects = Effects::default();
         let state = TileState::default();
 
@@ -1118,7 +1073,7 @@ mod tests {
 
     #[test]
     fn wallpaper_dim_multiplies_brightness() {
-        let t = resolved(ThemeId::BloodMoon);
+        let t = blood();
         let dimmed = Effects { dim: 20.0, ..Effects::default() };
         let canvas = BackgroundStyle::Canvas.surfaces(&t, dimmed);
         assert!((canvas.wallpaper.brightness - 0.8).abs() < 1e-6);
@@ -1128,7 +1083,7 @@ mod tests {
 
     #[test]
     fn derived_colour_overrides_keep_their_alpha() {
-        let preset = ThemeId::default().preset();
+        let preset = blood_moon();
         let custom: HashMap<String, String> =
             [("line", "#ff0000"), ("line2", "#00ff00"), ("soft", "#0000ff"), ("ring1", "#123456"), ("ring2", "#abcdef")]
                 .into_iter()
@@ -1146,7 +1101,7 @@ mod tests {
 
     #[test]
     fn out_of_range_sliders_are_clamped() {
-        let t = resolved(ThemeId::BloodMoon);
+        let t = blood();
         let wild = Effects { blur: -5.0, dim: 250.0 };
         let canvas = BackgroundStyle::Canvas.surfaces(&t, wild);
         assert_eq!(canvas.side_blur, Some(0.0));

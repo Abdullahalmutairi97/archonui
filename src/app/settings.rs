@@ -136,7 +136,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            theme: ThemeId::default(),
+            theme: crate::ui::theme::DEFAULT_THEME.to_string(),
             custom_colours: HashMap::new(),
             fonts: HashMap::new(),
             background: BackgroundStyle::default(),
@@ -288,26 +288,9 @@ fn known_keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<HashMap<Action, 
         .collect())
 }
 
-/// Stable key for a theme in the settings maps. `ThemeId` isn't `Hash`, so maps key by this.
-pub fn theme_key(theme: ThemeId) -> &'static str {
-    match theme {
-        ThemeId::ArchonUI => "archonui",
-        ThemeId::BloodMoon => "blood-moon",
-        ThemeId::Moonlight => "moonlight",
-        ThemeId::Wreck => "wreck",
-        ThemeId::Citadel => "citadel",
-        ThemeId::Neon => "neon",
-        ThemeId::Violet => "violet",
-        ThemeId::Ink => "ink",
-        ThemeId::Bonfire => "bonfire",
-        ThemeId::Hunter => "hunter",
-        ThemeId::Shards => "shards",
-        ThemeId::Vale => "vale",
-        ThemeId::Codex => "codex",
-        ThemeId::ClaudeCode => "claude-code",
-        ThemeId::Gemini => "gemini",
-        ThemeId::Hermes => "hermes",
-    }
+/// Key for a theme in the settings maps: its id.
+pub fn theme_key(theme: &str) -> &str {
+    theme
 }
 
 /// The app icon: follow the theme, a theme's preset icon, or a file the user uploaded.
@@ -517,8 +500,8 @@ mod tests {
     #[test]
     fn json_round_trips() {
         let mut s = AppSettings::default();
-        s.theme = ThemeId::Neon;
-        s.icon = AppIcon::Preset(ThemeId::Vale);
+        s.theme = "neon".into();
+        s.icon = AppIcon::Preset("vale".into());
         s.custom_colours.entry("neon".into()).or_default().insert("accent".into(), "#c81e2a".into());
         s.model_enabled.entry("pi".into()).or_default().insert("gpt".into(), false);
         s.mcp_servers.push(McpServer {
@@ -540,7 +523,7 @@ mod tests {
         let json = serde_json::to_value(&s).unwrap();
         let back: AppSettings = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), json);
-        assert_eq!(back.theme, ThemeId::Neon);
+        assert_eq!(back.theme, "neon");
         assert_eq!(back.keys[&Action::CloseTile], "alt-q");
     }
 
@@ -622,7 +605,7 @@ mod tests {
     fn missing_fields_take_defaults() {
         let mut s: AppSettings = serde_json::from_str(r#"{"gaps": 20, "theme": "vale"}"#).unwrap();
         s.normalize();
-        assert_eq!((s.gaps, s.theme, s.radius, s.max_steps), (20., ThemeId::Vale, 9., 40));
+        assert_eq!((s.gaps, s.theme.as_str(), s.radius, s.max_steps), (20., "vale", 9., 40));
         assert_eq!(s.keys.len(), Action::ALL.len());
     }
 

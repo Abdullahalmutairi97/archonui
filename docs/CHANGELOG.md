@@ -24,11 +24,21 @@
   After Esc, the queue waits and each row offers Send.
 - Esc stops the focused session's reply from anywhere in the window, not only from the message box.
   Popups, the terminal and the editor still get Esc first. The working line says "Esc to stop".
-- Four new presets that look like other agent apps: Codex (near-black and grey, blue accent, Geist),
-  Claude Code (warm charcoal and cream, terracotta accent, Young Serif titles), Gemini (Google's dark
-  grey, blue to violet accents, DM Sans) and Hermes (the Desktop app's Nous look: dark blue, cream text,
-  blue and cream accents, Nous orange). They reuse bundled wallpapers, logos and fonts; the wallpaper
-  and icon pickers still list each file once.
+- Themes are data. ArchonUI ships 13 themes with no wallpaper: ArchonUI (neutral, the default),
+  Claude Code, Codex, Gemini and Hermes (each matched to that app's dark look), the classic editor
+  palettes Nord, Catppuccin, Tokyo Night and Gruvbox, and the gradient themes Aurora, Sunset, Ocean
+  and Nebula. Without an image, a theme's background is a three-colour diagonal blend, generated in
+  memory, which the glass and blur styles use like a wallpaper.
+- Theme files: every `.json` file in `~/.config/archonui/themes` adds a theme (or replaces a built-in
+  one with the same id): `id`, `name`, `colors` (bg, fg, acc required; muted, faint, acc2, deep, alt,
+  on, soft optional), optional `tune`, `gradient`, `wallpaper`, `logo`, `pixelated` and `fonts`. A
+  relative wallpaper is looked up in `~/.config/archonui/backgrounds`, a relative logo in
+  `~/.config/archonui/logos`. A file that doesn't parse is skipped and reported on stderr; a saved
+  theme id with no theme shows the default theme.
+- Backgrounds: Settings › Background offers the theme's own background and every image in
+  `~/.config/archonui/backgrounds`, for any theme. Uploads are copied there, so they stay available.
+- The twelve wallpaper themes (Blood Moon, Moonlight, Citadel and the rest) and their wallpapers and
+  logos are no longer in the repository. Only the ArchonUI mark is still embedded.
 - Appearance › Typography: the Minimal, Display font and Interface font sections are one All fonts
   list, each family once. Each font card has a Titles button (the display font) and a Text button
   (the interface font, also used by the chat and the message box). The theme pairings stay above it.

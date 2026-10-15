@@ -32,7 +32,7 @@ use gpui::{
     div, prelude::*, size, AnyWindowHandle, App, Context, Entity, FocusHandle, Focusable, KeyDownEvent,
     MouseButton, MouseDownEvent, Window,
 };
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use std::{collections::HashMap, path::{Path, PathBuf}, time::Instant};
 
 /// Width of a collapsed sidebar or tools panel, px.
 pub const RAIL: f32 = 40.;
@@ -249,11 +249,13 @@ impl Shell {
     fn identity_icon(&self) -> Option<PathBuf> {
         let key = match &self.state.settings.icon {
             AppIcon::Custom(path) if path.is_file() => return Some(path.clone()),
-            AppIcon::Preset(id) => id.preset().logo,
-            AppIcon::Theme | AppIcon::Custom(_) => self.theme.logo,
+            AppIcon::Preset(id) => theme::preset(id).logo.to_string(),
+            AppIcon::Theme | AppIcon::Custom(_) => self.theme.logo.clone(),
         };
-        let bytes = crate::ui::glass::logo_bytes(key)?;
-        notify::cache_file(&self.paths.data.join("cache"), key, bytes).ok()
+        let bytes = crate::ui::glass::logo_bytes(&key)?;
+        // A logo file is cached under its file name; the embedded logo's key is already one.
+        let name = Path::new(&key).file_name().map_or_else(|| key.clone(), |n| n.to_string_lossy().into_owned());
+        notify::cache_file(&self.paths.data.join("cache"), &name, &bytes).ok()
     }
 
     /// Names a chat's first exchange in the background, on its harness's cheap model. The title is
@@ -292,9 +294,9 @@ impl Shell {
 
     /// The wallpaper to draw: the user's pick for this theme, else the theme's own.
     pub(super) fn wallpaper_source(&self) -> WallpaperSource {
-        match self.state.settings.wallpapers.get(theme_key(self.state.settings.theme)) {
+        match self.state.settings.wallpapers.get(theme_key(&self.state.settings.theme)) {
             Some(path) if path.is_file() => WallpaperSource::File(path.clone()),
-            _ => WallpaperSource::theme(self.theme.wallpaper),
+            _ => WallpaperSource::theme(&self.theme),
         }
     }
 
@@ -354,10 +356,10 @@ impl Shell {
 /// The theme for the current settings: preset, the user's colour overrides and font choice.
 pub(super) fn resolve_theme(state: &AppState) -> Theme {
     let s = &state.settings;
-    let key = theme_key(s.theme);
+    let key = theme_key(&s.theme);
     let custom: HashMap<String, String> =
         s.custom_colours.get(key).map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-    theme::resolve(&s.theme.preset(), &custom, s.fonts.get(key).cloned().unwrap_or_default())
+    theme::resolve(theme::preset(&s.theme), &custom, s.fonts.get(key).cloned().unwrap_or_default())
 }
 
 /// The harness new sessions start with: the default from settings when it is detected and enabled,

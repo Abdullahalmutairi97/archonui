@@ -13,9 +13,8 @@ use crate::{
     ui::{
         anim,
         fonts::{self, FontChoice},
-        glass::wallpaper_bytes,
         shell::Shell,
-        theme::{BackgroundStyle, ThemeId, EDITABLE_TOKENS, PRESETS},
+        theme::{self, presets, BackgroundStyle, EDITABLE_TOKENS},
         tiling::LayoutMode,
         widgets::{
             button::ButtonStyle,
@@ -30,7 +29,10 @@ use gpui::{
     Stateful, Styled,
 };
 use crate::ui::scale::px;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// The six background styles in card order, with the description each card shows.
 const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
@@ -42,16 +44,20 @@ const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
     (BackgroundStyle::Ambient, "Ambient", "Blurred and dark"),
 ];
 
-/// The minimal font pairs' labels, in the order the Typography page shows them.
-/// The presets with their own wallpaper and logo; the rest reuse theirs.
-const ORIGINAL_PRESETS: &[crate::ui::theme::Preset] = PRESETS.split_at(12).0;
-
 /// Captions over the colour cards with how many of `EDITABLE_TOKENS`, in order, each holds.
 const COLOUR_GROUPS: [(&str, usize); 4] = [("Surfaces", 4), ("Text", 4), ("Accents", 4), ("Lines and highlights", 5)];
 
-/// The file name a theme wallpaper path ends in, e.g. `bloodmoon2.jpg` for `fhd/bloodmoon2.jpg`.
-fn wall_name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
+/// Image files the backgrounds folder offers.
+const IMAGE_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "webp", "gif"];
+
+/// A theme's background without an image, as a thumbnail: its three gradient colours.
+fn gradient_thumb(stops: [crate::ui::theme::Rgba; 3]) -> gpui::Div {
+    // GPUI gradients take two stops, so the middle colour fills the box under a blend of the ends.
+    div().size_full().bg(stops[1].to_hsla()).child(div().size_full().opacity(0.7).bg(gpui::linear_gradient(
+        135.,
+        gpui::linear_color_stop(stops[0].to_hsla(), 0.),
+        gpui::linear_color_stop(stops[2].to_hsla(), 1.),
+    )))
 }
 
 /// The image format for a file name, from its extension. Unknown extensions decode as JPEG.
@@ -77,27 +83,6 @@ trait AspectRatio: Styled + Sized {
 }
 impl<T: Styled> AspectRatio for T {}
 
-/// The display name of a theme preset, as the Appearance cards show it.
-fn theme_name(id: ThemeId) -> &'static str {
-    match id {
-        ThemeId::ArchonUI => "ArchonUI",
-        ThemeId::BloodMoon => "Blood Moon",
-        ThemeId::Moonlight => "Moonlight",
-        ThemeId::Wreck => "Wreck",
-        ThemeId::Citadel => "Citadel",
-        ThemeId::Neon => "Neon",
-        ThemeId::Violet => "Violet",
-        ThemeId::Ink => "Ink",
-        ThemeId::Bonfire => "Bonfire",
-        ThemeId::Hunter => "Hunter",
-        ThemeId::Shards => "Shards",
-        ThemeId::Vale => "Vale",
-        ThemeId::Codex => "Codex",
-        ThemeId::ClaudeCode => "Claude Code",
-        ThemeId::Gemini => "Gemini",
-        ThemeId::Hermes => "Hermes",
-    }
-}
 
 /// A slider range from a `(min, max)` settings bound.
 fn range(bounds: (f32, f32), step: f32) -> SliderRange {
@@ -121,10 +106,40 @@ fn card(id: impl Into<ElementId>, active: bool, theme: &crate::ui::theme::Theme)
 }
 
 impl Shell {
-    /// The wallpaper thumbnail for a built-in wall, decoded once.
-    pub(super) fn wall_thumb(&mut self, name: &str) -> Option<Arc<Image>> {
-        let bytes = wallpaper_bytes(name)?;
-        self.cached_image(format!("wall:{name}"), || Some(Arc::new(Image::from_bytes(image_format(name), bytes.to_vec()))))
+    /// The thumbnail for a background image file, decoded once.
+    pub(super) fn wall_thumb(&mut self, path: &Path) -> Option<Arc<Image>> {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        self.cached_image(format!("file:{}", path.display()), || {
+            let bytes = std::fs::read(path).ok()?;
+            Some(Arc::new(Image::from_bytes(image_format(&name), bytes)))
+        })
+    }
+
+    /// The backgrounds folder in the config dir. Uploads are copied here, and every image in it is
+    /// offered for any theme.
+    fn backgrounds_dir(&self) -> PathBuf {
+        self.paths.config.join("backgrounds")
+    }
+
+    /// The images in the backgrounds folder, in name order, then wallpapers added before the folder
+    /// existed that are still on disk.
+    fn backgrounds(&self) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(self.backgrounds_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_string_lossy().to_ascii_lowercase().as_str()))
+            })
+            .collect();
+        found.sort();
+        for old in &self.state.settings.user_wallpapers {
+            if old.is_file() && !found.contains(old) {
+                found.push(old.clone());
+            }
+        }
+        found
     }
 
     /// The image for `key`, made by `load` the first time only.
@@ -137,12 +152,13 @@ impl Shell {
         Some(image)
     }
 
-    /// The wallpaper in effect for the current theme: the user's pick, else the theme's own.
-    fn current_wall(&self) -> String {
+    /// The image in effect for the current theme: the user's pick, else the theme's own file. `None`
+    /// when the theme's gradient shows.
+    fn current_wall(&self) -> Option<PathBuf> {
         let s = &self.state.settings;
-        match s.wallpapers.get(theme_key(s.theme)) {
-            Some(path) => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            None => wall_name(s.theme.preset().wallpaper).to_string(),
+        match s.wallpapers.get(theme_key(&s.theme)) {
+            Some(path) if path.is_file() => Some(path.clone()),
+            _ => Some(PathBuf::from(&self.theme.wallpaper)).filter(|p| p.is_file()),
         }
     }
 
@@ -166,21 +182,22 @@ impl Shell {
         let logo = self.icon_logo();
         let reset_op = if matches!(self.state.settings.icon, AppIcon::Theme) { 0.4 } else { 1.0 };
         let current = self.state.settings.icon.clone();
-        let theme_choice = self.state.settings.theme;
+        let theme_logo = self.theme.logo.clone();
 
         let mut grid = div().grid().grid_cols(7).gap(px(8.));
-        // The look-alike presets reuse the first twelve's logos, so only those twelve are offered; the
-        // one showing a look-alike's logo is marked when that look-alike is chosen.
-        for preset in ORIGINAL_PRESETS.iter() {
+        // One tile per distinct logo; themes that share a logo share its tile.
+        let mut seen = std::collections::HashSet::new();
+        let logos: Vec<_> = presets().iter().filter(|p| seen.insert(p.logo.clone())).collect();
+        for (i, preset) in logos.into_iter().enumerate() {
             let active = match &current {
-                AppIcon::Preset(id) => id.preset().logo == preset.logo,
-                AppIcon::Theme => theme_choice.preset().logo == preset.logo,
+                AppIcon::Preset(id) => theme::preset(id).logo == preset.logo,
+                AppIcon::Theme => theme_logo == preset.logo,
                 AppIcon::Custom(_) => false,
             };
-            let logo_image = self.logo_image(preset.logo);
-            let id = preset.id;
+            let logo_image = self.logo_image(&preset.logo.clone());
+            let id = preset.id.to_string();
             let tile = div()
-                .id(("icon", id as usize))
+                .id(("icon", i))
                 .aspect_ratio(1.)
                 .rounded(px(8.))
                 .flex()
@@ -191,7 +208,7 @@ impl Shell {
                 .border_2()
                 .border_color(if active { theme.acc.to_hsla() } else { gpui::transparent_black() })
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.settings.icon = AppIcon::Preset(id);
+                    this.state.settings.icon = AppIcon::Preset(id.clone());
                     this.save(cx);
                 }))
                 .when_some(logo_image, |d, src| {
@@ -317,19 +334,20 @@ impl Shell {
     /// The preset cards. Picking one resets its fonts and wallpaper, as the prototype does.
     fn presets_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let current = self.state.settings.theme;
+        let current = self.state.settings.theme.clone();
         let mut grid = div().grid().grid_cols(4).gap(px(14.));
-        for preset in PRESETS.iter() {
-            let id = preset.id;
+        for (i, preset) in presets().iter().enumerate() {
+            let id = preset.id.to_string();
             let active = id == current;
-            let edited = self.state.settings.custom_colours.get(theme_key(id)).is_some_and(|t| !t.is_empty());
+            let edited = self.state.settings.custom_colours.get(theme_key(&id)).is_some_and(|t| !t.is_empty());
             let tag = match (active, edited) {
                 (true, true) => "Active · edited",
                 (true, false) => "Active",
                 (false, true) => "Edited",
                 (false, false) => "",
             };
-            let wall = self.wall_thumb(wall_name(preset.wallpaper));
+            let wall = Some(Path::new(preset.wallpaper.as_ref())).filter(|p| p.is_file()).and_then(|p| self.wall_thumb(p));
+            let gradient = preset.gradient;
             let swatches = [preset.bg, preset.fg, preset.muted, preset.acc, preset.acc2, preset.alt];
             let thumb = div()
                 .relative()
@@ -337,7 +355,10 @@ impl Shell {
                 .rounded(px(6.))
                 .overflow_hidden()
                 .bg(preset.bg.to_hsla())
-                .when_some(wall, |d, wall| d.child(img(wall).absolute().size_full().object_fit(ObjectFit::Cover)))
+                .child(match wall {
+                    Some(wall) => img(wall).absolute().size_full().object_fit(ObjectFit::Cover).into_any_element(),
+                    None => gradient_thumb(gradient).absolute().into_any_element(),
+                })
                 .child(
                     div()
                         .absolute()
@@ -352,13 +373,13 @@ impl Shell {
                         .children(swatches.map(|c| div().flex_1().h(px(10.)).rounded(px(3.)).bg(c.to_hsla()))),
                 );
             grid = grid.child(
-                card(("preset", id as usize), active, &theme)
+                card(("preset", i), active, &theme)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.state.settings.theme = id;
+                        this.state.settings.theme = id.clone();
                         // The open colour editor belongs to the theme it was opened on.
                         this.settings.picker = None;
-                        this.state.settings.fonts.remove(theme_key(id));
-                        this.state.settings.wallpapers.remove(theme_key(id));
+                        this.state.settings.fonts.remove(theme_key(&id));
+                        this.state.settings.wallpapers.remove(theme_key(&id));
                         this.refresh_theme(cx);
                     }))
                     .child(thumb)
@@ -377,7 +398,7 @@ impl Shell {
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .whitespace_nowrap()
-                                    .child(theme_name(preset.id)),
+                                    .child(preset.name.to_string()),
                             )
                             .child(div().flex_none().text_size(px(11.)).text_color(theme.acc2.to_hsla()).child(tag)),
                     ),
@@ -396,7 +417,8 @@ impl Shell {
     fn background_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let current = self.state.settings.background;
-        let wall = self.wall_thumb(&self.current_wall());
+        let wall = self.current_wall().and_then(|p| self.wall_thumb(&p));
+        let gradient = self.theme.gradient;
         let mut styles = div().grid().grid_cols(6).gap(px(10.));
         for (i, (style, name, desc)) in BACKGROUNDS.iter().copied().enumerate() {
             let active = style == current;
@@ -409,8 +431,11 @@ impl Shell {
                 BackgroundStyle::Ambient => (0.55, 0.50, 0.45),
             };
             let mut preview = div().relative().h(px(74.)).rounded(px(6.)).overflow_hidden().bg(theme.bg.to_hsla());
-            if let Some(wall) = wall.clone().filter(|_| wall_alpha > 0.) {
-                preview = preview.child(img(wall).absolute().inset_0().size_full().object_fit(ObjectFit::Cover).opacity(wall_alpha));
+            if wall_alpha > 0. {
+                preview = preview.child(match wall.clone() {
+                    Some(wall) => img(wall).absolute().inset_0().size_full().object_fit(ObjectFit::Cover).opacity(wall_alpha).into_any_element(),
+                    None => gradient_thumb(gradient).absolute().inset_0().opacity(wall_alpha).into_any_element(),
+                });
             }
             preview = preview
                 .child(div().absolute().left_0().top_0().bottom_0().w(gpui::relative(0.18)).bg(theme.panel.alpha(side_alpha).to_hsla()))
@@ -453,51 +478,66 @@ impl Shell {
             .gap(px(12.))
             .child(heading("BACKGROUND", None, &theme))
             .child(styles)
-            .child(caption("Wallpaper", &theme))
+            .child(caption(&format!("Wallpaper · your images live in {}", self.backgrounds_dir().display()), &theme))
             .child(walls)
             .into_any_element()
     }
 
-    /// The wallpaper grid: the twelve theme walls, any uploaded walls, and an upload tile.
+    /// The wallpaper grid: the theme's own background, every image in the backgrounds folder, and an
+    /// upload tile.
     fn wallpaper_grid(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let current = self.current_wall();
+        let picked = self.state.settings.wallpapers.get(theme_key(&self.state.settings.theme)).filter(|p| p.is_file()).cloned();
         let mut grid = div().grid().grid_cols(7).gap(px(10.));
-        let mut names: Vec<(String, Option<PathBuf>)> = ORIGINAL_PRESETS
-            .iter()
-            .map(|p| (wall_name(p.wallpaper).to_string(), None))
-            .collect();
-        for path in self.state.settings.user_wallpapers.clone() {
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            names.push((name, Some(path)));
-        }
-        for (i, (name, user)) in names.into_iter().enumerate() {
-            let active = name == current;
-            let Some(thumb) = (match &user {
-                Some(path) => self.cached_image(format!("file:{}", path.display()), || {
-                    let bytes = std::fs::read(path).ok()?;
-                    Some(Arc::new(Image::from_bytes(image_format(&name), bytes)))
-                }),
-                None => self.wall_thumb(&name),
-            }) else {
-                continue;
-            };
-            let pick_name = name.clone();
-            let pick_user = user.clone();
-            let cell = div()
-                .id(("wall", i))
+        let cell = |id: ElementId, active: bool| {
+            div()
+                .id(id)
+                .relative()
                 .h(px(80.))
                 .rounded(px(6.))
                 .overflow_hidden()
                 .cursor_pointer()
                 .border_2()
                 .border_color(if active { theme.acc.to_hsla() } else { gpui::transparent_black() })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let own = own_for(this);
-                    this.pick_wall(&pick_name, pick_user.clone(), &own, cx);
+        };
+        // The theme's own background: its image, or its gradient.
+        let own = Some(PathBuf::from(&theme.wallpaper)).filter(|p| p.is_file()).and_then(|p| self.wall_thumb(&p));
+        grid = grid.child(
+            cell("wall-theme".into(), picked.is_none())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let key = theme_key(&this.state.settings.theme).to_string();
+                    this.state.settings.wallpapers.remove(&key);
+                    this.refresh_theme(cx);
                 }))
-                .child(img(thumb).size_full().object_fit(ObjectFit::Cover));
-            grid = grid.child(cell);
+                .child(match own {
+                    Some(thumb) => img(thumb).size_full().object_fit(ObjectFit::Cover).into_any_element(),
+                    None => gradient_thumb(theme.gradient).into_any_element(),
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(6.))
+                        .bottom(px(5.))
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .bg(gpui::hsla(0., 0., 0., 0.55))
+                        .text_size(px(10.5))
+                        .text_color(gpui::white())
+                        .child("Theme"),
+                ),
+        );
+        for (i, path) in self.backgrounds().into_iter().enumerate() {
+            let Some(thumb) = self.wall_thumb(&path) else { continue };
+            let active = picked.as_ref() == Some(&path);
+            grid = grid.child(
+                cell(("wall", i).into(), active)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let key = theme_key(&this.state.settings.theme).to_string();
+                        this.state.settings.wallpapers.insert(key, path.clone());
+                        this.refresh_theme(cx);
+                    }))
+                    .child(img(thumb).size_full().object_fit(ObjectFit::Cover)),
+            );
         }
         grid = grid.child(
             div()
@@ -520,43 +560,18 @@ impl Shell {
         grid.into_any_element()
     }
 
-    /// Makes `name` the wallpaper for the current theme. A built-in wall is copied into the data dir
-    /// first, since the shell reads wallpapers from files. The theme's own wall clears the override.
-    fn pick_wall(&mut self, name: &str, user: Option<PathBuf>, own: &str, cx: &mut Context<Self>) {
-        let key = theme_key(self.state.settings.theme).to_string();
-        if let Some(path) = user {
-            self.state.settings.wallpapers.insert(key, path);
-            self.refresh_theme(cx);
-            return;
-        }
-        if name == own {
-            self.state.settings.wallpapers.remove(&key);
-            self.refresh_theme(cx);
-            return;
-        }
-        let Some(bytes) = wallpaper_bytes(name) else { return };
-        let dir = self.paths.data.join("wallpapers");
-        let path = dir.join(name);
-        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, bytes)) {
-            self.toast(format!("Wallpaper not set: {e}"), cx);
-            return;
-        }
-        self.state.settings.wallpapers.insert(key, path);
-        self.refresh_theme(cx);
-    }
-
-    /// Adds an uploaded wallpaper to the data dir and makes it this theme's wall.
+    /// Copies an uploaded image into the backgrounds folder, where it stays for every theme, and makes it
+    /// this theme's background.
     fn pick_wall_file(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
-        let dir = self.paths.data.join("wallpapers");
+        let dir = self.backgrounds_dir();
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
             let Some(src) = paths.into_iter().next() else { return };
             let copied = cx.background_executor().spawn(async move { copy_asset(&dir, &src) }).await;
             let _ = this.update(cx, |this, cx| match copied {
                 Ok(path) => {
-                    let key = theme_key(this.state.settings.theme).to_string();
-                    this.state.settings.user_wallpapers.push(path.clone());
+                    let key = theme_key(&this.state.settings.theme).to_string();
                     this.state.settings.wallpapers.insert(key, path);
                     this.refresh_theme(cx);
                 }
@@ -569,11 +584,11 @@ impl Shell {
     /// The twelve token overrides for the current theme. A cell opens the hex editor under the grid.
     fn colours_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let key = theme_key(self.state.settings.theme);
+        let key = theme_key(&self.state.settings.theme);
         let overrides = self.state.settings.custom_colours.get(key).cloned().unwrap_or_default();
         let has_overrides = !overrides.is_empty();
         let reset_op = if has_overrides { 1.0 } else { 0.4 };
-        let name = theme_name(self.state.settings.theme).to_uppercase();
+        let name = theme::preset(&self.state.settings.theme).name.to_uppercase();
 
         let mut groups: Vec<(&str, gpui::Div)> =
             COLOUR_GROUPS.iter().map(|(name, _)| (*name, div().grid().grid_cols(4).gap(px(10.)))).collect();
@@ -661,7 +676,7 @@ impl Shell {
             .opacity(reset_op)
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
-                let key = theme_key(this.state.settings.theme);
+                let key = theme_key(&this.state.settings.theme);
                 this.state.settings.custom_colours.remove(key);
                 this.settings.picker = None;
                 this.refresh_theme(cx);
@@ -688,9 +703,9 @@ impl Shell {
     /// The theme's pairings, then every font with a Titles and a Text button.
     fn typography_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let key = theme_key(self.state.settings.theme);
+        let key = theme_key(&self.state.settings.theme);
         let choice = self.state.settings.fonts.get(key).cloned().unwrap_or_default();
-        let preset = self.state.settings.theme.preset();
+        let preset = theme::preset(&self.state.settings.theme);
         let name_text = self.state.settings.app_name.clone();
 
         let mut pairings = div().grid().grid_cols(3).gap(px(10.));
@@ -700,7 +715,7 @@ impl Shell {
                 card(("pairing", i), active, &theme)
                     .p(px(14.))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let key = theme_key(this.state.settings.theme).to_string();
+                        let key = theme_key(&this.state.settings.theme).to_string();
                         this.state.settings.fonts.insert(key, FontChoice { pairing: i, display: None, ui: None });
                         this.refresh_theme(cx);
                     }))
@@ -736,14 +751,14 @@ impl Shell {
                             .gap(px(4.))
                             .child(slot_button(("font-titles", i), "Titles", is_titles, &theme).on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    let key = theme_key(this.state.settings.theme).to_string();
+                                    let key = theme_key(&this.state.settings.theme).to_string();
                                     this.state.settings.fonts.entry(key).or_default().display = Some(family.to_string());
                                     this.refresh_theme(cx);
                                 },
                             )))
                             .child(slot_button(("font-text", i), "Text", is_text, &theme).on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    let key = theme_key(this.state.settings.theme).to_string();
+                                    let key = theme_key(&this.state.settings.theme).to_string();
                                     this.state.settings.fonts.entry(key).or_default().ui = Some(family.to_string());
                                     this.refresh_theme(cx);
                                 },
@@ -932,7 +947,3 @@ fn card_plain(theme: &crate::ui::theme::Theme) -> gpui::Div {
         .border_color(theme.line2.to_hsla())
 }
 
-/// The theme's own wall name, for the handler that compares picks against it.
-fn own_for(this: &Shell) -> String {
-    wall_name(this.state.settings.theme.preset().wallpaper).to_string()
-}

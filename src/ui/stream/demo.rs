@@ -7,7 +7,7 @@ use crate::{
     store::{Message, Role, Session, ToolCall, ToolKind},
     ui::{
         fonts::FontChoice,
-        theme::{resolve, Theme, ThemeId},
+        theme::{resolve, Theme},
         widgets::Toasts,
     },
 };
@@ -16,7 +16,7 @@ use std::{collections::HashMap, path::{Path, PathBuf}};
 
 /// Opens the stream demo in a new window, in the Blood Moon theme.
 pub fn stream_demo(cx: &mut App) {
-    let theme = resolve(&ThemeId::BloodMoon.preset(), &HashMap::new(), FontChoice::default());
+    let theme = resolve(crate::ui::theme::preset(crate::ui::theme::DEFAULT_THEME), &HashMap::new(), FontChoice::default());
     cx.open_window(WindowOptions::default(), move |_window, cx| cx.new(|cx| DemoView::new(theme, cx)))
         .expect("open stream demo window");
 }

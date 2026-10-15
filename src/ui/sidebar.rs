@@ -216,13 +216,13 @@ impl Shell {
     fn identity_logo(&mut self) -> Option<ImageSource> {
         let key = match &self.state.settings.icon {
             AppIcon::Custom(path) if path.is_file() => return Some(path.clone().into()),
-            AppIcon::Preset(id) => id.preset().logo,
-            AppIcon::Theme | AppIcon::Custom(_) => self.theme.logo,
+            AppIcon::Preset(id) => crate::ui::theme::preset(id).logo.to_string(),
+            AppIcon::Theme | AppIcon::Custom(_) => self.theme.logo.clone(),
         };
-        if self.sidebar.logo.as_ref().map_or(true, |(name, _)| name != key) {
-            let bytes = glass::logo_bytes(key)?;
+        if self.sidebar.logo.as_ref().map_or(true, |(name, _)| *name != key) {
+            let bytes = glass::logo_bytes(&key)?;
             let image = Image::from_bytes(ImageFormat::Png, bytes.to_vec());
-            self.sidebar.logo = Some((key.to_string(), Arc::new(image)));
+            self.sidebar.logo = Some((key, Arc::new(image)));
         }
         self.sidebar.logo.as_ref().map(|(_, image)| image.clone().into())
     }

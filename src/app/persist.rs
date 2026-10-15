@@ -452,14 +452,20 @@ mod tests {
     fn one_bad_value_keeps_the_rest_of_the_file() {
         let dir = temp("salvage");
         let config = dir.join("config");
-        // A theme from a newer build, and a width saved as `null` (a NaN).
-        write_atomic(&config.join(SETTINGS_FILE), br#"{"gaps": 22, "theme": "from-the-future", "app_name": "ember"}"#).unwrap();
+        // A background style from a newer build, and a width saved as `null` (a NaN). A theme id with no
+        // theme is kept: the theme file may come back, and until then the default theme shows.
+        write_atomic(
+            &config.join(SETTINGS_FILE),
+            br#"{"gaps": 22, "background": "from-the-future", "theme": "gone", "app_name": "ember"}"#,
+        )
+        .unwrap();
         write_atomic(&config.join(WORKSPACE_FILE), br#"{"right_width": null, "right_tab": "git"}"#).unwrap();
         let projects = r#"[{"id": "p1", "name": "core", "path": "/c", "created": 1}, {"id": 5}]"#;
         write_atomic(&config.join(PROJECTS_FILE), projects.as_bytes()).unwrap();
 
         let loaded = load(&config, &dir.join("none.json"));
         assert_eq!((loaded.settings.gaps, loaded.settings.app_name.as_str()), (22., "ember"));
+        assert_eq!(loaded.settings.theme, "gone");
         assert_eq!(loaded.workspace.right_tab, RightTab::Git);
         assert_eq!(loaded.workspace.right_width, RIGHT_WIDTH_DEFAULT);
         assert_eq!(loaded.projects.len(), 1, "the broken project is dropped, the good one kept");

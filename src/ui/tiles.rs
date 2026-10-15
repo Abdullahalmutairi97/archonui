@@ -5,7 +5,7 @@ use super::{
     glass::{glass_surface, logo_bytes, Backdrop, Rect as GlassRect},
     shell::Shell,
     sigil::{sigil_element, status_dot, SessionState, StatusDotColours},
-    theme::{Theme, TileFill, TileState, PRESETS},
+    theme::{presets, Theme, TileFill, TileState},
     tiling::{Arrow, Dir, Handle, Rect},
     widgets::popover::{tooltip, TooltipColors},
 };
@@ -337,8 +337,9 @@ impl Shell {
             Some(Action::FocusPrev) => self.move_focus(Arrow::Left, cx),
             Some(Action::NextTheme) => {
                 let settings = &mut self.state.settings;
-                let i = PRESETS.iter().position(|p| p.id == settings.theme).unwrap_or(0);
-                settings.theme = PRESETS[(i + 1) % PRESETS.len()].id;
+                let all = presets();
+                let i = all.iter().position(|p| p.id == settings.theme).unwrap_or(0);
+                settings.theme = all[(i + 1) % all.len()].id.to_string();
                 self.refresh_theme(cx);
             }
             Some(Action::ToggleSidebar) => {
@@ -740,7 +741,7 @@ impl Shell {
     /// The empty state: logo, brand and a "New session" button, centred in `area`. Spec: layout.md §3.
     fn render_empty(&self, area: Rect, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
-        let logo = logo_bytes(theme.logo)
+        let logo = logo_bytes(&theme.logo)
             .map(|bytes| img(Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))).size(px(72.)).opacity(0.8));
         let button = div()
             .id("tile-empty-new")

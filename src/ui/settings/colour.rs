@@ -100,14 +100,14 @@ impl Shell {
 
     /// Stores a custom colour for the current theme and repaints.
     pub(super) fn set_colour(&mut self, token: &str, value: String, cx: &mut Context<Self>) {
-        let key = theme_key(self.state.settings.theme).to_string();
+        let key = theme_key(&self.state.settings.theme).to_string();
         self.state.settings.custom_colours.entry(key).or_default().insert(token.to_string(), value);
         self.refresh_theme(cx);
     }
 
     /// Drops the custom colour for `token` in the current theme, back to the preset.
     pub(super) fn reset_colour(&mut self, token: &str, cx: &mut Context<Self>) {
-        let key = theme_key(self.state.settings.theme);
+        let key = theme_key(&self.state.settings.theme);
         if let Some(tokens) = self.state.settings.custom_colours.get_mut(key) {
             tokens.remove(token);
             if tokens.is_empty() {

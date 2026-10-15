@@ -27,7 +27,7 @@ use std::{ops::Range, sync::Arc};
 
 /// The app logo, or nothing when the theme has none. `size` is the square edge in pixels.
 pub(super) fn logo(theme: &Theme, size: f32) -> Option<AnyElement> {
-    let bytes = glass::logo_bytes(theme.logo)?;
+    let bytes = glass::logo_bytes(&theme.logo)?;
     let image = Arc::new(GpuiImage::from_bytes(ImageFormat::Png, bytes.to_vec()));
     Some(img(image).size(px(size)).into_any_element())
 }
@@ -1062,22 +1062,24 @@ mod tests {
     use crate::store::Usage;
     use crate::ui::{
         fonts::FontChoice,
-        theme::{resolve, Rgba, Theme, ThemeId},
+        theme::{resolve, Rgba, Theme},
     };
     use gpui::Hsla;
     use std::collections::HashMap;
 
-    fn theme(id: ThemeId) -> Theme {
-        resolve(&id.preset(), &HashMap::new(), FontChoice::default())
+    fn theme(bg: u32) -> Theme {
+        let mut preset = crate::ui::theme::preset("nord").clone();
+        preset.bg = Rgba::hex(bg);
+        resolve(&preset, &HashMap::new(), FontChoice::default())
     }
 
-    /// The frame must follow the theme, so the light Ink theme no longer draws a dark slab (chat.md §1.6).
+    /// The frame must follow the theme, so a light theme doesn't draw a dark slab (chat.md §1.6).
     #[test]
     fn code_surface_follows_the_theme_background() {
-        let ink = code_bg(&theme(ThemeId::Ink));
-        assert_eq!(ink, Hsla { a: 0.72, ..Rgba::hex(0xf2f0ea).to_hsla() });
-        let blood = code_bg(&theme(ThemeId::BloodMoon));
-        assert_eq!(blood, Hsla { a: 0.72, ..Rgba::hex(0x0d0a08).to_hsla() });
-        assert!(ink.l > blood.l, "Ink's code surface is light, Blood Moon's dark");
+        let light = code_bg(&theme(0xf2f0ea));
+        assert_eq!(light, Hsla { a: 0.72, ..Rgba::hex(0xf2f0ea).to_hsla() });
+        let dark = code_bg(&theme(0x0d0a08));
+        assert_eq!(dark, Hsla { a: 0.72, ..Rgba::hex(0x0d0a08).to_hsla() });
+        assert!(light.l > dark.l, "a light theme's code surface is light, a dark one's dark");
     }
 }

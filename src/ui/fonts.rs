@@ -332,6 +332,12 @@ pub const FONTS: &[Face] = &[
     ),
 ];
 
+/// The bundled family named `name` (any case), as the `'static` name GPUI matches. `None` for a
+/// family ArchonUI doesn't bundle.
+pub fn bundled_family(name: &str) -> Option<&'static str> {
+    FONTS.iter().map(|(family, ..)| *family).find(|family| family.eq_ignore_ascii_case(name.trim()))
+}
+
 /// Arabic UI family. Cosmic-text's Unix fallback list names this family for the Arabic script, so
 /// bundling it keeps Arabic glyphs available without a system font.
 pub const ARABIC_UI: &str = "Noto Sans Arabic";
@@ -479,7 +485,7 @@ pub fn register(cx: &mut gpui::App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::theme::{PRESETS, ThemeId};
+    use crate::ui::theme::BUILTIN;
 
     #[test]
     fn every_face_is_truetype_or_opentype() {
@@ -493,7 +499,7 @@ mod tests {
 
     #[test]
     fn every_family_in_presets_and_lists_is_embedded() {
-        let mut families: Vec<&str> = PRESETS
+        let mut families: Vec<&str> = BUILTIN
             .iter()
             .flat_map(|p| p.pairings.iter())
             .flat_map(|p| [p.display, p.ui])
@@ -526,7 +532,11 @@ mod tests {
 
     #[test]
     fn resolve_fonts_applies_pairing_then_overrides() {
-        let pairings = &ThemeId::BloodMoon.preset().pairings;
+        let pairings = &[
+            FontPair { label: "Fraktur", display: "UnifrakturCook", ui: "JetBrains Mono" },
+            FontPair { label: "Pirata", display: "Pirata One", ui: "Space Mono" },
+            FontPair { label: "Grenze", display: "Grenze Gotisch", ui: "IBM Plex Mono" },
+        ];
         let default = resolve_fonts(pairings, &FontChoice::default());
         let (d, u, c) = &default;
         assert_eq!(

@@ -274,7 +274,7 @@ fn tinted(colour: Hsla, alpha: f32) -> Hsla {
 mod tests {
     use super::*;
     use crate::ui::fonts::FontChoice;
-    use crate::ui::theme::{resolve, ThemeId};
+    use crate::ui::theme::resolve;
     use std::collections::HashMap;
 
     fn file(label: &str, tone: Tone) -> Badge {
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn badge_colours_come_from_the_blood_moon_tokens() {
-        let theme = resolve(&ThemeId::BloodMoon.preset(), &HashMap::new(), FontChoice::default());
+        let theme = resolve(crate::ui::theme::preset(crate::ui::theme::DEFAULT_THEME), &HashMap::new(), FontChoice::default());
         assert_eq!(Tone::Acc2.colour(&theme), theme.acc2);
         assert_eq!(Tone::Acc.colour(&theme), theme.acc);
         assert_eq!(Tone::Alt.colour(&theme), theme.alt);

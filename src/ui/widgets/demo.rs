@@ -17,12 +17,12 @@ use super::text_input::{init as init_text_input, text_input, TextInput, TextInpu
 use super::toast::Toasts;
 use super::toggle::Toggle;
 use crate::ui::fonts::FontChoice;
-use crate::ui::theme::{resolve, Theme, ThemeId};
+use crate::ui::theme::{resolve, Theme};
 
 /// Opens the widget gallery in a new window, in the Blood Moon theme. Binds the text input keys first.
 pub fn open_demo(cx: &mut App) {
     init_text_input(cx);
-    let theme = resolve(&ThemeId::BloodMoon.preset(), &HashMap::new(), FontChoice::default());
+    let theme = resolve(crate::ui::theme::preset(crate::ui::theme::DEFAULT_THEME), &HashMap::new(), FontChoice::default());
     cx.open_window(WindowOptions::default(), move |window, cx| {
         cx.new(|cx| DemoView::new(theme, window, cx))
     })

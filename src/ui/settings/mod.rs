@@ -574,10 +574,10 @@ impl Shell {
                     Some(Arc::new(Image::from_bytes(appearance::image_format(&name), bytes)))
                 })
             }
-            AppIcon::Preset(id) => self.logo_image(id.preset().logo),
+            AppIcon::Preset(id) => self.logo_image(&crate::ui::theme::preset(&id).logo.clone()),
             AppIcon::Theme | AppIcon::Custom(_) => {
-                let name = self.theme.logo;
-                self.logo_image(name)
+                let name = self.theme.logo.clone();
+                self.logo_image(&name)
             }
         }
     }
@@ -644,8 +644,8 @@ impl Shell {
     }
 }
 
-/// The embedded theme logo `name`, or `None` for an unknown name.
-fn glass_logo(name: &str) -> Option<&'static [u8]> {
+/// The theme logo `name`, or `None` for an unknown name or a missing file.
+fn glass_logo(name: &str) -> Option<Arc<[u8]>> {
     super::glass::logo_bytes(name)
 }
 
