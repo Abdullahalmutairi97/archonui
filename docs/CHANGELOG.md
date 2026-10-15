@@ -9,6 +9,10 @@
   (green) and removed (red). Tokens come from Claude Code's and Gemini's result line, Codex's
   `turn.completed`, Pi's `message_end` and OpenCode's `step_finish`.
 - Edit rows show their `+N −M` in green and red.
+- Steering: a message sent while the agent works is queued above the message box instead of being
+  refused. The first queued message goes out when the reply finishes. Steer now stops the reply and
+  sends it at once, so the agent continues the same session with the new instructions; × drops it.
+  After Esc, the queue waits and each row offers Send.
 - Esc stops the focused session's reply from anywhere in the window, not only from the message box.
   Popups, the terminal and the editor still get Esc first. The working line says "Esc to stop".
 - Four new presets that look like other agent apps: Codex (near-black and grey, blue accent, Geist),

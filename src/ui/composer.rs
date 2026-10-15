@@ -45,6 +45,10 @@ struct ComposerEntry {
     recent: Vec<PathBuf>,
     /// The composer card's width from its last paint; the palette matches it.
     card_width: Rc<Cell<Pixels>>,
+    /// Messages typed while the agent was working, oldest first. The first is sent when the turn ends.
+    queued: Vec<String>,
+    /// Steer now stopped the turn: send the queued message even though the turn was stopped.
+    steer: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -81,6 +85,21 @@ impl ComposerUi {
         if let Some(e) = self.entries.get_mut(id) {
             e.recent = recent;
         }
+    }
+
+    fn queued(&self, id: &str) -> &[String] {
+        self.entries.get(id).map_or(&[], |e| e.queued.as_slice())
+    }
+
+    fn queue(&mut self, id: &str, text: String) {
+        if let Some(e) = self.entries.get_mut(id) {
+            e.queued.push(text);
+        }
+    }
+
+    fn unqueue(&mut self, id: &str, index: usize) -> Option<String> {
+        let e = self.entries.get_mut(id)?;
+        (index < e.queued.len()).then(|| e.queued.remove(index))
     }
 
     fn card_width(&self, id: &str) -> Rc<Cell<Pixels>> {
@@ -183,7 +202,9 @@ impl Shell {
             .children(attach_open.then(|| float_above(self.render_attach_popover(&id, cx), Corner::BottomLeft)))
             .child(attach);
 
-        let (send_bg, send_fg) = if busy {
+        // Busy with a draft, the button queues the draft, so it shows send rather than stop.
+        let stop = busy && draft.trim().is_empty();
+        let (send_bg, send_fg) = if stop {
             (theme.fg, theme.bg)
         } else if can_send {
             (theme.acc, theme.on)
@@ -191,7 +212,7 @@ impl Shell {
             (theme.line2, theme.muted)
         };
         let send_id = id.clone();
-        let send_glyph = if busy {
+        let send_glyph = if stop {
             div().w(px(11.)).h(px(11.)).rounded(px(2.)).bg(send_fg.to_hsla()).into_any_element()
         } else {
             stroke_icon(SEND, 16., 1.8, send_fg.to_hsla()).into_any_element()
@@ -263,6 +284,7 @@ impl Shell {
             .px(px(12.))
             .pt(px(8.))
             .pb(px(12.))
+            .children(self.render_queue(&id, cx))
             .child(div().children(palette_slot).child(card))
             .into_any_element()
     }
@@ -367,6 +389,8 @@ impl Shell {
                 pop: None,
                 row: 0,
                 recent: Vec::new(),
+                queued: Vec::new(),
+                steer: false,
                 card_width: Rc::new(Cell::new(px(0.))),
                 _subs: vec![sub],
             },
@@ -405,9 +429,10 @@ impl Shell {
         }
     }
 
-    /// The send button: stops a running turn, else sends the draft.
+    /// The send button: queues the draft while the agent works, stops a running turn when there is no
+    /// draft, else sends the draft.
     fn composer_action(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.state.busy(id) {
+        if self.state.busy(id) && self.draft(id, cx).trim().is_empty() {
             self.state.stop(id);
             cx.notify();
             return;
@@ -426,18 +451,112 @@ impl Shell {
                 return;
             }
         }
-        if (text.is_empty() && self.state.pending(id).is_empty()) || self.state.busy(id) {
+        // Typed while the agent works: queued, and sent when the turn ends (or now, with Steer now).
+        if self.state.busy(id) {
+            if !text.is_empty() {
+                self.composers.queue(id, text.to_string());
+                self.clear_input(id, cx);
+                cx.notify();
+            }
             return;
         }
-        let Some(agent) = self.state.session(id).map(|s| s.agent.clone()) else { return };
+        if self.send_now(id, text, cx) {
+            self.clear_input(id, cx);
+        }
+    }
+
+    /// Starts a turn with `text` in session `id`. Returns whether it started.
+    fn send_now(&mut self, id: &str, text: &str, cx: &mut Context<Self>) -> bool {
+        if (text.is_empty() && self.state.pending(id).is_empty()) || self.state.busy(id) {
+            return false;
+        }
+        let Some(agent) = self.state.session(id).map(|s| s.agent.clone()) else { return false };
         if !self.agents.iter().any(|a| a.harness.id() == agent) {
             self.toast("The agent for this chat isn't installed", cx);
-            return;
+            return false;
         }
-        let Some(events) = self.state.send(id, text, &self.agents) else { return };
-        self.clear_input(id, cx);
+        let Some(events) = self.state.send(id, text, &self.agents) else { return false };
         self.follow_turn(id, events, cx);
         cx.notify();
+        true
+    }
+
+    /// Steer now on the queued message at `index`: stops the running turn so the message goes next,
+    /// or sends it at once when nothing runs.
+    fn steer(&mut self, id: &str, index: usize, cx: &mut Context<Self>) {
+        let Some(text) = self.composers.unqueue(id, index) else { return };
+        if self.state.busy(id) {
+            if let Some(e) = self.composers.entries.get_mut(id) {
+                e.queued.insert(0, text);
+                e.steer = true;
+            }
+            self.state.stop(id);
+        } else {
+            self.send_now(id, &text, cx);
+        }
+        cx.notify();
+    }
+
+    /// After a turn ends, sends the first queued message, unless the user stopped the turn without
+    /// Steer now: then the queue waits for Steer now or Send.
+    fn send_queued(&mut self, id: &str, stopped: bool, cx: &mut Context<Self>) {
+        let steer = self.composers.entries.get_mut(id).map_or(false, |e| std::mem::take(&mut e.steer));
+        if stopped && !steer {
+            return;
+        }
+        if let Some(text) = self.composers.unqueue(id, 0) {
+            if !self.send_now(id, &text, cx) {
+                self.composers.entries.get_mut(id).map(|e| e.queued.insert(0, text));
+            }
+        }
+    }
+
+    /// The messages waiting to be sent, above the composer card: each with Steer now (or Send, when the
+    /// agent isn't working) and a remove button.
+    fn render_queue(&self, id: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let queued = self.composers.queued(id);
+        if queued.is_empty() {
+            return None;
+        }
+        let theme = &self.theme;
+        let busy = self.state.busy(id);
+        let rows = queued.iter().enumerate().map(|(i, text)| {
+            let (steer_id, drop_id) = (id.to_string(), id.to_string());
+            let button = |key: &str, label: &'static str| {
+                div()
+                    .id(SharedString::from(format!("queue-{key}-{id}-{i}")))
+                    .flex_none()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(5.))
+                    .border_1()
+                    .border_color(theme.line2.to_hsla())
+                    .text_size(px(11.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.line2.to_hsla()))
+                    .child(label)
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(5.))
+                .rounded(px(8.))
+                .bg(theme.line.to_hsla())
+                .text_size(px(12.))
+                .child(div().flex_none().text_color(theme.acc2.to_hsla()).child(if i == 0 && busy { "Next" } else { "Queued" }))
+                .child(div().flex_1().min_w_0().truncate().text_color(theme.fg.to_hsla()).child(text.replace('\n', " ")))
+                .child(
+                    button("steer", if busy { "Steer now" } else { "Send" })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.steer(&steer_id, i, cx))),
+                )
+                .child(button("drop", "×").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.composers.unqueue(&drop_id, i);
+                    cx.notify();
+                })))
+        });
+        Some(div().flex().flex_col().gap(px(4.)).pb(px(6.)).children(rows).into_any_element())
     }
 
     /// Applies a turn's events to session `id` as they arrive, until the turn's stream closes.
@@ -459,6 +578,8 @@ impl Shell {
             self.flush_sessions(cx);
             self.end_approvals(id);
             self.turn_ended(id, &applied, cx);
+            let stopped = applied.ended.as_ref().is_some_and(|e| matches!(e.outcome, crate::app::notify::Outcome::Stopped));
+            self.send_queued(id, stopped, cx);
         }
         if let Some(url) = applied.preview.filter(|_| self.state.settings.auto_open_preview) {
             self.open_url(&url, cx);
