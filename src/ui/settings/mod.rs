@@ -149,6 +149,15 @@ pub(super) enum Slide {
     Scale,
     MaxSteps,
     Terminal,
+    FilterPixel,
+}
+
+/// Which font the Fonts block's chips set on Appearance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum FontSlot {
+    #[default]
+    Titles,
+    Text,
 }
 
 impl Slide {
@@ -179,6 +188,10 @@ pub struct SettingsUi {
     pub(super) capture: Option<Action>,
     /// The open colour picker, if any.
     pub(super) picker: Option<colour::Picker>,
+    /// Whether the Appearance page's custom colour swatches are shown.
+    pub(super) colours_open: bool,
+    /// The font slot the Appearance page's font chips set.
+    pub(super) font_slot: FontSlot,
     /// Discovered skills; `None` until the first search finishes.
     pub(super) skills: Option<Vec<Skill>>,
     /// Installed and available extensions; `None` until the first search finishes.
@@ -275,6 +288,7 @@ impl Shell {
             }
             Slide::MaxSteps => s.max_steps = value.round() as u32,
             Slide::Terminal => s.terminal_font_size = value,
+            Slide::FilterPixel => s.filter_pixel = value,
         }
         self.save(cx);
     }
@@ -676,8 +690,8 @@ fn name_config() -> TextInputConfig {
     TextInputConfig {
         placeholder: "archonui".into(),
         max_len: Some(18),
-        font_size: px(34.),
-        line_height: px(41.),
+        font_size: px(20.),
+        line_height: px(26.),
         ..Default::default()
     }
 }

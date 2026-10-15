@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Appearance is compact. Themes are small thumbnails six to a row. Background has a Style segmented control
+  (Canvas, Glass, Solid, Gaps, Tinted, Ambient), a row of 64×40 image tiles, and dim, panel blur and window
+  opacity sliders. Fonts are a pairing control, an Apply to Titles or Text control, and a wrap of font chips
+  marked T and Aa. Custom colours are collapsed behind an Edit button. Layout is unchanged, and Window holds
+  the rest of the old Effects rows. Identity sits at the bottom, with smaller icon tiles.
+- New Appearance › Background › Filter: Off, Duotone or Tritone dithers the background image or gradient into
+  a few colours. When a filter is on, Dot size (1–8 px) sets the size of each dot.
 - The agent's task list reads as a compact plan in its reply: a `▸ plan` header with the count done and
   in progress, then up to six numbered steps in the code font. ✓ green and muted when finished, ● in the
   accent with "active" for the step in progress, ○ for waiting ones; longer lists show a window around
