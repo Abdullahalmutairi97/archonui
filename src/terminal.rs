@@ -3,6 +3,8 @@
 //! A reader thread feeds the shell's output to a `vt100::Parser` and sends
 //! `TermEvent::Changed` when the screen changed. The UI takes a `Screen`
 //! snapshot to draw, so it never holds the parser's lock while painting.
+//! It also answers the queries a shell sends a terminal (device attributes,
+//! cursor position), as fish waits for those answers before its first prompt.
 //!
 //! With tmux on PATH, the shell runs in a tmux session on ArchonUI's own tmux
 //! server, so it outlives the `Terminal` and this process.
@@ -53,7 +55,8 @@ pub enum TermEvent {
 /// detaches from a tmux session, which keeps the shell running.
 pub struct Terminal {
     master: Box<dyn MasterPty + Send>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// Shared with the reader thread, which writes the answers to the shell's queries.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     parser: Arc<Mutex<vt100::Parser<WindowTitle>>>,
     /// Set while a `Changed` event is queued and `screen` hasn't run since.
     changed_queued: Arc<AtomicBool>,
@@ -108,11 +111,27 @@ impl Terminal {
         rows: u16,
         tmux_session: Option<&str>,
     ) -> Result<(Self, Receiver<TermEvent>), String> {
+        let shell = env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/bash".into());
+        let tmux = tmux_session.and_then(|name| Some((tmux_bin()?, tmux_conf()?, name)));
+        Self::start(cwd, cols, rows, &shell, tmux)
+    }
+
+    /// `spawn` with `shell` and no tmux.
+    #[cfg(test)]
+    fn spawn_shell(cwd: &Path, cols: u16, rows: u16, shell: &str) -> Result<(Self, Receiver<TermEvent>), String> {
+        Self::start(cwd, cols, rows, shell, None)
+    }
+
+    fn start(
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+        shell: &str,
+        tmux: Option<(&Path, &Path, &str)>,
+    ) -> Result<(Self, Receiver<TermEvent>), String> {
         let pair = native_pty_system()
             .openpty(pty_size(cols, rows))
             .map_err(|e| format!("Could not open a terminal: {e}"))?;
-        let shell = env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/bash".into());
-        let tmux = tmux_session.and_then(|name| Some((tmux_bin()?, tmux_conf()?, name)));
         let tmux_name = tmux.map(|(_, _, name)| name.to_string());
         let mut command = match tmux {
             Some((bin, conf, name)) => {
@@ -127,14 +146,14 @@ impl Terminal {
                 command.env_remove("TMUX_PANE");
                 command
             }
-            None => CommandBuilder::new(&shell),
+            None => CommandBuilder::new(shell),
         };
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
         // Handles first, so a failure here doesn't leave a shell running unattended.
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let writer = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
         let child = pair
             .slave
             .spawn_command(command)
@@ -153,14 +172,14 @@ impl Terminal {
         let (events_tx, events_rx) = unbounded();
         let term = Self {
             master: pair.master,
-            writer: Mutex::new(writer),
+            writer: writer.clone(),
             parser: parser.clone(),
             changed_queued: changed_queued.clone(),
             exited: exited.clone(),
             pid,
             tmux: tmux_name,
         };
-        thread::spawn(move || read_output(reader, child, parser, changed_queued, exited, events_tx));
+        thread::spawn(move || read_output(reader, writer, child, parser, changed_queued, exited, events_tx));
         Ok((term, events_rx))
     }
 
@@ -242,9 +261,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Feeds the shell's output to the parser until the pty closes, then reports the exit.
+/// Feeds the shell's output to the parser until the pty closes, then reports the exit. Queries in
+/// the output are answered once the output before them is parsed, so a cursor report is current.
 fn read_output(
     mut reader: Box<dyn Read + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     mut child: Box<dyn Child + Send + Sync>,
     parser: Arc<Mutex<vt100::Parser<WindowTitle>>>,
     changed_queued: Arc<AtomicBool>,
@@ -252,11 +273,22 @@ fn read_output(
     events: Sender<TermEvent>,
 ) {
     let mut buf = [0u8; 4096];
+    let mut queries = Queries::default();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                lock(&parser).process(&buf[..n]);
+                let mut parsed = 0;
+                for (end, query) in queries.scan(&buf[..n]) {
+                    let mut parser = lock(&parser);
+                    parser.process(&buf[parsed..end]);
+                    parsed = end;
+                    let answer = query.answer(parser.screen().cursor_position());
+                    drop(parser);
+                    let mut writer = lock(&writer);
+                    let _ = writer.write_all(answer.as_bytes()).and_then(|()| writer.flush());
+                }
+                lock(&parser).process(&buf[parsed..n]);
                 if !changed_queued.swap(true, Ordering::AcqRel) {
                     let _ = events.send_blocking(TermEvent::Changed);
                 }
@@ -268,6 +300,95 @@ fn read_output(
     let code = child.wait().ok().map(|status| status.exit_code());
     exited.store(true, Ordering::Release);
     let _ = events.send_blocking(TermEvent::Exited(code));
+}
+
+/// A query a program sends its terminal, which expects an answer on its input.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Query {
+    /// Primary device attributes, `CSI c`. Fish sends it last and waits for it before the prompt.
+    PrimaryAttributes,
+    /// Secondary device attributes, `CSI > c`.
+    SecondaryAttributes,
+    /// Cursor position report, `CSI 6 n`.
+    CursorPosition,
+    /// Operating status, `CSI 5 n`.
+    Status,
+}
+
+impl Query {
+    /// The reply, given the cursor's zero-based `(row, col)`.
+    fn answer(self, (row, col): (u16, u16)) -> String {
+        match self {
+            // A VT220 with ANSI colour, as many terminals answer.
+            Query::PrimaryAttributes => "\x1b[?62;22c".into(),
+            Query::SecondaryAttributes => "\x1b[>0;0;0c".into(),
+            Query::CursorPosition => format!("\x1b[{};{}R", row + 1, col + 1),
+            Query::Status => "\x1b[0n".into(),
+        }
+    }
+}
+
+/// Finds queries in the shell's output. Keeps its place between reads, so a query split across
+/// two reads is still found.
+#[derive(Default)]
+struct Queries {
+    state: QueryState,
+    /// Parameter bytes of the control sequence being read.
+    params: Vec<u8>,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum QueryState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+}
+
+impl Queries {
+    /// The queries in `bytes`, each with the index just past its last byte.
+    fn scan(&mut self, bytes: &[u8]) -> Vec<(usize, Query)> {
+        let mut found = Vec::new();
+        for (i, &b) in bytes.iter().enumerate() {
+            match self.state {
+                QueryState::Ground => {
+                    if b == 0x1b {
+                        self.state = QueryState::Escape;
+                    }
+                }
+                QueryState::Escape => {
+                    self.state = match b {
+                        b'[' => {
+                            self.params.clear();
+                            QueryState::Csi
+                        }
+                        0x1b => QueryState::Escape,
+                        _ => QueryState::Ground,
+                    };
+                }
+                QueryState::Csi => match b {
+                    // Parameter and intermediate bytes; a long run is no query.
+                    0x20..=0x3f if self.params.len() < 16 => self.params.push(b),
+                    0x40..=0x7e => {
+                        let query = match (self.params.as_slice(), b) {
+                            (b"" | b"0", b'c') => Some(Query::PrimaryAttributes),
+                            (b">" | b">0", b'c') => Some(Query::SecondaryAttributes),
+                            (b"6", b'n') => Some(Query::CursorPosition),
+                            (b"5", b'n') => Some(Query::Status),
+                            _ => None,
+                        };
+                        if let Some(query) = query {
+                            found.push((i + 1, query));
+                        }
+                        self.state = QueryState::Ground;
+                    }
+                    0x1b => self.state = QueryState::Escape,
+                    _ => self.state = QueryState::Ground,
+                },
+            }
+        }
+        found
+    }
 }
 
 /// Copies the visible screen, merging neighboring cells with the same style.
@@ -450,6 +571,39 @@ fn tmux_conf() -> Option<&'static Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_queries_even_when_split_across_reads() {
+        let mut q = Queries::default();
+        // Fish's startup burst: only the device attributes query at the end wants an answer here.
+        let burst = b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[?1049h\x1b[?1049l\x1b[0c";
+        assert_eq!(q.scan(burst), vec![(burst.len(), Query::PrimaryAttributes)]);
+        assert_eq!(q.scan(b"hi\x1b["), vec![]);
+        assert_eq!(q.scan(b"6nok\x1b[>c\x1b[5n\x1b[31m"), vec![(2, Query::CursorPosition), (8, Query::SecondaryAttributes), (12, Query::Status)]);
+        assert_eq!(Query::CursorPosition.answer((0, 4)), "\x1b[1;5R");
+    }
+
+    #[test]
+    fn answers_fish_before_its_first_prompt() {
+        if find_in(&env::var_os("PATH").unwrap_or_default(), "fish").is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir();
+        let (term, events) = Terminal::spawn_shell(&dir, 80, 24, "fish").unwrap();
+        let start = std::time::Instant::now();
+        // Without answers fish shows nothing for seconds; with them the prompt is drawn at once.
+        while start.elapsed() < Duration::from_secs(3) {
+            if smol::block_on(async { smol::future::or(async { events.recv().await.ok() }, async {
+                smol::Timer::after(Duration::from_millis(100)).await;
+                None
+            }).await }).is_some()
+                && term.screen().rows.iter().flatten().any(|span| !span.text.trim().is_empty())
+            {
+                break;
+            }
+        }
+        assert!(start.elapsed() < Duration::from_secs(2), "fish took {:?} to draw", start.elapsed());
+    }
 
     #[test]
     fn palette_maps_indices() {

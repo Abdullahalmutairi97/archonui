@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+- The terminal starts instantly with fish. The terminal now answers the device-attributes,
+  cursor-position and status queries a shell sends at startup; fish waited seconds for the answer
+  before drawing its first prompt.
+
 ## 0.1.7
 
 - An empty session (nothing sent, typed or attached) is deleted, tile and all, as soon as you move to
