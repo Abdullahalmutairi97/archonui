@@ -100,7 +100,7 @@ fn seed(cwd: &Path) -> Vec<Message> {
                 size: 486,
             }],
             tools: Vec::new(),
-            thought_secs: None, took_secs: None,
+            thought_secs: None, took_secs: None, agent: None,
         },
         Message {
             role: Role::Agent,
@@ -115,21 +115,21 @@ fn seed(cwd: &Path) -> Vec<Message> {
                 tool(ToolKind::Run, "pnpm e2e upload.spec.ts --repeat 20", Some("3 failed"), Some(false)),
                 tool(ToolKind::Run, "git log v0.8..HEAD --oneline", Some("23 commits"), Some(true)),
             ],
-            thought_secs: Some(14), took_secs: None,
+            thought_secs: Some(14), took_secs: None, agent: None,
         },
         Message {
             role: Role::User,
             text: "Revert the key change and rerun the e2e suite.".into(),
             attachments: Vec::new(),
             tools: Vec::new(),
-            thought_secs: None, took_secs: None,
+            thought_secs: None, took_secs: None, agent: None,
         },
         Message {
             role: Role::Error,
             text: "pnpm e2e failed: 3 specs timed out after 30s.".into(),
             attachments: Vec::new(),
             tools: Vec::new(),
-            thought_secs: None, took_secs: None,
+            thought_secs: None, took_secs: None, agent: None,
         },
     ]
 }

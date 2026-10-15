@@ -219,6 +219,32 @@ impl AppState {
         }
     }
 
+    /// Hands chat `id` to `agent`, with the model, effort and mode it starts with. The old agent's
+    /// session can't be resumed by another CLI, so the next turn starts a new one and carries the
+    /// conversation so far (see `engine::handoff`). Returns false, changing nothing, while a turn
+    /// runs, for an unknown chat, or when the chat already uses `agent`.
+    pub fn switch_agent(&mut self, id: &str, agent: &str, model: Option<String>, effort: Option<String>, mode: Mode) -> bool {
+        if self.busy(id) {
+            return false;
+        }
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return false };
+        if s.agent == agent {
+            return false;
+        }
+        // Replies from before replies were labelled were written by the agent being left.
+        for m in s.messages.iter_mut().filter(|m| m.role == Role::Agent && m.agent.is_none()) {
+            m.agent = Some(s.agent.clone());
+        }
+        s.agent = agent.to_string();
+        s.agent_session = None;
+        s.handoff = !s.messages.is_empty();
+        s.model = model;
+        s.effort = effort;
+        s.mode = mode;
+        self.dirty.insert(id.to_string());
+        true
+    }
+
     /// Removes a chat, its live turn (which stops the agent) and its tile.
     pub fn delete_session(&mut self, id: &str) {
         self.live.remove(id);
@@ -409,6 +435,9 @@ impl AppState {
             };
             session.title_auto = true;
         }
+        // After an agent switch the new agent is sent the chat so far, once. A slash command goes to
+        // the agent as typed, and the conversation waits for the next message.
+        let handoff = (session.handoff && !prompt.starts_with('/')).then(|| engine::handoff::prompt(&session.messages, prompt));
         session.push_with(Role::User, prompt, files.clone());
         session.draft.clear();
         for e in file_errors {
@@ -423,7 +452,7 @@ impl AppState {
         let turn = engine::start_turn(
             agent,
             &session.cwd,
-            prompt,
+            handoff.as_deref().unwrap_or(prompt),
             session.agent_session.as_deref(),
             TurnOptions {
                 model: session.model.as_deref(),
@@ -447,11 +476,17 @@ impl AppState {
         self.dirty.insert(id.to_string());
         match turn {
             Ok(turn) => {
+                if handoff.is_some() {
+                    session.handoff = false;
+                }
                 session.push(Role::Agent, "");
                 let events = turn.events.clone();
                 let mut sent = format!("Sent to {}", agent.harness.name());
                 if !files.is_empty() {
                     sent.push_str(&format!(" with {} file(s)", files.len()));
+                }
+                if handoff.is_some() {
+                    sent.push_str(", with the chat so far");
                 }
                 let live = self.live.entry(id.to_string()).or_default();
                 live.turn = Some(turn);
@@ -1170,6 +1205,68 @@ mod tests {
         app.mark_terminal(&term);
         app.send(&term, "build it", &agents);
         assert_eq!(app.session(&term).unwrap().title, "build it");
+    }
+
+    #[test]
+    fn switching_agents_starts_a_new_agent_session_that_gets_the_chat_so_far() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("archonui-switch-{}", store::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A fake CLI that records its arguments and stdin.
+        let seen = dir.join("seen");
+        let bin = dir.join("fake-agent");
+        std::fs::write(&bin, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{0}'\ncat >> '{0}'\n", seen.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let detected = |id: &str| {
+            let h = engine::harness(id).unwrap();
+            DetectedAgent { harness: h, path: bin.clone(), version: String::new(), enabled: true, auth: h.auth_status() }
+        };
+        let agents = [detected("pi"), detected("codex")];
+        let run = |app: &mut AppState, id: &str, prompt: &str| {
+            let events = app.send(id, prompt, &agents).expect("turn starts");
+            while let Ok(e) = smol::block_on(events.recv()) {
+                if app.apply(id, e).finished {
+                    break;
+                }
+            }
+            std::fs::read_to_string(&seen).unwrap()
+        };
+
+        let mut app = state();
+        let id = app.new_session("pi", dir.clone(), Placement::Focused);
+        assert!(!app.switch_agent(&id, "pi", None, None, Mode::Auto), "already on pi");
+        app.switch_agent(&id, "codex", None, None, Mode::Auto);
+        assert!(!app.session(&id).unwrap().handoff, "an empty chat has nothing to hand over");
+        app.switch_agent(&id, "pi", None, None, Mode::Auto);
+
+        run(&mut app, &id, "fix the parser");
+        // The fake CLI says nothing; stand in its reply.
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.messages.retain(|m| m.role != Role::Error);
+        s.push(Role::Agent, "Fixed it.");
+        assert_eq!(s.messages[1].agent.as_deref(), Some("pi"), "replies record their agent");
+        assert!(s.agent_session.is_some(), "pi's session was assigned");
+
+        assert!(app.switch_agent(&id, "codex", Some("gpt-5".into()), None, Mode::Plan));
+        let s = app.session(&id).unwrap();
+        assert_eq!((s.agent.as_str(), s.agent_session.as_deref(), s.model.as_deref(), s.mode), ("codex", None, Some("gpt-5"), Mode::Plan));
+        assert!(s.handoff);
+
+        // A slash command goes through as typed and leaves the handoff for the next message.
+        let slash = run(&mut app, &id, "/status");
+        assert!(!slash.contains("<conversation>"), "{slash}");
+        assert!(app.session(&id).unwrap().handoff);
+
+        let first = run(&mut app, &id, "now add a test");
+        assert!(first.contains("[User]\nfix the parser") && first.contains("[Pi]\nFixed it."), "{first}");
+        assert!(first.contains("The user's new message:\n\nnow add a test"), "{first}");
+        let s = app.session(&id).unwrap();
+        assert!(!s.handoff);
+        assert_eq!(s.messages.iter().filter(|m| m.role == Role::User).last().unwrap().text, "now add a test", "the chat shows what was typed");
+
+        let next = run(&mut app, &id, "thanks");
+        assert!(!next.contains("<conversation>"), "only the first message carries the chat: {next}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

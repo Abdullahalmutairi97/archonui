@@ -136,6 +136,34 @@ impl Shell {
         self.close_popover(id, cx);
     }
 
+    /// Hands session `id` to `agent`, with that agent's default model and effort. The mode is kept
+    /// when the new agent enforces it. The new agent gets the chat so far with the next message.
+    pub(in crate::ui) fn switch_agent(&mut self, id: &str, agent: &str, cx: &mut Context<Self>) {
+        let Some(s) = self.state.session(id) else { return };
+        if s.agent == agent {
+            self.close_popover(id, cx);
+            return;
+        }
+        if self.state.busy(id) {
+            self.toast("Stop the running reply before switching agents.", cx);
+            return;
+        }
+        let Some(name) = self.agents.iter().find(|a| a.harness.id() == agent && a.enabled).map(|a| a.harness.name()) else {
+            self.toast(format!("{} is not installed or is turned off.", crate::engine::agent_name(agent)), cx);
+            return;
+        };
+        let (mode, started) = (s.mode, !s.messages.is_empty());
+        let modes = self.supported_modes(agent);
+        let mode = if modes.contains(&mode) { mode } else { modes.first().copied().unwrap_or_default() };
+        let (model, effort) = self.agent_defaults(agent);
+        self.state.switch_agent(id, agent, model, effort, mode);
+        self.refresh_placeholder(id, cx);
+        self.close_popover(id, cx);
+        if started {
+            self.toast(format!("Switched to {name}. It gets this chat so far with your next message."), cx);
+        }
+    }
+
     /// Opens `pop` above session `id`'s composer, or closes it if it is already open.
     pub(super) fn toggle_popover(&mut self, id: &str, pop: Pop, cx: &mut Context<Self>) {
         let open = self.composers.pop(id) == Some(pop);
@@ -267,7 +295,8 @@ impl Shell {
             .max_h(px(545.))
             .overflow_y_scroll()
             .occlude()
-            .child(section_label("MODE", theme))
+            .children(self.agent_row(s, cx).map(|row| div().flex().flex_col().child(section_label("AGENT", theme)).child(row)))
+            .child(section_label("MODE", theme).when(self.agent_row_shown(), |l| l.border_t_1().border_color(theme.line.to_hsla())))
             .child(modes_grid)
             .child(section_label("MODEL", theme).border_t_1().border_color(theme.line.to_hsla()))
             .child(self.model_list(s, cx));
@@ -290,6 +319,49 @@ impl Shell {
             None => panel,
         };
         panel.into_any_element()
+    }
+
+    /// Whether the popover offers other agents: more than one is installed and turned on.
+    fn agent_row_shown(&self) -> bool {
+        self.agents.iter().filter(|a| a.enabled).count() > 1
+    }
+
+    /// The AGENT chips: every enabled agent, the session's own highlighted. Choosing another hands it the chat.
+    fn agent_row(&self, s: &Session, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.agent_row_shown() {
+            return None;
+        }
+        let theme = &self.theme;
+        let chips = self.agents.iter().filter(|a| a.enabled).map(|a| {
+            let agent = a.harness.id();
+            let on = agent == s.agent;
+            let fg = if on { theme.fg } else { theme.muted };
+            let id = s.id.clone();
+            let mut chip = div()
+                .id(gpui::SharedString::from(format!("composer-agent-{agent}-{id}")))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(9.))
+                .py(px(6.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(if on { theme.acc2 } else { theme.line }.to_hsla())
+                .text_size(px(12.))
+                .text_color(fg.to_hsla())
+                .cursor_pointer()
+                .hover(|h| h.bg(theme.line2.to_hsla()))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.switch_agent(&id, agent, cx)))
+                .child(icons::harness_icon(agent, 13., 1.5, fg.to_hsla()))
+                .child(a.harness.name());
+            if on {
+                chip = chip.bg(theme.line2.to_hsla());
+            } else if self.state.busy(&s.id) {
+                chip = chip.opacity(0.5).tooltip(tooltip("Stop the reply to switch", TooltipColors::of(theme)));
+            }
+            chip
+        });
+        Some(div().flex().flex_wrap().gap(px(4.)).px(px(4.)).pb(px(8.)).children(chips).into_any_element())
     }
 
     /// The model rows: enabled models (plus the session's own), pinned first, then the agent default.

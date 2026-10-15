@@ -40,6 +40,10 @@ pub struct Message {
     /// Seconds the whole reply took ("worked for Ns" when no thinking time is known).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub took_secs: Option<u32>,
+    /// Registry id of the agent that wrote this reply. A chat can switch agents, so it may differ
+    /// from the session's. `None` on user and error rows and on replies saved before switching existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// One tool call in an agent reply, shown as a row above the text.
@@ -108,6 +112,9 @@ pub struct Session {
     /// What the agent may do in this chat's turns.
     #[serde(default)]
     pub mode: Mode,
+    /// The chat switched agents and the new one hasn't been sent the conversation so far yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub handoff: bool,
     /// A terminal was opened for this chat, so the chat is kept even without messages.
     #[serde(default)]
     pub terminal: bool,
@@ -140,6 +147,7 @@ impl Session {
             model: None,
             effort: None,
             mode: Mode::default(),
+            handoff: false,
             terminal: false,
             draft: String::new(),
             listed: false,
@@ -159,7 +167,8 @@ impl Session {
     }
 
     pub fn push_with(&mut self, role: Role, text: impl Into<String>, attachments: Vec<Attachment>) {
-        self.messages.push(Message { role, text: text.into(), attachments, tools: Vec::new(), thought_secs: None, took_secs: None });
+        let agent = (role == Role::Agent).then(|| self.agent.clone());
+        self.messages.push(Message { role, text: text.into(), attachments, tools: Vec::new(), thought_secs: None, took_secs: None, agent });
         self.updated = now();
     }
 

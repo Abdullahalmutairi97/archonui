@@ -115,8 +115,12 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
 }
 
 /// `ARCHONUI · thought for 14s`, with the mode appended for non-Auto sessions (chat.md §1.4 item 1).
+/// In a chat that switched agents, the reply's agent comes first: `ARCHONUI · CODEX CLI · …`.
 fn agent_header<H: StreamHost>(ctx: &RowCtx<H>, item: &Item, streaming: bool) -> Div {
     let mut meta = Vec::new();
+    if let Some(agent) = item.agent.as_deref().filter(|_| ctx.mixed_agents) {
+        meta.push(crate::engine::agent_name(agent).to_uppercase());
+    }
     if streaming {
         meta.push("working".to_string());
     } else if let Some(secs) = item.thought_secs {

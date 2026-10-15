@@ -435,6 +435,7 @@ mod tests {
                 tools: Vec::new(),
                 thought_secs: None,
                 took_secs: None,
+                agent: None,
             })
             .collect();
         s

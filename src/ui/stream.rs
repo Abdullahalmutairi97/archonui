@@ -64,6 +64,8 @@ struct Item {
     attachments: Vec<Attachment>,
     thought_secs: Option<u32>,
     took_secs: Option<u32>,
+    /// Registry id of the agent that wrote a reply.
+    agent: Option<String>,
     blocks: Vec<Block>,
 }
 
@@ -81,6 +83,8 @@ struct RowCtx<H> {
     streaming: Option<usize>,
     show_tools: bool,
     selection: Option<Selection>,
+    /// Replies in this chat come from more than one agent, so each header names its agent.
+    mixed_agents: bool,
 }
 
 /// The text selected in one block of one message. `anchor` and `head` are byte offsets into the block's text.
@@ -123,9 +127,16 @@ impl Item {
             attachments: message.attachments.clone(),
             thought_secs: message.thought_secs,
             took_secs: message.took_secs,
+            agent: message.agent.clone(),
             blocks,
         }
     }
+}
+
+/// Whether the replies in `messages` were written by more than one agent.
+fn mixed_agents(messages: &[Message]) -> bool {
+    let mut agents = messages.iter().filter_map(|m| m.agent.as_deref());
+    agents.next().is_some_and(|first| agents.any(|a| a != first))
 }
 
 fn signature(message: &Message) -> Sig {
@@ -195,6 +206,7 @@ impl StreamUi {
                 streaming,
                 show_tools: env.show_tools,
                 selection: self.selection.clone(),
+                mixed_agents: mixed_agents(&env.session.messages),
             });
             div()
                 .flex_1()

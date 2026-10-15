@@ -743,6 +743,7 @@ mod tests {
                 tools: Vec::new(),
                 thought_secs: Some(3),
                 took_secs: None,
+                agent: None,
             },
             Message {
                 role: Role::Agent,
@@ -759,6 +760,7 @@ mod tests {
                 ],
                 thought_secs: Some(14),
                 took_secs: Some(31),
+                agent: None,
             },
         ];
         s

@@ -8,6 +8,7 @@ pub mod approve;
 pub mod attach;
 mod detect;
 mod discover;
+pub mod handoff;
 pub mod mcp;
 pub mod plugins;
 pub mod skills;

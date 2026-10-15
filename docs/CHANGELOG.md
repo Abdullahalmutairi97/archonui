@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2
+
+- Switch agents mid-chat. The model picker has an AGENT row with every enabled agent, and `/agent`
+  lists them (`/agent codex` switches directly). The chat keeps its messages, folder and project; the
+  model and effort reset to the new agent's defaults, and the mode is kept if the new agent has it.
+  Agents can't resume each other's sessions, so the new agent starts its own, and your next message
+  carries the conversation so far (the newest ~60k characters, tool calls listed by file or command).
+  A slash command is sent as typed, and the conversation goes with the message after it.
+  Switching is unavailable while a reply is running.
+- In a chat with replies from more than one agent, each reply's header names the agent that wrote it.
+
 ## 0.2.1
 
 - The agent knows which project its chat is in. A chat filed under a project tells the agent the

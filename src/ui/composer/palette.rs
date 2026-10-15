@@ -12,6 +12,7 @@ use gpui::Context;
 pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("new", "Start a new chat with this agent"),
     ("stop", "Stop the running reply"),
+    ("agent", "Hand this chat to another agent"),
     ("model", "Change the model this chat uses"),
     ("effort", "Change the effort (reasoning) level"),
     ("mode", "Change what the agent may do: Auto, Plan or Ask"),
@@ -33,6 +34,8 @@ pub enum Action {
     Effort(Option<String>),
     /// Switch the session to a mode.
     Mode(Mode),
+    /// Hand the session to the agent with this registry id.
+    Agent(&'static str),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,12 +57,19 @@ pub struct PaletteContext<'a> {
     pub modes: &'a [Mode],
     /// Pinned model ids for the session's agent, in pin order.
     pub pins: &'a [String],
+    /// The session's agent id.
+    pub agent: &'a str,
+    /// Every enabled agent as (id, name), in detection order.
+    pub agents: &'a [(&'static str, &'static str)],
 }
 
 /// The palette rows for `input`, or `None` when the input is not a palette query: a bare `/word`
-/// (commands), or `/model …`, `/effort …` or `/mode …` (their lists). Other slash text is a message.
+/// (commands), or `/agent …`, `/model …`, `/effort …` or `/mode …` (their lists). Other slash text is a message.
 pub fn palette(input: &str, ctx: &PaletteContext) -> Option<Vec<PaletteEntry>> {
     let rest = input.strip_prefix('/')?;
+    if let Some(query) = rest.strip_prefix("agent ") {
+        return Some(agent_entries(ctx, query.trim()));
+    }
     if let Some(query) = rest.strip_prefix("model ") {
         return Some(model_entries(ctx, query.trim()));
     }
@@ -154,6 +164,18 @@ fn mode_entries(ctx: &PaletteContext, query: &str) -> Vec<PaletteEntry> {
     rank(entries, query)
 }
 
+/// The enabled agents, matched by name or id.
+fn agent_entries(ctx: &PaletteContext, query: &str) -> Vec<PaletteEntry> {
+    let entries = ctx.agents.iter().map(|&(id, name)| PaletteEntry {
+        name: name.into(),
+        hint: id.into(),
+        description: if id == ctx.agent { String::new() } else { "Gets this chat so far with your next message".into() },
+        tags: if id == ctx.agent { vec!["current"] } else { Vec::new() },
+        action: Action::Agent(id),
+    });
+    rank(entries, query)
+}
+
 /// Prefix matches first, then matches in the name or hint. Order within each group is kept.
 pub fn rank(entries: impl Iterator<Item = PaletteEntry>, query: &str) -> Vec<PaletteEntry> {
     let query = query.to_lowercase();
@@ -174,6 +196,7 @@ impl Shell {
     /// Palette rows for `input` in session `id`. See [`palette`].
     pub(super) fn palette_entries(&self, id: &str, input: &str) -> Option<Vec<PaletteEntry>> {
         let s = self.state.session(id)?;
+        let agents = self.enabled_agents();
         let ctx = PaletteContext {
             caps: self.caps_for(&s.agent),
             model: s.model.as_deref(),
@@ -181,6 +204,8 @@ impl Shell {
             mode: s.mode,
             modes: self.supported_modes(&s.agent),
             pins: self.state.settings.pins(&s.agent),
+            agent: &s.agent,
+            agents: &agents,
         };
         palette(input, &ctx)
     }
@@ -201,7 +226,16 @@ impl Shell {
                 self.clear_input(id, cx);
                 self.set_mode(id, *mode, cx);
             }
+            Action::Agent(agent) => {
+                self.clear_input(id, cx);
+                self.switch_agent(id, agent, cx);
+            }
         }
+    }
+
+    /// Every enabled agent as (id, name), in detection order.
+    fn enabled_agents(&self) -> Vec<(&'static str, &'static str)> {
+        self.agents.iter().filter(|a| a.enabled).map(|a| (a.harness.id(), a.harness.name())).collect()
     }
 
     /// Runs `/name arg` if it is a local command. Returns false when the agent should get the text.
@@ -214,6 +248,18 @@ impl Shell {
                 self.state.stop(id);
             }
             "rescan" => self.rescan(cx),
+            // `/agent <name>` takes an agent's id or name, ignoring case.
+            "agent" if !arg.is_empty() => {
+                let agents = self.enabled_agents();
+                match agents.iter().find(|(a, name)| a.eq_ignore_ascii_case(arg) || name.eq_ignore_ascii_case(arg)) {
+                    Some(&(agent, _)) => self.switch_agent(id, agent, cx),
+                    None => {
+                        let names: Vec<&str> = agents.iter().map(|(a, _)| *a).collect();
+                        self.toast(format!("No agent '{arg}'. Use one of: {}.", names.join(", ")), cx)
+                    }
+                }
+            }
+            "agent" => self.open_popover(id, Pop::Model, cx),
             "settings" => self.open_settings(cx),
             // `/model <id>` sets an id directly, including ones not listed.
             // A value starting with `-` would read as a flag on the agent's command line.
@@ -280,7 +326,7 @@ mod tests {
 
     #[test]
     fn bare_command_word_is_a_palette_query_but_sentences_are_not() {
-        let ctx = PaletteContext { caps: None, model: None, effort: None, mode: Mode::Auto, modes: &Mode::ALL, pins: &[] };
+        let ctx = PaletteContext { caps: None, model: None, effort: None, mode: Mode::Auto, modes: &Mode::ALL, pins: &[], agent: "pi", agents: &[] };
         let names: Vec<String> = palette("/se", &ctx).unwrap().into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["settings"]);
         assert!(palette("/review the code", &ctx).is_none());
@@ -288,8 +334,19 @@ mod tests {
     }
 
     #[test]
+    fn agent_list_offers_the_enabled_agents_and_marks_the_current_one() {
+        let agents = [("claude", "Claude Code"), ("codex", "Codex CLI")];
+        let ctx = PaletteContext { caps: None, model: None, effort: None, mode: Mode::Auto, modes: &Mode::ALL, pins: &[], agent: "codex", agents: &agents };
+        let rows = palette("/agent ", &ctx).unwrap();
+        let picked: Vec<(&str, &Action, &[&str])> = rows.iter().map(|e| (e.name.as_str(), &e.action, &e.tags[..])).collect();
+        assert_eq!(picked, vec![("Claude Code", &Action::Agent("claude"), &[][..]), ("Codex CLI", &Action::Agent("codex"), &["current"][..])]);
+        let found: Vec<String> = palette("/agent cla", &ctx).unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(found, vec!["Claude Code"]);
+    }
+
+    #[test]
     fn mode_list_offers_only_the_supported_modes() {
-        let ctx = PaletteContext { caps: None, model: None, effort: None, mode: Mode::Plan, modes: &[Mode::Auto, Mode::Ask], pins: &[] };
+        let ctx = PaletteContext { caps: None, model: None, effort: None, mode: Mode::Plan, modes: &[Mode::Auto, Mode::Ask], pins: &[], agent: "pi", agents: &[] };
         let rows = palette("/mode ", &ctx).unwrap();
         let names: Vec<&str> = rows.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["Auto", "Ask"]);
