@@ -11,7 +11,7 @@ use super::{
 use crate::{
     engine::{self, attach::Attachment, title::Exchange, DetectedAgent, Event, Mode, Out, ToolSettings, Turn, TurnOptions},
     preview,
-    store::{self, Role, Session, ToolCall, UNASSIGNED_ICON},
+    store::{self, Role, Session, ToolCall, Usage, UNASSIGNED_ICON},
     ui::{
         sigil,
         tiling::Rect,
@@ -63,6 +63,12 @@ struct Live {
     thinking_since: Option<Instant>,
     /// Time spent thinking this turn; `None` if the harness never reported thinking.
     thought: Option<Duration>,
+    /// A tool call ran since the last reply text, so the next text may begin the final answer.
+    after_tool: bool,
+    /// Byte offset in the reply where the text after the latest tool call begins.
+    final_start: Option<usize>,
+    /// Tokens the turn used so far, when the agent reports them.
+    usage: Option<Usage>,
 }
 
 impl Live {
@@ -497,6 +503,9 @@ impl AppState {
                 live.tools.clear();
                 live.thought = None;
                 live.thinking_since = None;
+                live.after_tool = false;
+                live.final_start = None;
+                live.usage = None;
                 live.log(sent);
                 Some(events)
             }
@@ -519,9 +528,13 @@ impl AppState {
             Event::Out(Out::Text(t)) => {
                 live.status = None;
                 if let Some(m) = s.reply_mut() {
+                    if std::mem::take(&mut live.after_tool) {
+                        live.final_start = Some(m.text.len());
+                    }
                     m.text.push_str(&t);
                 }
             }
+            Event::Out(Out::Usage(u)) => live.usage.get_or_insert_default().add(u),
             Event::Out(Out::Break) => {
                 if let Some(m) = s.reply_mut().filter(|m| !m.text.is_empty()) {
                     if !m.text.ends_with("\n\n") {
@@ -539,6 +552,8 @@ impl AppState {
                 live.status = Some(st);
             }
             Event::Out(Out::ToolStart { id, kind, target }) => {
+                live.after_tool = true;
+                live.final_start = None;
                 if let Some(m) = s.reply_mut() {
                     match live.tools.get(&id).copied() {
                         // A call can be reported again as its details arrive; the row stays.
@@ -589,10 +604,16 @@ impl AppState {
                     (Err(_), _) => format!("Failed{took}"),
                     (Ok(()), _) => format!("Finished{took}"),
                 });
+                let final_start = live.final_start.take();
+                live.after_tool = false;
+                let usage = live.usage.take();
                 if let Some(m) = s.reply_mut() {
                     m.text = m.text.trim_end().to_string();
                     m.thought_secs = thought.map(|t| t.as_secs() as u32);
                     m.took_secs = elapsed.map(|t| t.as_secs() as u32);
+                    // Progress notes come first only when there is text before the final answer.
+                    m.final_at = final_start.filter(|&i| i < m.text.len() && !m.text[..i].trim().is_empty());
+                    m.usage = usage;
                 }
                 let had_reply = s.reply_mut().is_some_and(|m| !m.text.is_empty());
                 s.messages.retain(|m| m.role != Role::Agent || !m.text.is_empty() || !m.tools.is_empty());
@@ -1099,6 +1120,38 @@ mod tests {
         assert_eq!(s.messages[1].tools.len(), 1, "the tool row survives an empty reply");
         assert_eq!(s.messages[1].thought_secs, None, "no thinking was reported");
         assert_eq!(s.messages[2].role, Role::Error);
+    }
+
+    #[test]
+    fn the_text_after_the_last_tool_call_is_the_final_answer() {
+        let mut app = state();
+        let id = app.new_session("claude", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "fix it");
+        s.push(Role::Agent, "");
+        let tool = |n: &str| Event::Out(Out::ToolStart { id: n.into(), kind: ToolKind::Run, target: "cargo test".into() });
+        let text = |t: &str| Event::Out(Out::Text(t.into()));
+        for ev in [text("Looking."), tool("a"), Event::Out(Out::Break), text("Tests fail; fixing."), tool("b"), Event::Out(Out::Break), text("Fixed it."), text(" All pass.")] {
+            app.apply(&id, ev);
+        }
+        app.apply(&id, Event::Out(Out::Usage(Usage { input: 5, output: 3, ..Usage::default() })));
+        app.apply(&id, Event::Out(Out::Usage(Usage { input: 1, output: 1, ..Usage::default() })));
+        app.apply(&id, Event::Finished(Ok(())));
+        let m = &app.session(&id).unwrap().messages[1];
+        let at = m.final_at.expect("a final answer");
+        assert_eq!(&m.text[at..], "Fixed it. All pass.");
+        assert_eq!(m.usage.map(|u| (u.input, u.output)), Some((6, 4)));
+
+        // A reply with no text before its tool calls has nothing to set apart.
+        let id = app.new_session("claude", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "go");
+        s.push(Role::Agent, "");
+        for ev in [tool("c"), text("Done.")] {
+            app.apply(&id, ev);
+        }
+        app.apply(&id, Event::Finished(Ok(())));
+        assert_eq!(app.session(&id).unwrap().messages[1].final_at, None);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     engine::{attach::{human_size, Attachment, Kind}, Mode},
-    store::{Role, ToolCall, ToolKind},
+    store::{Role, ToolCall, ToolKind, Usage},
     ui::{
         glass,
         theme::{Rgba, Theme},
@@ -117,12 +117,148 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
                     .child(format!("Working · {} tool calls", item.tools.len())),
             )
         })
+        // Notes the agent wrote between tool calls: dimmed, then a divider before the final answer.
+        .when(!item.progress.is_empty(), |column| {
+            column
+                .child(
+                    block_column(ctx, ix, "p", &item.progress)
+                        .max_w(px(READING_WIDTH))
+                        .text_size(px(ctx.text_size * PROGRESS_SCALE))
+                        .text_color(theme.muted.to_hsla()),
+                )
+                .child(answer_divider(theme))
+        })
         .when(!item.blocks.is_empty(), |column| {
             column.child(
                 block_column(ctx, ix, "", &item.blocks).max_w(px(READING_WIDTH)),
             )
         })
+        .when(!streaming, |column| column.children(reply_footer(item, theme)))
         .into_any_element()
+}
+
+/// Progress notes' text size relative to the final answer's.
+const PROGRESS_SCALE: f32 = 0.92;
+/// Lines added and removed, the colours diff views use, readable on every dark theme.
+const ADDED: Rgba = Rgba::hex(0x3fb950);
+const REMOVED: Rgba = Rgba::hex(0xf85149);
+
+/// The line between a reply's progress notes and its final answer.
+fn answer_divider(theme: &Theme) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .pt(px(6.))
+        .max_w(px(READING_WIDTH))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.acc2.to_hsla())
+                .child("FINAL ANSWER"),
+        )
+        .child(div().flex_1().h(px(1.)).bg(theme.line2.to_hsla()))
+        .into_any_element()
+}
+
+/// The line under a finished reply: how long it took, the tokens and cache hits, cost, and the lines
+/// its edits added and removed. `None` when none of these are known.
+fn reply_footer(item: &Item, theme: &Theme) -> Option<AnyElement> {
+    let mut parts = Vec::new();
+    if let Some(secs) = item.took_secs {
+        parts.push(format!("worked {}", duration(secs)));
+    }
+    if let Some(u) = item.usage {
+        parts.extend(usage_parts(&u));
+    }
+    let (added, removed) = item
+        .tools
+        .iter()
+        .filter(|t| matches!(t.kind, ToolKind::Edit | ToolKind::Write) && t.ok != Some(false))
+        .filter_map(|t| t.detail.as_deref().and_then(diff_counts))
+        .fold((0, 0), |(a, r), (x, y)| (a + x, r + y));
+    if parts.is_empty() && added + removed == 0 {
+        return None;
+    }
+    Some(
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.))
+            .pt(px(8.))
+            .max_w(px(READING_WIDTH))
+            .border_t_1()
+            .border_color(theme.line.to_hsla())
+            .text_size(px(11.))
+            .text_color(theme.muted.to_hsla())
+            .child(div().text_color(theme.acc2.to_hsla()).child("✓ Done"))
+            .children(parts.into_iter().map(|p| div().child(format!("· {p}"))))
+            .when(added + removed > 0, |row| row.child("·").children(diff_spans(added, removed)))
+            .into_any_element(),
+    )
+}
+
+/// `tokens in`, `out`, cache hit and cost, for the parts the agent reported.
+fn usage_parts(u: &Usage) -> Vec<String> {
+    let mut parts = vec![format!("{} in", tokens(u.total_input())), format!("{} out", tokens(u.output))];
+    if let Some(hit) = u.cache_hit().filter(|_| u.cache_read > 0) {
+        parts.push(format!("{hit}% cache hit"));
+    }
+    if let Some(cost) = u.cost_usd.filter(|c| *c > 0.) {
+        parts.push(if cost < 0.01 { "<$0.01".to_string() } else { format!("${cost:.2}") });
+    }
+    parts
+}
+
+/// `+N` in green and `−M` in red, leaving out a zero side.
+fn diff_spans(added: u32, removed: u32) -> Vec<AnyElement> {
+    let mut out = Vec::new();
+    if added > 0 {
+        out.push(div().text_color(ADDED.to_hsla()).child(format!("+{added}")).into_any_element());
+    }
+    if removed > 0 {
+        out.push(div().text_color(REMOVED.to_hsla()).child(format!("−{removed}")).into_any_element());
+    }
+    out
+}
+
+/// The lines added and removed in an edit's detail, such as `+24 −8`, `+41` or `-3`. `None` for any
+/// other detail.
+pub(super) fn diff_counts(detail: &str) -> Option<(u32, u32)> {
+    let (mut added, mut removed, mut any) = (0, 0, false);
+    for word in detail.split_whitespace() {
+        if let Some(n) = word.strip_prefix('+') {
+            added += n.parse::<u32>().ok()?;
+        } else if let Some(n) = word.strip_prefix('−').or_else(|| word.strip_prefix('-')) {
+            removed += n.parse::<u32>().ok()?;
+        } else {
+            return None;
+        }
+        any = true;
+    }
+    any.then_some((added, removed))
+}
+
+/// `45s`, `1m 12s` or `1h 3m`.
+fn duration(secs: u32) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+/// `950`, `1.2k`, `45k` or `1.2M` tokens.
+fn tokens(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=9_999 => format!("{:.1}k", n as f64 / 1e3),
+        10_000..=999_999 => format!("{}k", (n as f64 / 1e3).round()),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
 }
 
 /// Widest a reply's text runs, about 90 characters, so lines stay easy to follow on a wide window.
@@ -202,7 +338,10 @@ fn tool_row(tool: &ToolCall, theme: &Theme) -> AnyElement {
         .child(div().w(px(14.)).flex_none().text_center().text_color(theme.acc2.to_hsla()).child(glyph))
         .child(div().w(px(38.)).flex_none().text_color(theme.muted.to_hsla()).child(kind))
         .child(div().flex_1().min_w_0().truncate().text_color(theme.fg.to_hsla()).child(tool.target.clone()))
-        .child(div().flex_none().text_color(result.to_hsla()).child(tool.detail.clone().unwrap_or_default()))
+        .child(match tool.detail.as_deref().and_then(diff_counts).filter(|_| tool.ok != Some(false)) {
+            Some((added, removed)) => div().flex_none().flex().gap(px(6.)).children(diff_spans(added, removed)),
+            None => div().flex_none().text_color(result.to_hsla()).child(tool.detail.clone().unwrap_or_default()),
+        })
         .into_any_element()
 }
 
@@ -853,6 +992,23 @@ fn file_name(path: &str) -> &str {
 mod tests {
 
     #[test]
+    fn diff_details_parse_into_counts() {
+        assert_eq!(diff_counts("+24 −8"), Some((24, 8)));
+        assert_eq!(diff_counts("+41"), Some((41, 0)));
+        assert_eq!(diff_counts("-3"), Some((0, 3)));
+        assert_eq!(diff_counts("128 passed"), None);
+        assert_eq!(diff_counts(""), None);
+    }
+
+    #[test]
+    fn durations_and_token_counts_read_short() {
+        assert_eq!((duration(45), duration(72), duration(3780)), ("45s".into(), "1m 12s".into(), "1h 3m".into()));
+        assert_eq!((tokens(950), tokens(1234), tokens(45_231), tokens(1_200_000)), ("950".into(), "1.2k".into(), "45k".into(), "1.2M".into()));
+        let u = Usage { input: 100, output: 50, cache_read: 800, cache_write: 100, cost_usd: Some(0.004) };
+        assert_eq!(usage_parts(&u), ["1.0k in", "50 out", "80% cache hit", "<$0.01"]);
+    }
+
+    #[test]
     fn rtl_follows_the_first_letter() {
         assert!(starts_rtl("مرحبا، كيف حالك؟ Hello"));
         assert!(starts_rtl("123 — شالوم"));
@@ -861,7 +1017,8 @@ mod tests {
         assert!(!starts_rtl(""));
     }
 
-    use super::{code_bg, starts_rtl};
+    use super::{code_bg, diff_counts, duration, starts_rtl, tokens, usage_parts};
+    use crate::store::Usage;
     use crate::ui::{
         fonts::FontChoice,
         theme::{resolve, Rgba, Theme, ThemeId},

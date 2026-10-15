@@ -10,7 +10,7 @@ mod markdown;
 use super::{shell::Shell, theme::Theme};
 use crate::{
     engine::{attach::Attachment, Mode},
-    store::{Message, Role, Session, ToolCall},
+    store::{Message, Role, Session, ToolCall, Usage},
 };
 use blocks::{logo, message_row};
 use gpui::{
@@ -66,11 +66,17 @@ struct Item {
     took_secs: Option<u32>,
     /// Registry id of the agent that wrote a reply.
     agent: Option<String>,
+    /// Progress notes written between tool calls, shown dimmed above the final answer. Empty when the
+    /// reply has no separate final answer.
+    progress: Vec<Block>,
+    /// The reply, or its final answer when `progress` is not empty.
     blocks: Vec<Block>,
+    usage: Option<Usage>,
 }
 
-/// What changes when a message grows or a tool row finishes. Streaming only appends, so lengths cover it.
-type Sig = (usize, usize, usize, usize, Option<u32>, Option<u32>);
+/// What changes when a message grows or a tool row finishes. Streaming only appends, so lengths cover it;
+/// the final-answer offset and usage arrive when the turn ends.
+type Sig = (usize, usize, usize, usize, Option<u32>, Option<u32>, Option<usize>, bool);
 
 /// What every row of one render needs.
 struct RowCtx<H> {
@@ -116,10 +122,14 @@ struct Lightbox {
 
 impl Item {
     fn from_message(message: &Message, cwd: &Path) -> Self {
-        let blocks = match message.role {
-            Role::Agent => markdown::parse(&message.text, cwd),
-            Role::User | Role::Error => {
-                vec![Block::Text(Text { id: 0, heading: None, text: message.text.clone(), marks: Vec::new() })]
+        let (progress, blocks) = match (message.role, message.final_at) {
+            (Role::Agent, Some(at)) if message.text.is_char_boundary(at) => {
+                let (progress, next) = markdown::parse_from(&message.text[..at], cwd, 0);
+                (progress, markdown::parse_from(&message.text[at..], cwd, next).0)
+            }
+            (Role::Agent, _) => (Vec::new(), markdown::parse(&message.text, cwd)),
+            (Role::User | Role::Error, _) => {
+                (Vec::new(), vec![Block::Text(Text { id: 0, heading: None, text: message.text.clone(), marks: Vec::new() })])
             }
         };
         Self {
@@ -130,7 +140,9 @@ impl Item {
             thought_secs: message.thought_secs,
             took_secs: message.took_secs,
             agent: message.agent.clone(),
+            progress,
             blocks,
+            usage: message.usage,
         }
     }
 }
@@ -149,6 +161,8 @@ fn signature(message: &Message) -> Sig {
         message.attachments.len(),
         message.thought_secs,
         message.took_secs,
+        message.final_at,
+        message.usage.is_some(),
     )
 }
 

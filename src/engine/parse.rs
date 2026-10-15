@@ -1,6 +1,6 @@
 //! Normalizes each agent's stdout into a common event stream.
 
-use crate::store::ToolKind;
+use crate::store::{ToolKind, Usage};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -41,6 +41,8 @@ pub enum Out {
     ToolEnd { id: String, ok: bool, detail: Option<String> },
     /// Thinking started (`true`) or stopped (`false`).
     Thinking(bool),
+    /// Tokens used by model calls since the last `Usage`; the turn's total is their sum.
+    Usage(Usage),
 }
 
 /// Turns one turn's output into events. Claude's results name only their call,
@@ -89,6 +91,9 @@ impl Parser {
     fn claude(&mut self, v: &Value) -> Vec<Out> {
         let s = |path: &str| v.pointer(path).and_then(Value::as_str).map(str::to_owned);
         let mut out = Vec::new();
+        if s("/type").as_deref() == Some("result") {
+            out.extend(claude_usage(v));
+        }
         match s("/type").as_deref() {
             Some("system") => out.extend(s("/session_id").map(Out::Session)),
             Some("stream_event") => {
@@ -225,6 +230,20 @@ impl Parser {
             }
             (Some("error"), _) => out.extend(s("/message").map(Out::Error)),
             (Some("turn.failed"), _) => out.extend(s("/error/message").map(Out::Error)),
+            // `input_tokens` includes the cached ones.
+            (Some("turn.completed"), _) => {
+                let u = &v["usage"];
+                let n = |k: &str| u[k].as_u64().unwrap_or(0);
+                if u.is_object() {
+                    let cached = n("cached_input_tokens");
+                    out.push(Out::Usage(Usage {
+                        input: n("input_tokens").saturating_sub(cached),
+                        output: n("output_tokens"),
+                        cache_read: cached,
+                        ..Usage::default()
+                    }));
+                }
+            }
             _ => {}
         }
         out
@@ -263,6 +282,19 @@ impl Parser {
             // A model that refused the turn, e.g. a quota or auth error.
             Some("message_end") if v["message"]["stopReason"].as_str() == Some("error") => {
                 out.extend(v["message"]["errorMessage"].as_str().map(|e| Out::Error(e.to_string())))
+            }
+            Some("message_end") if v["message"]["role"].as_str() == Some("assistant") => {
+                let u = &v["message"]["usage"];
+                let n = |k: &str| u[k].as_u64().unwrap_or(0);
+                if u.is_object() {
+                    out.push(Out::Usage(Usage {
+                        input: n("input"),
+                        output: n("output"),
+                        cache_read: n("cacheRead"),
+                        cache_write: n("cacheWrite"),
+                        cost_usd: u["cost"]["total"].as_f64(),
+                    }));
+                }
             }
             Some("message_update") => match s("/assistantMessageEvent/type").as_deref() {
                 Some("text_start") => out.push(Out::Break),
@@ -313,6 +345,20 @@ impl Parser {
             Some("error") => out.push(Out::Error(
                 s("/error/data/message").or(s("/error/name")).unwrap_or_else(|| line.to_string()),
             )),
+            // One per model step, with that step's tokens.
+            Some("step_finish") => {
+                let t = &v["part"]["tokens"];
+                let n = |p: &str| t.pointer(p).and_then(Value::as_u64).unwrap_or(0);
+                if t.is_object() {
+                    out.push(Out::Usage(Usage {
+                        input: n("/input"),
+                        output: n("/output") + n("/reasoning"),
+                        cache_read: n("/cache/read"),
+                        cache_write: n("/cache/write"),
+                        cost_usd: v["part"]["cost"].as_f64(),
+                    }));
+                }
+            }
             _ => {}
         }
         out
@@ -359,9 +405,33 @@ fn gemini(v: &Value, line: &str) -> Vec<Out> {
         Some("result") if s("/status").as_deref() == Some("error") => {
             out.push(Out::Error(s("/error/message").unwrap_or_else(|| "agent reported an error".into())))
         }
+        // `input_tokens` includes the cached ones.
+        Some("result") if v["stats"]["input_tokens"].is_u64() => {
+            let n = |k: &str| v["stats"][k].as_u64().unwrap_or(0);
+            let cached = n("cached");
+            out.push(Out::Usage(Usage {
+                input: n("input_tokens").saturating_sub(cached),
+                output: n("output_tokens"),
+                cache_read: cached,
+                ..Usage::default()
+            }));
+        }
         _ => {}
     }
     out
+}
+
+/// A Claude `result` line's usage: the whole turn's tokens and cost.
+fn claude_usage(v: &Value) -> Option<Out> {
+    let u = v.get("usage").filter(|u| u.is_object())?;
+    let n = |k: &str| u[k].as_u64().unwrap_or(0);
+    Some(Out::Usage(Usage {
+        input: n("input_tokens"),
+        output: n("output_tokens"),
+        cache_read: n("cache_read_input_tokens"),
+        cache_write: n("cache_creation_input_tokens"),
+        cost_usd: v["total_cost_usd"].as_f64(),
+    }))
 }
 
 /// The content blocks of a Claude message line.
@@ -865,6 +935,28 @@ mod tests {
         assert!(matches!(&events(Protocol::Gemini, result)[..], [Out::Error(m)] if m == "no key"));
         let ok = r#"{"type":"result","status":"success","stats":{}}"#;
         assert!(events(Protocol::Gemini, ok).is_empty());
+    }
+
+    #[test]
+    fn usage_from_each_agent() {
+        let usage = |proto, line| {
+            events(proto, line).into_iter().find_map(|e| match e {
+                Out::Usage(u) => Some(u),
+                _ => None,
+            })
+        };
+        // Claude's result line totals the turn; cached tokens are reported apart from input.
+        let claude = r#"{"type":"result","subtype":"success","is_error":false,"result":"hi","total_cost_usd":0.0024,"usage":{"input_tokens":2,"cache_creation_input_tokens":11669,"cache_read_input_tokens":8466,"output_tokens":14}}"#;
+        assert_eq!(usage(Protocol::Claude, claude), Some(Usage { input: 2, output: 14, cache_read: 8466, cache_write: 11669, cost_usd: Some(0.0024) }));
+        // Codex and Gemini count cached tokens inside input.
+        let codex = r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":800,"output_tokens":50}}"#;
+        assert_eq!(usage(Protocol::Codex, codex), Some(Usage { input: 200, output: 50, cache_read: 800, ..Usage::default() }));
+        let gemini = r#"{"type":"result","status":"success","stats":{"input_tokens":500,"output_tokens":20,"cached":100}}"#;
+        assert_eq!(usage(Protocol::Gemini, gemini), Some(Usage { input: 400, output: 20, cache_read: 100, ..Usage::default() }));
+        let pi = r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":39073,"output":27,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.0517}}}}"#;
+        assert_eq!(usage(Protocol::Pi, pi), Some(Usage { input: 39073, output: 27, cost_usd: Some(0.0517), ..Usage::default() }));
+        let opencode = r#"{"type":"step_finish","part":{"tokens":{"input":10,"output":5,"reasoning":2,"cache":{"read":90,"write":0}},"cost":0.001}}"#;
+        assert_eq!(usage(Protocol::OpenCode, opencode), Some(Usage { input: 10, output: 7, cache_read: 90, cost_usd: Some(0.001), ..Usage::default() }));
     }
 
     #[test]

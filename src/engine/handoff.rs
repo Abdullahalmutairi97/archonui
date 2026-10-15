@@ -94,6 +94,8 @@ mod tests {
             thought_secs: None,
             took_secs: None,
             agent: agent.map(str::to_string),
+            final_at: None,
+            usage: None,
         }
     }
 

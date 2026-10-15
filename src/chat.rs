@@ -872,6 +872,8 @@ impl ChatView {
                     m.text = text;
                 }
             }
+            // This view shows no usage.
+            Event::Out(Out::Usage(_)) => {}
             Event::Out(Out::Status(st)) => {
                 live.log(st.clone());
                 live.status = Some(st);

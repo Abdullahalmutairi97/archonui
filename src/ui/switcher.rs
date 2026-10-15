@@ -436,6 +436,8 @@ mod tests {
                 thought_secs: None,
                 took_secs: None,
                 agent: None,
+                final_at: None,
+                usage: None,
             })
             .collect();
         s

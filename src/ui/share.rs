@@ -744,6 +744,8 @@ mod tests {
                 thought_secs: Some(3),
                 took_secs: None,
                 agent: None,
+                final_at: None,
+                usage: None,
             },
             Message {
                 role: Role::Agent,
@@ -761,6 +763,8 @@ mod tests {
                 thought_secs: Some(14),
                 took_secs: Some(31),
                 agent: None,
+                final_at: None,
+                usage: None,
             },
         ];
         s

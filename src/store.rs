@@ -44,6 +44,50 @@ pub struct Message {
     /// from the session's. `None` on user and error rows and on replies saved before switching existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// Byte offset in `text` where the final answer starts: the text after the reply's last tool call.
+    /// What comes before it is progress notes. `None` when the reply made no tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_at: Option<usize>,
+    /// Tokens and cost of the turn that wrote this reply, when the agent reports them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+}
+
+/// What one turn used, summed over its model calls. `input` excludes cached tokens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Usage {
+    pub input: u64,
+    pub output: u64,
+    /// Input tokens read from the prompt cache.
+    pub cache_read: u64,
+    /// Input tokens written to the prompt cache.
+    pub cache_write: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+impl Usage {
+    pub fn add(&mut self, other: Usage) {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.cost_usd = match (self.cost_usd, other.cost_usd) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0.) + b.unwrap_or(0.)),
+        };
+    }
+
+    /// All input tokens, cached or not.
+    pub fn total_input(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write
+    }
+
+    /// Share of input tokens read from the cache, 0–100. `None` with no input.
+    pub fn cache_hit(&self) -> Option<u32> {
+        let total = self.total_input();
+        (total > 0).then(|| ((self.cache_read as f64 / total as f64) * 100.).round() as u32)
+    }
 }
 
 /// One tool call in an agent reply, shown as a row above the text.
@@ -168,7 +212,7 @@ impl Session {
 
     pub fn push_with(&mut self, role: Role, text: impl Into<String>, attachments: Vec<Attachment>) {
         let agent = (role == Role::Agent).then(|| self.agent.clone());
-        self.messages.push(Message { role, text: text.into(), attachments, tools: Vec::new(), thought_secs: None, took_secs: None, agent });
+        self.messages.push(Message { role, text: text.into(), attachments, tools: Vec::new(), thought_secs: None, took_secs: None, agent, final_at: None, usage: None });
         self.updated = now();
     }
 

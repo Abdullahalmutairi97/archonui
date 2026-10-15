@@ -94,10 +94,17 @@ type Events<'a> = Peekable<Parser<'a>>;
 
 /// Parses an agent reply. Relative image paths resolve against `cwd`, the session's folder.
 pub fn parse(markdown: &str, cwd: &Path) -> Vec<Block> {
+    parse_from(markdown, cwd, 0).0
+}
+
+/// `parse` with text ids starting at `first_id`, so two parts of one message keep distinct ids.
+/// Returns the blocks and the next free id.
+pub fn parse_from(markdown: &str, cwd: &Path, first_id: usize) -> (Vec<Block>, usize) {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut events = Parser::new_ext(markdown, options).peekable();
-    let mut ids = 0;
-    blocks(&mut events, &mut ids, cwd)
+    let mut ids = first_id;
+    let blocks = blocks(&mut events, &mut ids, cwd);
+    (blocks, ids)
 }
 
 /// The blocks up to the end of the enclosing container, which is consumed.
