@@ -22,6 +22,20 @@ pub const PANEL_BLUR: (f32, f32) = (0., 48.);
 pub const WALLPAPER_DIM: (f32, f32) = (0., 80.);
 /// Window opacity, percent: low enough to see the desktop, never fully invisible.
 pub const WINDOW_OPACITY: (f32, f32) = (20., 100.);
+/// The background filter's dot size, px.
+pub const FILTER_PIXEL: (f32, f32) = (1., 8.);
+
+/// A filter drawn over the background image or gradient.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BackgroundFilter {
+    #[default]
+    Off,
+    /// Ordered dither in the theme's background and text colours.
+    Duotone,
+    /// Ordered dither in the background, accent and text colours.
+    Tritone,
+}
 pub const TEXT_SIZE: (f32, f32) = (13., 19.);
 pub const TERMINAL_SIZE: (f32, f32) = (10., 24.);
 pub const MAX_STEPS: (u32, u32) = (10, 100);
@@ -58,6 +72,10 @@ pub struct AppSettings {
     pub wallpaper_dim: f32,
     /// Window opacity, percent. Below 100 the desktop shows through the background and surfaces.
     pub window_opacity: f32,
+    /// A filter over the background: an ordered dither in two or three of the theme's colours.
+    pub filter: BackgroundFilter,
+    /// Width of the filter's dots, px.
+    pub filter_pixel: f32,
     /// Give unfocused tiles the focused tile's tint.
     pub tint_all: bool,
     /// Draw the accent gradient ring around the focused session. Off, it gets the same plain border
@@ -151,6 +169,8 @@ impl Default for AppSettings {
             panel_blur: 24.,
             wallpaper_dim: 0.,
             window_opacity: 100.,
+            filter: BackgroundFilter::Off,
+            filter_pixel: 3.,
             tint_all: false,
             session_ring: true,
             borders: true,
@@ -205,6 +225,7 @@ impl AppSettings {
         self.panel_blur = fit(self.panel_blur, PANEL_BLUR, d.panel_blur);
         self.wallpaper_dim = fit(self.wallpaper_dim, WALLPAPER_DIM, d.wallpaper_dim);
         self.window_opacity = fit(self.window_opacity, WINDOW_OPACITY, d.window_opacity);
+        self.filter_pixel = fit(self.filter_pixel, FILTER_PIXEL, d.filter_pixel);
         self.text_size = fit(self.text_size, TEXT_SIZE, d.text_size);
         self.ui_scale = fit(self.ui_scale, UI_SCALE, d.ui_scale);
         self.terminal_font_size = fit(self.terminal_font_size, TERMINAL_SIZE, d.terminal_font_size);

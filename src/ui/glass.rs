@@ -64,6 +64,16 @@ pub enum WallpaperSource {
     File(PathBuf),
     /// A diagonal blend through three `0xrrggbb` colours, drawn when there is no image.
     Gradient([u32; 3]),
+    /// Another source redrawn with an ordered dither in a few colours.
+    Dithered(Box<WallpaperSource>, Dither),
+}
+
+/// An ordered (Bayer) dither: the image's brightness drawn with only `palette`'s colours, darkest
+/// first, in square dots `pixel` px wide.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Dither {
+    pub palette: Vec<u32>,
+    pub pixel: u32,
 }
 
 impl WallpaperSource {
@@ -83,6 +93,7 @@ impl WallpaperSource {
             Self::Embedded(name) => image::load_from_memory(wallpaper_bytes(name)?),
             Self::File(path) => image::open(path),
             Self::Gradient(stops) => return Some(gradient_image(*stops)),
+            Self::Dithered(base, dither) => return Some(dither_image(&base.decode()?, dither)),
         }
         .ok()?
         .into_rgba8();
@@ -110,6 +121,54 @@ fn gradient_image(stops: [u32; 3]) -> RgbaImage {
         let ch = |i: usize| (from[i] + (to[i] - from[i]) * u).round() as u8;
         image::Rgba([ch(0), ch(1), ch(2), 255])
     })
+}
+
+/// The 8×8 Bayer matrix: thresholds 0–63 spread so neighbouring dots differ as much as possible.
+const BAYER8: [[u8; 8]; 8] = [
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
+];
+
+/// `image` drawn with `dither`'s palette. Brightness is stretched between the image's own darkest and
+/// lightest tones so every palette colour is used, then each dot picks between the two nearest palette
+/// colours by the Bayer threshold. The result is scaled back up without smoothing, so dots stay square.
+fn dither_image(image: &RgbaImage, dither: &Dither) -> RgbaImage {
+    let palette: Vec<[u8; 3]> =
+        dither.palette.iter().map(|c| [(c >> 16) as u8, (c >> 8) as u8, *c as u8]).collect();
+    if palette.len() < 2 {
+        return image.clone();
+    }
+    let pixel = dither.pixel.clamp(1, 16);
+    // Dots are measured against a full-width image, so a small source (a generated gradient) gets dots
+    // of the same size as a photo, not ones stretched with it.
+    let (w, h) = match image.dimensions() {
+        (w, h) if w < MAX_WIDTH => (MAX_WIDTH, (u64::from(h) * u64::from(MAX_WIDTH) / u64::from(w)) as u32),
+        size => size,
+    };
+    let (sw, sh) = ((w / pixel).max(1), (h / pixel).max(1));
+    let small = image::imageops::resize(image, sw, sh, FilterType::Triangle);
+    let luma = |p: &image::Rgba<u8>| (0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2])) / 255.;
+    // The 2nd and 98th percentiles, so a few extreme dots don't flatten everything else.
+    let mut levels: Vec<f32> = small.pixels().map(luma).collect();
+    levels.sort_by(f32::total_cmp);
+    let (lo, hi) = (levels[levels.len() / 50], levels[levels.len() * 49 / 50]);
+    let span = (hi - lo).max(1e-3);
+    let steps = (palette.len() - 1) as f32;
+    let dotted = RgbaImage::from_fn(sw, sh, |x, y| {
+        let v = ((luma(small.get_pixel(x, y)) - lo) / span).clamp(0., 1.) * steps;
+        let base = v.floor();
+        let threshold = (f32::from(BAYER8[(y % 8) as usize][(x % 8) as usize]) + 0.5) / 64.;
+        let index = (base as usize + usize::from(v - base > threshold)).min(palette.len() - 1);
+        let [r, g, b] = palette[index];
+        image::Rgba([r, g, b, 255])
+    });
+    image::imageops::resize(&dotted, sw * pixel, sh * pixel, FilterType::Nearest)
 }
 
 /// One cached image: the source plus the look, with floats quantized to 0.01 so that float noise
@@ -746,6 +805,22 @@ mod tests {
 
     fn look(opacity: f32, blur: f32, brightness: f32) -> Wallpaper {
         Wallpaper { opacity, blur, brightness }
+    }
+
+    #[test]
+    fn dithering_uses_only_the_palette_in_square_dots() {
+        let ramp = gradient_image([0x000000, 0x808080, 0xffffff]);
+        let dither = Dither { palette: vec![0x102030, 0xa0b0c0, 0xf0e0d0], pixel: 4 };
+        let out = dither_image(&ramp, &dither);
+        let allowed = [[0x10, 0x20, 0x30], [0xa0, 0xb0, 0xc0], [0xf0, 0xe0, 0xd0]];
+        assert!(out.pixels().all(|p| allowed.contains(&[p[0], p[1], p[2]])));
+        // Every colour shows on a full ramp, and each dot is 4×4.
+        for colour in allowed {
+            assert!(out.pixels().any(|p| [p[0], p[1], p[2]] == colour));
+        }
+        assert_eq!(out.get_pixel(0, 0), out.get_pixel(3, 3));
+        let source = WallpaperSource::Dithered(Box::new(WallpaperSource::Gradient([0, 0x808080, 0xffffff])), dither);
+        assert!(source.decode().is_some());
     }
 
     #[test]
