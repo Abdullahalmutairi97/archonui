@@ -137,6 +137,7 @@ pub(super) enum Slide {
     Radius,
     Blur,
     Dim,
+    Opacity,
     Text,
     Scale,
     MaxSteps,
@@ -256,6 +257,7 @@ impl Shell {
             Slide::Radius => s.radius = value,
             Slide::Blur => s.panel_blur = value,
             Slide::Dim => s.wallpaper_dim = value,
+            Slide::Opacity => s.window_opacity = value,
             Slide::Text => s.text_size = value,
             Slide::Scale => {
                 s.ui_scale = value / 100.;

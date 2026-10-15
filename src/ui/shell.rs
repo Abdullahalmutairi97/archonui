@@ -214,7 +214,11 @@ impl Shell {
     }
 
     pub(super) fn effects(&self) -> Effects {
-        Effects { blur: self.state.settings.panel_blur, dim: self.state.settings.wallpaper_dim }
+        Effects {
+            blur: self.state.settings.panel_blur,
+            dim: self.state.settings.wallpaper_dim,
+            opacity: self.state.settings.window_opacity / 100.,
+        }
     }
 
     /// Acts on a turn that ended: the desktop alert and sound, and a fast title for a chat's first exchange.
@@ -436,7 +440,8 @@ impl Render for Shell {
             .size_full()
             .relative()
             .overflow_hidden()
-            .bg(theme.bg.to_hsla())
+            // Below full window opacity the desktop shows through the base colour too.
+            .bg(theme.bg.alpha(self.effects().clamped_opacity()).to_hsla())
             .text_color(theme.fg.to_hsla())
             .font_family(theme.ui_font.clone())
             .child(wallpaper)

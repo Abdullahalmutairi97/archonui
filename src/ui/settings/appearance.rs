@@ -851,6 +851,8 @@ impl Shell {
         let reduce_motion = self.state.settings.reduce_motion.unwrap_or_else(anim::reduced_motion);
         let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
         let dim_slider = self.slide(Slide::Dim, dim, range(WALLPAPER_DIM, 5.), "%", cx);
+        let opacity = self.state.settings.window_opacity;
+        let opacity_slider = self.slide(Slide::Opacity, opacity, range(crate::app::settings::WINDOW_OPACITY, 5.), "%", cx);
         let text_slider = self.slide(Slide::Text, text, range(TEXT_SIZE, 1.), "px", cx);
         let scale = (self.state.settings.ui_scale * 100.).round();
         let scale_range = (crate::app::settings::UI_SCALE.0 * 100., crate::app::settings::UI_SCALE.1 * 100.);
@@ -859,6 +861,12 @@ impl Shell {
             SettingRow::new("Interface size", "Scales the whole window, like zooming a page.", &theme).control(scale_slider),
             SettingRow::new("Panel blur", "Blur behind the sidebars and glass tiles.", &theme).control(blur_slider),
             SettingRow::new("Wallpaper dim", "", &theme).control(dim_slider),
+            SettingRow::new(
+                "Window opacity",
+                "Below 100% your desktop shows through the background, sidebars and sessions. Text stays solid. With a compositor blur rule for ArchonUI, what shows through is blurred.",
+                &theme,
+            )
+            .control(opacity_slider),
             toggle_row(
                 "tint-all",
                 "Tint all sessions",

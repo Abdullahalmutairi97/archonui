@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Appearance › Effects › Window opacity (20–100%): below 100% the desktop shows through the
+  background, wallpaper, sidebars and sessions; text and popovers stay solid. A compositor blur rule
+  for the window blurs what shows through.
 - IDE: scrolling no longer empties the editor. The code area drew a spacer for every row scrolled
   past above the visible rows, and since the area doesn't scroll itself, that pushed them below its
   bottom edge. Code text is smaller (11.5px on 17.5px rows, from 12.5px on 21.25px), so more fits.

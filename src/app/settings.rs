@@ -20,6 +20,8 @@ pub const GAPS: (f32, f32) = (0., 32.);
 pub const RADIUS: (f32, f32) = (0., 20.);
 pub const PANEL_BLUR: (f32, f32) = (0., 48.);
 pub const WALLPAPER_DIM: (f32, f32) = (0., 80.);
+/// Window opacity, percent: low enough to see the desktop, never fully invisible.
+pub const WINDOW_OPACITY: (f32, f32) = (20., 100.);
 pub const TEXT_SIZE: (f32, f32) = (13., 19.);
 pub const TERMINAL_SIZE: (f32, f32) = (10., 24.);
 pub const MAX_STEPS: (u32, u32) = (10, 100);
@@ -54,6 +56,8 @@ pub struct AppSettings {
     pub panel_blur: f32,
     /// Wallpaper darkening, percent.
     pub wallpaper_dim: f32,
+    /// Window opacity, percent. Below 100 the desktop shows through the background and surfaces.
+    pub window_opacity: f32,
     /// Give unfocused tiles the focused tile's tint.
     pub tint_all: bool,
     /// Draw the accent gradient ring around the focused session. Off, it gets the same plain border
@@ -146,6 +150,7 @@ impl Default for AppSettings {
             radius: 9.,
             panel_blur: 24.,
             wallpaper_dim: 0.,
+            window_opacity: 100.,
             tint_all: false,
             session_ring: true,
             borders: true,
@@ -199,6 +204,7 @@ impl AppSettings {
         self.radius = fit(self.radius, RADIUS, d.radius);
         self.panel_blur = fit(self.panel_blur, PANEL_BLUR, d.panel_blur);
         self.wallpaper_dim = fit(self.wallpaper_dim, WALLPAPER_DIM, d.wallpaper_dim);
+        self.window_opacity = fit(self.window_opacity, WINDOW_OPACITY, d.window_opacity);
         self.text_size = fit(self.text_size, TEXT_SIZE, d.text_size);
         self.ui_scale = fit(self.ui_scale, UI_SCALE, d.ui_scale);
         self.terminal_font_size = fit(self.terminal_font_size, TERMINAL_SIZE, d.terminal_font_size);

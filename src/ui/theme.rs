@@ -667,21 +667,30 @@ pub struct Effects {
     pub blur: f32,
     /// Wallpaper dim in percent, 0–80.
     pub dim: f32,
+    /// Window opacity, 0.2–1: scales the background, wallpaper, sidebars and sessions so the desktop
+    /// shows through. Text and popovers stay opaque.
+    pub opacity: f32,
 }
 
 impl Default for Effects {
     fn default() -> Self {
-        Self { blur: 24.0, dim: 0.0 }
+        Self { blur: 24.0, dim: 0.0, opacity: 1.0 }
     }
 }
 
 impl Effects {
+    /// The window opacity within its range, as an alpha.
+    pub fn clamped_opacity(self) -> f32 {
+        self.clamped().opacity
+    }
+
     /// The sliders within their ranges (blur 0–48, dim 0–80); defaults for a non-number.
     fn clamped(self) -> Self {
         let d = Self::default();
         Self {
             blur: if self.blur.is_finite() { self.blur.clamp(0.0, 48.0) } else { d.blur },
             dim: if self.dim.is_finite() { self.dim.clamp(0.0, 80.0) } else { d.dim },
+            opacity: if self.opacity.is_finite() { self.opacity.clamp(0.2, 1.0) } else { d.opacity },
         }
     }
 }
@@ -744,9 +753,10 @@ impl BackgroundStyle {
             Self::Tinted => (0.5, 0.0, 1.0, panel.alpha(0.55), Some(effects.blur)),
             Self::Ambient => (1.0, 28.0, 0.55, panel.alpha(0.5), Some(effects.blur)),
         };
+        let o = effects.opacity;
         Surfaces {
-            wallpaper: Wallpaper { opacity, blur, brightness: brightness * dim },
-            side,
+            wallpaper: Wallpaper { opacity: opacity * o, blur, brightness: brightness * dim },
+            side: side.alpha(side.a * o),
             side_blur,
         }
     }
@@ -754,6 +764,17 @@ impl BackgroundStyle {
     /// The session tile in this style. Only Canvas varies per tile (themes.md §4.1).
     pub fn tile(self, theme: &Theme, effects: Effects, state: TileState) -> TileSurface {
         let effects = effects.clamped();
+        let mut surface = self.opaque_tile(theme, effects, state);
+        let o = effects.opacity;
+        surface.fill = match surface.fill {
+            TileFill::Solid(c) => TileFill::Solid(c.alpha(c.a * o)),
+            TileFill::Gradient(stops) => TileFill::Gradient(stops.map(|(c, at)| (c.alpha(c.a * o), at))),
+        };
+        surface
+    }
+
+    /// `tile` at full window opacity.
+    fn opaque_tile(self, theme: &Theme, effects: Effects, state: TileState) -> TileSurface {
         let tile = theme.tile;
         let solid = |alpha: f32, blur: Option<f32>| TileSurface {
             fill: TileFill::Solid(tile.alpha(alpha)),
@@ -1100,14 +1121,26 @@ mod tests {
     }
 
     #[test]
+    fn window_opacity_scales_every_surface() {
+        let t = blood();
+        let half = Effects { opacity: 0.5, ..Effects::default() };
+        let canvas = BackgroundStyle::Canvas.surfaces(&t, half);
+        assert_eq!((canvas.wallpaper.opacity, canvas.side.a), (0.5, 0.36));
+        let solid = BackgroundStyle::Solid.tile(&t, half, TileState::default());
+        assert_eq!(solid.fill, TileFill::Solid(t.tile.alpha(0.5)));
+        let floor = Effects { opacity: 0.0, ..Effects::default() };
+        assert_eq!(BackgroundStyle::Solid.surfaces(&t, floor).side.a, 0.2, "never fully invisible");
+    }
+
+    #[test]
     fn out_of_range_sliders_are_clamped() {
         let t = blood();
-        let wild = Effects { blur: -5.0, dim: 250.0 };
+        let wild = Effects { blur: -5.0, dim: 250.0, ..Effects::default() };
         let canvas = BackgroundStyle::Canvas.surfaces(&t, wild);
         assert_eq!(canvas.side_blur, Some(0.0));
         assert!((canvas.wallpaper.brightness - 0.2).abs() < 1e-6);
-        let nan = Effects { blur: f32::NAN, dim: f32::NAN };
+        let nan = Effects { blur: f32::NAN, dim: f32::NAN, opacity: f32::NAN };
         assert_eq!(BackgroundStyle::Canvas.surfaces(&t, nan).side_blur, Some(24.0));
-        assert_eq!(BackgroundStyle::Glass.tile(&t, Effects { blur: 900.0, dim: 0.0 }, TileState::default()).blur, Some(48.0));
+        assert_eq!(BackgroundStyle::Glass.tile(&t, Effects { blur: 900.0, dim: 0.0, ..Effects::default() }, TileState::default()).blur, Some(48.0));
     }
 }
