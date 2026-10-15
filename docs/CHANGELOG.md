@@ -3,7 +3,8 @@
 ## 0.2.5
 
 - The conversation is a centred column up to 880px wide, so on a wide window messages read down
-  the middle instead of hugging the left edge.
+  the middle instead of hugging the left edge. It is centred with auto margins: a flex-row wrapper
+  made the message list measure rows at the wrong height, so messages overlapped.
 
 ## 0.2.4
 

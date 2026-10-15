@@ -39,14 +39,10 @@ pub(super) fn message_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item
         Role::Agent => agent_row(ctx, ix, item),
         Role::Error => error_row(ctx, ix, item),
     };
-    // The conversation is a centred column, so on a wide window it reads down the middle.
-    div()
-        .w_full()
-        .flex()
-        .justify_center()
-        .pb(px(16.))
-        .child(div().w_full().max_w(px(COLUMN_WIDTH)).child(row))
-        .into_any_element()
+    // The conversation is a centred column, so on a wide window it reads down the middle. Auto margins
+    // in block layout, not a flex row: the list measures each row's height, and a flex row made it
+    // measure the text at a different width than it drew it, so messages overlapped.
+    div().pb(px(16.)).child(div().max_w(px(COLUMN_WIDTH)).mx_auto().child(row)).into_any_element()
 }
 
 /// Width of the centred conversation column: the reply text width plus room for the header,
