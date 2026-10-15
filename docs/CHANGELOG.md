@@ -11,6 +11,9 @@
   highlights. The last group is new: Borders, Strong borders, Selection (selected rows and your
   message bubble), and Highlight start and end (the focused session's ring). Borders and Selection
   keep their transparency; the colour picked sets their hue.
+- Appearance › Layout › Edge to edge: sessions fill the whole area, with no gaps between them or at
+  the sides, square corners and no borders. Gaps, Corner radius and Borders keep their values and
+  apply again when it is off.
 - Appearance › Effects › Borders: off removes the borders around sessions (focus ring included) and
   the line along the tools panel's edge; the sessions grow into the space. Gaps are unchanged.
 - Appearance › Effects › Session highlight: off removes the coloured ring around the focused

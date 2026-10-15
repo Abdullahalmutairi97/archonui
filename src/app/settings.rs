@@ -62,6 +62,9 @@ pub struct AppSettings {
     /// Draw the borders around sessions and the edge line of the tools panel. Off, sessions sit
     /// edge to edge with their neighbours when the gaps are 0.
     pub borders: bool,
+    /// Edge to edge: sessions fill the whole area with no gaps, square corners and no borders. The
+    /// gap, radius and border settings are kept and come back when this is turned off.
+    pub flush: bool,
     /// Message text size, px.
     pub text_size: f32,
     /// Interface size: every design size is multiplied by this, like zooming a page.
@@ -146,6 +149,7 @@ impl Default for AppSettings {
             tint_all: false,
             session_ring: true,
             borders: true,
+            flush: false,
             text_size: 15.,
             ui_scale: default_ui_scale(),
             reduce_motion: None,
@@ -225,6 +229,21 @@ impl AppSettings {
 
     pub fn harness(&self, id: &str) -> HarnessConfig {
         self.harnesses.get(id).cloned().unwrap_or_default()
+    }
+
+    /// The gap in effect: 0 edge to edge.
+    pub fn gap(&self) -> f32 {
+        if self.flush { 0. } else { self.gaps }
+    }
+
+    /// The tile corner radius in effect: square edge to edge.
+    pub fn corner_radius(&self) -> f32 {
+        if self.flush { 0. } else { self.radius }
+    }
+
+    /// Whether borders are drawn: never edge to edge.
+    pub fn show_borders(&self) -> bool {
+        self.borders && !self.flush
     }
 
     /// Whether `model` of `harness` is enabled. Models not listed are.

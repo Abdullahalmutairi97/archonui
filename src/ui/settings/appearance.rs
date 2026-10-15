@@ -762,6 +762,7 @@ impl Shell {
         let master = matches!(self.state.workspace.layout.mode, LayoutMode::Master);
         let gaps = self.state.settings.gaps;
         let radius = self.state.settings.radius;
+        let flush = self.state.settings.flush;
         let gaps_slider = self.slide(Slide::Gaps, gaps, range(GAPS, 1.), "px", cx);
         let radius_slider = self.slide(Slide::Radius, radius, range(RADIUS, 1.), "px", cx);
         let rows = vec![
@@ -775,6 +776,19 @@ impl Shell {
                 &theme,
                 |this, i, cx| {
                     this.state.workspace.layout.mode = if i == 1 { LayoutMode::Master } else { LayoutMode::Dwindle };
+                    this.save(cx);
+                },
+                None,
+            ),
+            toggle_row(
+                "flush",
+                "Edge to edge",
+                "No gaps anywhere, square corners and no borders: sessions fill the window. Gaps, corner radius and Borders keep their values for when this is off.",
+                flush,
+                &weak,
+                &theme,
+                |this, on, cx| {
+                    this.state.settings.flush = on;
                     this.save(cx);
                 },
                 None,

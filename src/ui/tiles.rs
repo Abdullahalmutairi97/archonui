@@ -98,7 +98,7 @@ impl Shell {
         let focus = self.state.workspace.layout.focus.clone();
         let theme = self.theme.clone();
         let effects = self.effects();
-        let rad = self.state.settings.radius;
+        let rad = self.state.settings.corner_radius();
         let mut running = false;
         let mut layers: Vec<AnyElement> = Vec::new();
         if slots.is_empty() {
@@ -431,7 +431,7 @@ impl Shell {
     /// The header's meta line: project, model, effort, mode and running state. Spec: chat.md §0.5.
     /// A tile's border width: the focus ring or the idle border, or none when borders are off.
     fn ring_width(&self, focused: bool) -> f32 {
-        match (self.state.settings.borders, focused) {
+        match (self.state.settings.show_borders(), focused) {
             (false, _) => 0.,
             (true, true) => RING_FOCUSED,
             (true, false) => RING_IDLE,

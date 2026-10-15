@@ -322,7 +322,7 @@ impl Shell {
     /// Height of the sidebar header and the tools panel tab bar: their bottom borders line up with the
     /// tile headers' (52 px, below a tile's 2 px focus-ring inset and the gap above the tiles).
     pub(super) fn header_height(&self) -> f32 {
-        self.state.settings.gaps + 54.
+        self.state.settings.gap() + 54.
     }
 
     /// Region rectangles for this frame (layout.md §1.3).
@@ -332,7 +332,7 @@ impl Shell {
         let (ww, wh) = (crate::ui::scale::design(size.width), crate::ui::scale::design(size.height));
         let now = Instant::now();
         let (lw, rw) = (self.left_w.value(now), self.right_w.value(now));
-        let g = self.state.settings.gaps;
+        let g = self.state.settings.gap();
         Regions {
             window: Rect { x: 0., y: 0., w: ww, h: wh },
             left: Rect { x: 0., y: 0., w: lw, h: wh },
