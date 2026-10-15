@@ -123,10 +123,16 @@ impl ChatView {
         p.url = url.clone();
         p.error = None;
         p.editing = None;
+        // `file://` pages load only from the chat's folder.
+        let root = self.session().map(|s| s.cwd.clone());
+        let p = &mut self.preview.page;
         match &p.browser {
-            Some(b) => b.send(Command::Navigate(url)),
+            Some(b) => {
+                b.send(Command::SetRoot(root));
+                b.send(Command::Navigate(url));
+            }
             None => {
-                p.pending = vec![Command::Navigate(url)];
+                p.pending = vec![Command::SetRoot(root), Command::Navigate(url)];
                 self.launch_browser(View::Page, cx);
             }
         }

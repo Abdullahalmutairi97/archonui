@@ -14,7 +14,7 @@ use std::{
     env,
     io::{self, BufRead, BufReader},
     net::TcpStream,
-    os::unix::process::CommandExt,
+    os::unix::{ffi::OsStrExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{self, Child, Stdio},
     sync::{
@@ -65,6 +65,9 @@ pub enum Command {
     SetCookie { url: String, name: String, value: String },
     /// Sends the page's selected text to `Browser::copies`.
     CopySelection,
+    /// The project folder `file://` pages may load from. `None` refuses every `file://` page.
+    /// Starts as `None`.
+    SetRoot(Option<PathBuf>),
 }
 
 /// A running headless Chrome. Dropping it shuts Chrome down.
@@ -256,7 +259,11 @@ fn find_chrome() -> Option<PathBuf> {
         .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("chromium-")))
         .collect();
     dirs.sort();
-    dirs.iter().rev().map(|d| d.join("chrome-linux/chrome")).find(|p| p.is_file())
+    // Newer Playwright releases unpack to `chrome-linux64`, older ones to `chrome-linux`.
+    dirs.iter()
+        .rev()
+        .flat_map(|d| [d.join("chrome-linux64/chrome"), d.join("chrome-linux/chrome")])
+        .find(|p| p.is_file())
 }
 
 /// What a pending request's reply means to us.
@@ -332,6 +339,8 @@ struct Session {
     visible: bool,
     /// Mouse buttons held down, as CDP's bitmask: left 1, right 2.
     buttons: u8,
+    /// The folder `file://` loads are confined to (see `file_allowed`).
+    root: Option<PathBuf>,
 }
 
 impl Session {
@@ -348,6 +357,7 @@ impl Session {
             viewport: (800, 600, 1.0),
             visible: true,
             buttons: 0,
+            root: None,
         }
     }
 
@@ -413,6 +423,12 @@ impl Session {
                     if let Some(s) = v.pointer("/result/sessionId").and_then(Value::as_str) {
                         self.page = Some(s.to_string());
                         self.page_call("Page.enable", json!({}));
+                        // Every `file://` request, a page's own links and frames included, is checked
+                        // against the project folder in `Fetch.requestPaused`.
+                        self.page_call(
+                            "Fetch.enable",
+                            json!({"patterns": [{"urlPattern": "file://*", "requestStage": "Request"}]}),
+                        );
                         self.install_copy_hook();
                         let id = self.call(None, "Browser.getVersion", json!({}));
                         self.pending.insert(id, Pending::Version);
@@ -517,6 +533,25 @@ impl Session {
                     self.emit(BrowserEvent::Frame(frame, w, h));
                 }
             }
+            "Fetch.requestPaused" => {
+                let request = params["requestId"].clone();
+                let url = params["request"]["url"].as_str().unwrap_or_default();
+                if file_allowed(url, self.root.as_deref()) {
+                    self.page_call("Fetch.continueRequest", json!({"requestId": request}));
+                } else {
+                    self.page_call("Fetch.failRequest", json!({"requestId": request, "errorReason": "AccessDenied"}));
+                    self.emit(BrowserEvent::Error(outside_project(url)));
+                }
+            }
+            // A `file://` page outside the project that got past `Fetch` is left at once.
+            "Page.frameNavigated"
+                if params["frame"]["parentId"].is_null()
+                    && !file_allowed(params["frame"]["url"].as_str().unwrap_or_default(), self.root.as_deref()) =>
+            {
+                let url = params["frame"]["url"].as_str().unwrap_or_default().to_string();
+                self.page_call("Page.navigate", json!({"url": "about:blank"}));
+                self.emit(BrowserEvent::Error(outside_project(&url)));
+            }
             "Page.frameNavigated" if params["frame"]["parentId"].is_null() => {
                 // A failed load commits Chrome's error page; keep the address that was asked for.
                 if let Some(u) = params["frame"]["url"].as_str().filter(|u| !u.starts_with("chrome-error:")) {
@@ -595,6 +630,10 @@ impl Session {
 
     fn command(&mut self, c: Command) {
         match c {
+            Command::Navigate(url) if !file_allowed(&url, self.root.as_deref()) => {
+                self.emit(BrowserEvent::Loading(false));
+                self.emit(BrowserEvent::Error(outside_project(&url)));
+            }
             Command::Navigate(url) => {
                 self.emit(BrowserEvent::Loading(true));
                 let id = self.page_call("Page.navigate", json!({"url": url}));
@@ -652,6 +691,7 @@ impl Session {
                 self.pending.insert(id, Pending::Copy);
             }
             Command::Key { key, ctrl, shift, alt, meta } => self.key(&key, ctrl, shift, alt, meta),
+            Command::SetRoot(root) => self.root = root,
         }
     }
 
@@ -866,6 +906,49 @@ fn search_url(query: &str) -> String {
     url
 }
 
+/// Whether `url` may load: anything but `file://`, and `file://` only for a path inside the project
+/// folder `root` (resolved with symlinks, as the Files tab does). With no project nothing local loads,
+/// so a page or a typed address can't read the rest of the disk.
+pub fn file_allowed(url: &str, root: Option<&Path>) -> bool {
+    let url = url.trim();
+    if !url.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("file://")) {
+        return true;
+    }
+    let Some(root) = root else { return false };
+    // `file://localhost/x` is `file:///x`; any other host is not this machine.
+    let rest = &url[7..];
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let path = percent_decode(rest.split(['?', '#']).next().unwrap_or_default());
+    path.starts_with(b"/")
+        && crate::workspace::resolve(root, Path::new(std::ffi::OsStr::from_bytes(&path))).is_ok()
+}
+
+/// The error shown for a `file://` page outside the project folder.
+fn outside_project(url: &str) -> String {
+    format!("{url} is outside the project folder, so the browser won't open it.")
+}
+
+/// `s` with `%XX` escapes decoded. A malformed escape is kept as written.
+fn percent_decode(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// A `file://` URL for `path`, with the characters that would change how the
 /// path parses percent-encoded.
 fn file_url(path: &Path) -> String {
@@ -920,6 +1003,34 @@ pub fn find_preview_target(text: &str, cwd: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_pages_load_only_from_the_project_folder() {
+        let root = env::temp_dir().join(format!("archonui-preview-root-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        std::fs::write(root.join("dist/index.html"), "<p>hi</p>").unwrap();
+        std::fs::write(root.join("my page.html"), "").unwrap();
+        let inside = format!("file://{}/dist/index.html", root.display());
+        assert!(file_allowed(&inside, Some(&root)));
+        assert!(file_allowed(&format!("{inside}?x=1#top"), Some(&root)));
+        assert!(file_allowed(&format!("FILE://localhost{}/dist/index.html", root.display()), Some(&root)));
+        assert!(file_allowed(&file_url(&root.join("my page.html")), Some(&root)), "escaped paths decode");
+
+        assert!(!file_allowed("file:///etc/passwd", Some(&root)));
+        assert!(!file_allowed(&format!("file://{}/../", root.display()), Some(&root)));
+        assert!(!file_allowed(&format!("file://{}/%2e%2e/x", root.display()), Some(&root)), "no escaped `..`");
+        assert!(!file_allowed("file://otherhost/etc/passwd", Some(&root)));
+        assert!(!file_allowed(&inside, None), "no project, no local pages");
+        // A link inside the project that points out of it is refused.
+        std::os::unix::fs::symlink("/etc", root.join("etc")).unwrap();
+        assert!(!file_allowed(&format!("file://{}/etc/passwd", root.display()), Some(&root)));
+
+        // Web pages are not this check's business.
+        for url in ["https://example.com", "http://localhost:3000/", "about:blank", "data:text/html,hi"] {
+            assert!(file_allowed(url, None), "{url}");
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn stale_profiles_are_removed_without_following_symlinks() {

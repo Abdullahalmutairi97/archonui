@@ -180,11 +180,20 @@ impl AppState {
         self.sessions.iter().find(|s| s.id == id)
     }
 
-    /// Creates a chat with `agent` in `cwd`, in the current project, and shows it as a tile.
+    /// Creates a chat with `agent` in the current project, and shows it as a tile. The chat runs in
+    /// the project's folder; `cwd` is used only when there is no current project (or its folder is
+    /// gone), so an agent never works outside the project the chat is filed under.
     /// Returns its id. The session isn't saved until it has a message.
     pub fn new_session(&mut self, agent: &str, cwd: PathBuf, placement: Placement) -> String {
+        let project = self.workspace.current_project.clone();
+        let cwd = project
+            .as_deref()
+            .and_then(|id| self.project(id))
+            .map(|p| p.path.clone())
+            .filter(|p| p.is_dir())
+            .unwrap_or(cwd);
         let mut s = Session::new(agent, cwd);
-        s.project = self.workspace.current_project.clone();
+        s.project = project;
         let taken: Vec<u16> = self.sessions.iter().map(|s| s.icon).collect();
         s.icon = sigil::seed_icon_for(&s.id, &taken);
         let id = s.id.clone();
@@ -374,8 +383,19 @@ impl AppState {
         if (prompt.is_empty() && !has_files) || self.busy(id) {
             return None;
         }
+        let project_dir = self
+            .session(id)
+            .and_then(|s| s.project.as_deref())
+            .and_then(|p| self.project(p))
+            .map(|p| p.path.clone())
+            .filter(|p| p.is_dir());
         let session = self.sessions.iter_mut().find(|s| s.id == id)?;
         let agent = agents.iter().find(|a| a.harness.id() == session.agent)?;
+        // A chat filed under a project works in that project's folder. Only before the agent has a
+        // session of its own: agents keep resumable sessions per folder, so a started chat stays put.
+        if let Some(dir) = project_dir.filter(|_| session.agent_session.is_none() && session.messages.is_empty()) {
+            session.cwd = dir;
+        }
         let files = self.live.get_mut(id).map(|l| std::mem::take(&mut l.pending)).unwrap_or_default();
         let (files, file_errors) = keep_files(id, files);
         if session.agent_session.is_none() && agent.harness.preassign_session() {
@@ -832,6 +852,24 @@ mod tests {
         app.workspace.current_project = Some(p.clone());
         let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
         assert_eq!(app.session(&id).unwrap().project.as_deref(), Some(p.as_str()));
+    }
+
+    #[test]
+    fn new_session_runs_in_the_project_folder() {
+        let dir = std::env::temp_dir().join(format!("archonui-project-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = state();
+        let p = app.add_project("replica", dir.clone());
+        app.workspace.current_project = Some(p);
+        let id = app.new_session("pi", "/home".into(), Placement::Focused);
+        assert_eq!(app.session(&id).unwrap().cwd, dir, "the project folder wins over the default folder");
+
+        // A project whose folder is gone falls back to the folder given.
+        let gone = app.add_project("gone", dir.join("missing"));
+        app.workspace.current_project = Some(gone);
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        assert_eq!(app.session(&id).unwrap().cwd, PathBuf::from("/tmp"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

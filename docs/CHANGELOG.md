@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+- A chat runs in its project's folder. New chats filed under a project start there whichever way they
+  are opened (new tile, split, startup files), not in the folder ArchonUI was launched from or the
+  default folder, so the agent works on the project the chat belongs to. A chat under a project that
+  hasn't sent its first message yet is moved to the project's folder when it sends.
+- The browser opens local files only from the project folder. `file://` addresses typed in the
+  address bar, and links, frames, redirects and scripts in a page, can't load anything outside it
+  (symlinks and escaped `..` included); with no project, no local file opens. Web pages are unchanged.
+- The browser finds Playwright's Chromium in newer Playwright releases (`chrome-linux64`).
+
 ## 0.1.9
 
 - Auto mode with Claude Code is now Claude's own `auto` permission mode, as in an interactive

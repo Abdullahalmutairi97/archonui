@@ -214,6 +214,8 @@ fn preview_shot(args: &[String]) -> Result<(), String> {
     let [url, out, rest @ ..] = args else { return Err("usage: --preview-shot <url> <out.png> [x y out2.png]".into()) };
     let browser = Browser::launch()?;
     browser.send(Command::Resize { width: 800, height: 600, scale: 1.0 });
+    // A local page loads from the folder the command runs in, like the app's project folder.
+    browser.send(Command::SetRoot(Some(working_dir())));
     browser.send(Command::Navigate(preview::normalize_address(url, &working_dir())));
     // Wait until loading stops and frames settle, keeping the newest frame.
     let wait = |browser: &Browser, quiet_ms: u64| -> Result<std::sync::Arc<gpui::RenderImage>, String> {

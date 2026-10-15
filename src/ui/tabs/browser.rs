@@ -69,8 +69,15 @@ pub(in crate::ui) struct WebView {
 
 impl WebView {
     /// Loads `url`, starting the browser if it isn't up. `select` finds this view on the shell again.
-    pub(in crate::ui) fn navigate(&mut self, url: String, select: fn(&mut Shell) -> &mut WebView, cx: &mut Context<Shell>) {
-        self.load(url, Vec::new(), select, cx);
+    /// `root` is the project folder: `file://` pages load only from inside it, and none load without one.
+    pub(in crate::ui) fn navigate(
+        &mut self,
+        url: String,
+        root: Option<PathBuf>,
+        select: fn(&mut Shell) -> &mut WebView,
+        cx: &mut Context<Shell>,
+    ) {
+        self.load(url, vec![Command::SetRoot(root)], select, cx);
     }
 
     /// `navigate`, with `cookie` (origin, name, value) set first. Pages that log in with a cookie need it
@@ -83,7 +90,8 @@ impl WebView {
         cx: &mut Context<Shell>,
     ) {
         let (url_origin, name, value) = cookie;
-        self.load(url, vec![Command::SetCookie { url: url_origin, name, value }], select, cx);
+        // code-server's page is served over http and never needs `file://`.
+        self.load(url, vec![Command::SetRoot(None), Command::SetCookie { url: url_origin, name, value }], select, cx);
     }
 
     /// Sends `first` and then the navigation, or queues them until the browser is up.
@@ -614,10 +622,11 @@ impl Shell {
         let submit = cx.subscribe(&input, |this, input, event: &TextInputEvent, cx| match event {
             TextInputEvent::Submit => {
                 let typed = input.read(cx).text();
-                let cwd = this.tool_folder().unwrap_or_else(|| this.default_folder());
+                let root = this.tool_folder();
+                let cwd = root.clone().unwrap_or_else(|| this.default_folder());
                 let url = preview::normalize_address(&typed, &cwd);
                 input.update(cx, |input, cx| input.set_text(&url, cx));
-                this.tabs.browser.view.navigate(url, browser_view, cx);
+                this.tabs.browser.view.navigate(url, root, browser_view, cx);
             }
             TextInputEvent::Changed => {}
             TextInputEvent::Blur => cx.notify(),
@@ -663,7 +672,8 @@ impl Shell {
         self.state.workspace.right_open = true;
         self.state.workspace.right_tab = RightTab::Browser;
         self.widths_changed(false, cx);
-        self.tabs.browser.view.navigate(url.to_string(), browser_view, cx);
+        let root = self.tool_folder();
+        self.tabs.browser.view.navigate(url.to_string(), root, browser_view, cx);
     }
 
     /// Saves the page's latest frame as a PNG in the focused session's attachments. None without a page.
