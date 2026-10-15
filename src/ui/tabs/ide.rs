@@ -647,6 +647,17 @@ impl Shell {
         cx.notify();
     }
 
+    /// For screenshots (`ARCHONUI_OPEN=ide:<path>`): opens `path` in the built-in editor without a
+    /// project and scrolls it so `top` is the first row.
+    pub(in crate::ui) fn ide_dev_open(&mut self, path: &Path, top: usize, cx: &mut Context<Self>) {
+        let Ok(mut doc) = Doc::open(path) else { return };
+        doc.top = top;
+        self.tabs.ide.docs.push(doc);
+        self.tabs.ide.active = self.tabs.ide.docs.len() - 1;
+        self.show_tool_tab(RightTab::Ide, cx);
+        cx.notify();
+    }
+
     /// Whether an open file under `path` has unsaved edits.
     pub(super) fn ide_dirty_under(&self, path: &Path) -> bool {
         self.tabs.ide.docs.iter().any(|doc| doc.path.starts_with(path) && doc.buffer.is_dirty())
