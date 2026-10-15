@@ -32,15 +32,26 @@ pub(super) fn logo(theme: &Theme, size: f32) -> Option<AnyElement> {
     Some(img(image).size(px(size)).into_any_element())
 }
 
-/// One message of the stream, with the 16px gap below it (chat.md §1.1).
+/// One message of the stream, centred, with the 16px gap below it (chat.md §1.1).
 pub(super) fn message_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyElement {
     let row = match item.role {
         Role::User => user_row(ctx, ix, item),
         Role::Agent => agent_row(ctx, ix, item),
         Role::Error => error_row(ctx, ix, item),
     };
-    div().pb(px(16.)).child(row).into_any_element()
+    // The conversation is a centred column, so on a wide window it reads down the middle.
+    div()
+        .w_full()
+        .flex()
+        .justify_center()
+        .pb(px(16.))
+        .child(div().w_full().max_w(px(COLUMN_WIDTH)).child(row))
+        .into_any_element()
 }
+
+/// Width of the centred conversation column: the reply text width plus room for the header,
+/// tool rows and the user's bubbles.
+const COLUMN_WIDTH: f32 = 880.;
 
 /// A user message: right-aligned, with its attachment cards above the bubble (chat.md §1.3, §1.9).
 fn user_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyElement {

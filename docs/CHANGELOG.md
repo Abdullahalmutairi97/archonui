@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5
+
+- The conversation is a centred column up to 880px wide, so on a wide window messages read down
+  the middle instead of hugging the left edge.
+
 ## 0.2.4
 
 - Replies are easier to read. Paragraphs, lists, tables and code have 14px between them, and a
