@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Appearance is compact. Themes are small thumbnails six to a row. Background has a Style segmented control
+  (Canvas, Glass, Solid, Gaps, Tinted, Ambient), a row of 64×40 image tiles, and dim, panel blur and window
+  opacity sliders. Fonts are a pairing control, an Apply to Titles or Text control, and a wrap of font chips
+  marked T and Aa. Custom colours are collapsed behind an Edit button. Layout is unchanged, and Window holds
+  the rest of the old Effects rows. Identity sits at the bottom, with smaller icon tiles.
+- New Appearance › Background › Filter: Off, Duotone or Tritone dithers the background image or gradient into
+  a few colours. When a filter is on, Dot size (1–8 px) sets the size of each dot.
 - Gradient backgrounds are soft mesh blends: the theme's base colour with a glow of one colour from
   the top-left and another from the bottom-right, plus faint noise so they don't band. Aurora, Sunset,
   Ocean and Nebula have calm authored surfaces over their glows, Hermes a darker, less saturated navy,

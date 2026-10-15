@@ -1,14 +1,14 @@
-//! The Appearance page: identity, presets, background, colours, typography, layout and effects. Spec: settings.md §3.
+//! The Appearance page: theme, background, fonts, colours, layout, window and identity. Spec: settings.md §3.
 
 use super::{
-    colour::{hex, token_colour, HSL_CHANNELS},
-    controls::{button_row, caption, heading, section, segmented_row, toggle_row},
-    Slide,
+    colour::{token_colour, HSL_CHANNELS},
+    controls::{button_row, caption, heading, listen, section, segmented_row, toggle_row},
+    FontSlot, Slide,
 };
 use crate::{
     app::{
         persist::copy_asset,
-        settings::{theme_key, AppIcon, GAPS, PANEL_BLUR, RADIUS, TEXT_SIZE, WALLPAPER_DIM},
+        settings::{theme_key, AppIcon, BackgroundFilter, FILTER_PIXEL, GAPS, PANEL_BLUR, RADIUS, TEXT_SIZE, WALLPAPER_DIM},
     },
     ui::{
         anim,
@@ -17,7 +17,7 @@ use crate::{
         theme::{self, presets, BackgroundStyle, EDITABLE_TOKENS},
         tiling::LayoutMode,
         widgets::{
-            button::ButtonStyle,
+            button::{Button, ButtonStyle},
             section::SettingRow,
             slider::{slider, SliderRange},
             text_input::text_input,
@@ -34,7 +34,7 @@ use std::{
     sync::Arc,
 };
 
-/// The six background styles in card order, with the description each card shows.
+/// The background styles in segment order, with the description the row shows for each.
 const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
     (BackgroundStyle::Canvas, "Canvas", "Wallpaper behind chats"),
     (BackgroundStyle::Glass, "Glass", "Frosted tiles"),
@@ -44,7 +44,11 @@ const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
     (BackgroundStyle::Ambient, "Ambient", "Blurred and dark"),
 ];
 
-/// Captions over the colour cards with how many of `EDITABLE_TOKENS`, in order, each holds.
+/// The background filters in segment order.
+const FILTERS: [(BackgroundFilter, &str); 3] =
+    [(BackgroundFilter::Off, "Off"), (BackgroundFilter::Duotone, "Duotone"), (BackgroundFilter::Tritone, "Tritone")];
+
+/// Captions over the colour swatches with how many of `EDITABLE_TOKENS`, in order, each holds.
 const COLOUR_GROUPS: [(&str, usize); 4] = [("Surfaces", 4), ("Text", 4), ("Accents", 4), ("Lines and highlights", 5)];
 
 /// Image files the backgrounds folder offers.
@@ -74,16 +78,6 @@ pub(super) fn image_format(name: &str) -> ImageFormat {
     }
 }
 
-/// Sets the width-to-height ratio of a box. GPUI's `Styled` has no method for it, so this sets the style field.
-trait AspectRatio: Styled + Sized {
-    fn aspect_ratio(mut self, ratio: f32) -> Self {
-        self.style().aspect_ratio = Some(ratio);
-        self
-    }
-}
-impl<T: Styled> AspectRatio for T {}
-
-
 /// A slider range from a `(min, max)` settings bound.
 fn range(bounds: (f32, f32), step: f32) -> SliderRange {
     SliderRange { min: bounds.0, max: bounds.1, step }
@@ -95,14 +89,25 @@ fn card(id: impl Into<ElementId>, active: bool, theme: &crate::ui::theme::Theme)
         .id(id)
         .flex()
         .flex_col()
-        .gap(px(8.))
-        .p(px(8.))
-        .rounded(px(10.))
+        .gap(px(6.))
+        .p(px(6.))
+        .rounded(px(8.))
         .border_1()
         .cursor_pointer()
         .border_color(if active { theme.acc.to_hsla() } else { theme.line.to_hsla() })
         .when(active, |d| d.bg(theme.soft.to_hsla()))
         .hover(|s| s.bg(theme.line.to_hsla()))
+}
+
+/// A small tag in a font chip: `T` for Titles, `Aa` for Text.
+fn badge(text: &'static str, theme: &crate::ui::theme::Theme) -> gpui::Div {
+    div()
+        .px(px(4.))
+        .rounded(px(3.))
+        .bg(theme.line.to_hsla())
+        .text_size(px(9.5))
+        .text_color(theme.muted.to_hsla())
+        .child(text)
 }
 
 impl Shell {
@@ -152,29 +157,19 @@ impl Shell {
         Some(image)
     }
 
-    /// The image in effect for the current theme: the user's pick, else the theme's own file. `None`
-    /// when the theme's gradient shows.
-    fn current_wall(&self) -> Option<PathBuf> {
-        let s = &self.state.settings;
-        match s.wallpapers.get(theme_key(&s.theme)) {
-            Some(path) if path.is_file() => Some(path.clone()),
-            _ => Some(PathBuf::from(&self.theme.wallpaper)).filter(|p| p.is_file()),
-        }
-    }
-
     pub(super) fn appearance_page(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         vec![
-            self.identity_block(cx),
             self.presets_block(cx),
             self.background_block(cx),
-            self.colours_block(cx),
             self.typography_block(cx),
+            self.colours_block(cx),
             self.layout_block(cx),
-            self.effects_block(cx),
+            self.window_block(cx),
+            self.identity_block(cx),
         ]
     }
 
-    /// Name and icon, with a live sidebar preview.
+    /// Name and icon: the name field and a sidebar preview on the left, the icon tiles on the right.
     fn identity_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let name = self.settings.name.as_ref().map(|(input, _)| input.clone());
@@ -184,7 +179,7 @@ impl Shell {
         let current = self.state.settings.icon.clone();
         let theme_logo = self.theme.logo.clone();
 
-        let mut grid = div().grid().grid_cols(7).gap(px(8.));
+        let mut tiles = div().flex().flex_wrap().justify_end().gap(px(6.)).max_w(px(300.));
         // One tile per distinct logo; themes that share a logo share its tile.
         let mut seen = std::collections::HashSet::new();
         let logos: Vec<_> = presets().iter().filter(|p| seen.insert(p.logo.clone())).collect();
@@ -198,7 +193,8 @@ impl Shell {
             let id = preset.id.to_string();
             let tile = div()
                 .id(("icon", i))
-                .aspect_ratio(1.)
+                .w(px(36.))
+                .h(px(36.))
                 .rounded(px(8.))
                 .flex()
                 .items_center()
@@ -212,15 +208,16 @@ impl Shell {
                     this.save(cx);
                 }))
                 .when_some(logo_image, |d, src| {
-                    d.child(img(src).w(gpui::relative(0.58)).h(gpui::relative(0.58)).object_fit(ObjectFit::Contain))
+                    d.child(img(src).w(gpui::relative(0.6)).h(gpui::relative(0.6)).object_fit(ObjectFit::Contain))
                 });
-            grid = grid.child(tile);
+            tiles = tiles.child(tile);
         }
         if let AppIcon::Custom(_) = &current {
             if let Some(src) = logo.clone() {
-                grid = grid.child(
+                tiles = tiles.child(
                     div()
-                        .aspect_ratio(1.)
+                        .w(px(36.))
+                        .h(px(36.))
                         .rounded(px(8.))
                         .flex()
                         .items_center()
@@ -228,14 +225,15 @@ impl Shell {
                         .bg(theme.soft.to_hsla())
                         .border_2()
                         .border_color(theme.acc.to_hsla())
-                        .child(img(src).w(gpui::relative(0.58)).h(gpui::relative(0.58)).object_fit(ObjectFit::Contain)),
+                        .child(img(src).w(gpui::relative(0.6)).h(gpui::relative(0.6)).object_fit(ObjectFit::Contain)),
                 );
             }
         }
-        grid = grid.child(
+        tiles = tiles.child(
             div()
                 .id("icon-upload")
-                .aspect_ratio(1.)
+                .w(px(36.))
+                .h(px(36.))
                 .rounded(px(8.))
                 .border_1()
                 .border_dashed()
@@ -243,7 +241,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(20.))
+                .text_size(px(18.))
                 .text_color(theme.muted.to_hsla())
                 .cursor_pointer()
                 .hover(|s| s.text_color(theme.fg.to_hsla()))
@@ -251,64 +249,63 @@ impl Shell {
                 .child("+"),
         );
 
-        let left = card_plain(&theme)
+        let left = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
             .child(caption("Name", &theme))
             .when_some(name, |d, input| {
-                d.child(div().px(px(12.)).py(px(8.)).rounded(px(8.)).bg(theme.line.to_hsla()).child(text_input(&input, &theme).family(theme.display_font.clone())))
+                d.child(
+                    div()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .rounded(px(8.))
+                        .bg(theme.line.to_hsla())
+                        .child(text_input(&input, &theme).family(theme.display_font.clone())),
+                )
             })
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(12.))
-                    .py(px(10.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_dashed()
-                    .border_color(theme.line2.to_hsla())
-                    .when_some(self.icon_logo(), |d, logo| {
-                        d.child(img(logo).w(px(22.)).h(px(22.)).object_fit(ObjectFit::Contain))
-                    })
-                    .child(div().font_family(theme.display_font.clone()).text_size(px(22.)).child(app_name))
-                    .child(div().flex_1())
-                    .child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child("Sidebar preview")),
+                    .gap(px(8.))
+                    .pt(px(4.))
+                    .when_some(logo, |d, logo| d.child(img(logo).w(px(18.)).h(px(18.)).object_fit(ObjectFit::Contain)))
+                    .child(div().font_family(theme.display_font.clone()).text_size(px(16.)).child(app_name)),
             );
 
-        let right = card_plain(&theme)
+        let right = div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(8.))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child("Icon"))
-                    .child(
-                        div()
-                            .id("icon-reset")
-                            .px(px(10.))
-                            .py(px(5.))
-                            .rounded(px(6.))
-                            .border_1()
-                            .border_color(theme.line2.to_hsla())
-                            .text_size(px(12.))
-                            .opacity(reset_op)
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.state.settings.icon = AppIcon::Theme;
-                                this.save(cx);
-                            }))
-                            .child("Use theme icon"),
-                    ),
+                    .id("icon-reset")
+                    .px(px(10.))
+                    .py(px(4.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme.line2.to_hsla())
+                    .text_size(px(12.))
+                    .opacity(reset_op)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state.settings.icon = AppIcon::Theme;
+                        this.save(cx);
+                    }))
+                    .child("Use theme icon"),
             )
-            .child(grid);
+            .child(tiles);
 
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .pt(px(14.))
+            .gap(px(10.))
             .child(heading("IDENTITY", None, &theme))
-            .child(div().grid().grid_cols(5).gap(px(14.)).child(div().col_span(2).child(left)).child(div().col_span(3).child(right)))
+            .child(div().flex().items_start().gap(px(24.)).child(left).child(right))
             .into_any_element()
     }
 
@@ -331,47 +328,27 @@ impl Shell {
         .detach();
     }
 
-    /// The preset cards. Picking one resets its fonts and wallpaper, as the prototype does.
+    /// The theme cards, six to a row. Picking one resets its fonts and wallpaper, as the prototype does.
     fn presets_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let current = self.state.settings.theme.clone();
-        let mut grid = div().grid().grid_cols(4).gap(px(14.));
+        let mut grid = div().grid().grid_cols(6).gap(px(10.));
         for (i, preset) in presets().iter().enumerate() {
             let id = preset.id.to_string();
             let active = id == current;
             let edited = self.state.settings.custom_colours.get(theme_key(&id)).is_some_and(|t| !t.is_empty());
-            let tag = match (active, edited) {
-                (true, true) => "Active · edited",
-                (true, false) => "Active",
-                (false, true) => "Edited",
-                (false, false) => "",
-            };
             let wall = Some(Path::new(preset.wallpaper.as_ref())).filter(|p| p.is_file()).and_then(|p| self.wall_thumb(p));
             let gradient = preset.gradient;
-            let swatches = [preset.bg, preset.fg, preset.muted, preset.acc, preset.acc2, preset.alt];
             let thumb = div()
                 .relative()
-                .h(px(132.))
+                .h(px(46.))
                 .rounded(px(6.))
                 .overflow_hidden()
                 .bg(preset.bg.to_hsla())
                 .child(match wall {
                     Some(wall) => img(wall).absolute().size_full().object_fit(ObjectFit::Cover).into_any_element(),
                     None => gradient_thumb(gradient).absolute().into_any_element(),
-                })
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(8.))
-                        .right(px(8.))
-                        .bottom(px(8.))
-                        .flex()
-                        .gap(px(4.))
-                        .p(px(5.))
-                        .rounded(px(6.))
-                        .bg(gpui::hsla(0., 0., 0., 0.5))
-                        .children(swatches.map(|c| div().flex_1().h(px(10.)).rounded(px(3.)).bg(c.to_hsla()))),
-                );
+                });
             grid = grid.child(
                 card(("preset", i), active, &theme)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -387,113 +364,105 @@ impl Shell {
                         div()
                             .flex()
                             .items_center()
-                            .justify_between()
-                            .gap(px(8.))
+                            .gap(px(6.))
+                            .min_w_0()
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .font_family(preset.pairings[0].display)
-                                    .text_size(px(19.))
+                                    .text_size(px(12.))
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .whitespace_nowrap()
                                     .child(preset.name.to_string()),
                             )
-                            .child(div().flex_none().text_size(px(11.)).text_color(theme.acc2.to_hsla()).child(tag)),
+                            .when(edited, |d| d.child(div().flex_none().w(px(6.)).h(px(6.)).rounded_full().bg(theme.acc2.to_hsla()))),
                     ),
             );
         }
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .child(heading("PRESETS", Some("Picking a preset also resets fonts and wallpaper."), &theme))
+            .gap(px(10.))
+            .child(heading("THEME", Some("Picking a theme also resets fonts and wallpaper."), &theme))
             .child(grid)
             .into_any_element()
     }
 
-    /// Six background styles with a live preview, then the wallpaper picker.
+    /// The background style, the image, the filter, then the dim, blur and window opacity sliders.
     fn background_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
+        let weak = cx.entity().downgrade();
         let current = self.state.settings.background;
-        let wall = self.current_wall().and_then(|p| self.wall_thumb(&p));
-        let gradient = self.theme.gradient;
-        let mut styles = div().grid().grid_cols(6).gap(px(10.));
-        for (i, (style, name, desc)) in BACKGROUNDS.iter().copied().enumerate() {
-            let active = style == current;
-            let (wall_alpha, side_alpha, tile_alpha) = match style {
-                BackgroundStyle::Canvas => (1.0, 0.72, 0.6),
-                BackgroundStyle::Glass => (1.0, 0.60, 0.55),
-                BackgroundStyle::Solid => (0.0, 1.0, 1.0),
-                BackgroundStyle::Gaps => (1.0, 0.96, 1.0),
-                BackgroundStyle::Tinted => (0.5, 0.55, 0.35),
-                BackgroundStyle::Ambient => (0.55, 0.50, 0.45),
-            };
-            let mut preview = div().relative().h(px(74.)).rounded(px(6.)).overflow_hidden().bg(theme.bg.to_hsla());
-            if wall_alpha > 0. {
-                preview = preview.child(match wall.clone() {
-                    Some(wall) => img(wall).absolute().inset_0().size_full().object_fit(ObjectFit::Cover).opacity(wall_alpha).into_any_element(),
-                    None => gradient_thumb(gradient).absolute().inset_0().opacity(wall_alpha).into_any_element(),
-                });
-            }
-            preview = preview
-                .child(div().absolute().left_0().top_0().bottom_0().w(gpui::relative(0.18)).bg(theme.panel.alpha(side_alpha).to_hsla()))
-                .child(
-                    div()
-                        .absolute()
-                        .left(gpui::relative(0.24))
-                        .top(px(8.))
-                        .bottom(px(8.))
-                        .w(gpui::relative(0.34))
-                        .rounded(px(3.))
-                        .bg(theme.tile.alpha(tile_alpha).to_hsla()),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(gpui::relative(0.62))
-                        .top(px(8.))
-                        .bottom(px(8.))
-                        .right(px(8.))
-                        .rounded(px(3.))
-                        .bg(theme.tile.alpha(tile_alpha).to_hsla()),
-                );
-            styles = styles.child(
-                card(("bg-style", i), active, &theme)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.state.settings.background = style;
-                        this.refresh_theme(cx);
-                    }))
-                    .child(preview)
-                    .child(div().text_size(px(13.)).child(name))
-                    .child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child(desc)),
-            );
-        }
+        let style_index = BACKGROUNDS.iter().position(|(s, _, _)| *s == current).unwrap_or(0);
+        let style_names: Vec<&str> = BACKGROUNDS.iter().map(|(_, name, _)| *name).collect();
+        let filter = self.state.settings.filter;
+        let filter_index = FILTERS.iter().position(|(f, _)| *f == filter).unwrap_or(0);
+        let filter_names: Vec<&str> = FILTERS.iter().map(|(_, name)| *name).collect();
+        let pixel = self.state.settings.filter_pixel;
+        let dim = self.state.settings.wallpaper_dim;
+        let blur = self.state.settings.panel_blur;
+        let opacity = self.state.settings.window_opacity;
 
-        let walls = self.wallpaper_grid(cx);
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(12.))
-            .child(heading("BACKGROUND", None, &theme))
-            .child(styles)
-            .child(caption(&format!("Wallpaper · your images live in {}", self.backgrounds_dir().display()), &theme))
-            .child(walls)
-            .into_any_element()
+        let style_row = segmented_row(
+            "bg-style",
+            "Style",
+            BACKGROUNDS[style_index].2,
+            &style_names,
+            style_index,
+            &weak,
+            &theme,
+            |this, i, cx| {
+                this.state.settings.background = BACKGROUNDS[i].0;
+                this.refresh_theme(cx);
+            },
+            None,
+        );
+        let images = self.wallpaper_grid(cx);
+        let image_row = SettingRow::new("Image", "Uploads are kept in the backgrounds folder.", &theme).control(images);
+        let filter_row = segmented_row(
+            "bg-filter",
+            "Filter",
+            "Dithers the background into a few colours.",
+            &filter_names,
+            filter_index,
+            &weak,
+            &theme,
+            |this, i, cx| {
+                this.state.settings.filter = FILTERS[i].0;
+                this.refresh_theme(cx);
+            },
+            None,
+        );
+
+        let mut rows = vec![style_row, image_row, filter_row];
+        if filter != BackgroundFilter::Off {
+            let pixel_slider = self.slide(Slide::FilterPixel, pixel, range(FILTER_PIXEL, 1.), "px", cx);
+            rows.push(SettingRow::new("Dot size", "Size of each dot in the filter.", &theme).control(pixel_slider));
+        }
+        let dim_slider = self.slide(Slide::Dim, dim, range(WALLPAPER_DIM, 5.), "%", cx);
+        let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
+        let opacity_slider = self.slide(Slide::Opacity, opacity, range(crate::app::settings::WINDOW_OPACITY, 5.), "%", cx);
+        rows.push(SettingRow::new("Wallpaper dim", "", &theme).control(dim_slider));
+        rows.push(SettingRow::new("Panel blur", "Blur behind the sidebars and glass tiles.", &theme).control(blur_slider));
+        rows.push(
+            SettingRow::new("Window opacity", "Below 100% the desktop shows through. Text stays solid.", &theme).control(opacity_slider),
+        );
+        section("BACKGROUND", rows, &theme)
     }
 
-    /// The wallpaper grid: the theme's own background, every image in the backgrounds folder, and an
+    /// The image tiles: the theme's own background, every image in the backgrounds folder, and an
     /// upload tile.
     fn wallpaper_grid(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let picked = self.state.settings.wallpapers.get(theme_key(&self.state.settings.theme)).filter(|p| p.is_file()).cloned();
-        let mut grid = div().grid().grid_cols(7).gap(px(10.));
+        let mut grid = div().flex().flex_wrap().justify_end().gap(px(6.)).max_w(px(420.));
         let cell = |id: ElementId, active: bool| {
             div()
                 .id(id)
                 .relative()
-                .h(px(80.))
+                .w(px(64.))
+                .h(px(40.))
                 .rounded(px(6.))
                 .overflow_hidden()
                 .cursor_pointer()
@@ -516,12 +485,12 @@ impl Shell {
                 .child(
                     div()
                         .absolute()
-                        .left(px(6.))
-                        .bottom(px(5.))
-                        .px(px(6.))
-                        .rounded(px(4.))
+                        .left(px(4.))
+                        .bottom(px(3.))
+                        .px(px(4.))
+                        .rounded(px(3.))
                         .bg(gpui::hsla(0., 0., 0., 0.55))
-                        .text_size(px(10.5))
+                        .text_size(px(9.))
                         .text_color(gpui::white())
                         .child("Theme"),
                 ),
@@ -542,7 +511,8 @@ impl Shell {
         grid = grid.child(
             div()
                 .id("wall-upload")
-                .h(px(80.))
+                .w(px(64.))
+                .h(px(40.))
                 .rounded(px(6.))
                 .border_1()
                 .border_dashed()
@@ -550,7 +520,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(12.))
+                .text_size(px(10.5))
                 .text_color(theme.muted.to_hsla())
                 .cursor_pointer()
                 .hover(|s| s.text_color(theme.fg.to_hsla()))
@@ -581,17 +551,138 @@ impl Shell {
         .detach();
     }
 
-    /// The twelve token overrides for the current theme. A cell opens the hex editor under the grid.
+    /// The theme's pairings as a segmented control, the Titles or Text slot, then a chip per font.
+    fn typography_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme.clone();
+        let weak = cx.entity().downgrade();
+        let key = theme_key(&self.state.settings.theme);
+        let choice = self.state.settings.fonts.get(key).cloned().unwrap_or_default();
+        let preset = theme::preset(&self.state.settings.theme);
+        let custom = choice.display.is_some() || choice.ui.is_some();
+        let pairing = preset.pairings[choice.pairing % 3];
+        let pairing_names: Vec<&str> = preset.pairings.iter().map(|p| p.label).collect();
+        // A custom font clears the pairing highlight, as the pairing cards did.
+        let pairing_index = if custom { pairing_names.len() } else { choice.pairing % 3 };
+        let slot = self.settings.font_slot;
+        let slot_index = usize::from(slot == FontSlot::Text);
+
+        let pairing_row = segmented_row(
+            "font-pairing",
+            "Pairing",
+            "Sets the Titles and Text fonts together.",
+            &pairing_names,
+            pairing_index,
+            &weak,
+            &theme,
+            |this, i, cx| {
+                let key = theme_key(&this.state.settings.theme).to_string();
+                this.state.settings.fonts.insert(key, FontChoice { pairing: i, display: None, ui: None });
+                this.refresh_theme(cx);
+            },
+            None,
+        );
+        let slot_row = segmented_row(
+            "font-slot",
+            "Apply to",
+            "Choose a font below for the titles, or for the chat and message text.",
+            &["Titles", "Text"],
+            slot_index,
+            &weak,
+            &theme,
+            |this, i, cx| {
+                this.settings.font_slot = if i == 1 { FontSlot::Text } else { FontSlot::Titles };
+                cx.notify();
+            },
+            None,
+        );
+
+        let titles = choice.display.clone().unwrap_or_else(|| pairing.display.to_string());
+        let text = choice.ui.clone().unwrap_or_else(|| pairing.ui.to_string());
+        let mut chips = div().flex().flex_wrap().gap(px(6.));
+        for (i, (label, family)) in fonts::all_fonts().into_iter().enumerate() {
+            let (is_titles, is_text) = (titles == family, text == family);
+            let editing = match slot {
+                FontSlot::Titles => is_titles,
+                FontSlot::Text => is_text,
+            };
+            let mut chip = div()
+                .id(("font", i))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(if editing { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.line.to_hsla()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let key = theme_key(&this.state.settings.theme).to_string();
+                    let entry = this.state.settings.fonts.entry(key).or_default();
+                    match slot {
+                        FontSlot::Titles => entry.display = Some(family.to_string()),
+                        FontSlot::Text => entry.ui = Some(family.to_string()),
+                    }
+                    this.refresh_theme(cx);
+                }))
+                .child(div().text_size(px(13.)).font_family(family).child(label));
+            if is_titles {
+                chip = chip.child(badge("T", &theme));
+            }
+            if is_text {
+                chip = chip.child(badge("Aa", &theme));
+            }
+            chips = chips.child(chip);
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(section("FONTS", vec![pairing_row, slot_row], &theme))
+            .child(caption(&format!("Titles: {titles} · Text (chat and message box): {text}"), &theme))
+            .child(chips)
+            .into_any_element()
+    }
+
+    /// The custom colour toggle. When open, every token is a compact swatch, and a click opens its editor.
     fn colours_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let key = theme_key(&self.state.settings.theme);
         let overrides = self.state.settings.custom_colours.get(key).cloned().unwrap_or_default();
         let has_overrides = !overrides.is_empty();
-        let reset_op = if has_overrides { 1.0 } else { 0.4 };
-        let name = theme::preset(&self.state.settings.theme).name.to_uppercase();
+        let expanded = self.settings.colours_open;
+
+        let mut actions = div().flex().items_center().gap(px(8.));
+        if has_overrides {
+            actions = actions.child(Button::new("colours-reset", "Reset", &theme).style(ButtonStyle::Outline).on_click(listen(
+                cx,
+                |this, cx| {
+                    let key = theme_key(&this.state.settings.theme);
+                    this.state.settings.custom_colours.remove(key);
+                    this.settings.picker = None;
+                    this.refresh_theme(cx);
+                },
+            )));
+        }
+        let toggle_label = if expanded { "Hide" } else { "Edit" };
+        actions = actions.child(Button::new("colours-edit", toggle_label, &theme).style(ButtonStyle::Outline).on_click(listen(
+            cx,
+            |this, cx| {
+                this.settings.colours_open = !this.settings.colours_open;
+                this.settings.picker = None;
+                cx.notify();
+            },
+        )));
+        let row = SettingRow::new("Custom colours", "Fine-tune this theme's colours.", &theme).control(actions);
+        let mut out = div().flex().flex_col().gap(px(10.)).child(section("COLOURS", vec![row], &theme));
+        if !expanded {
+            return out.into_any_element();
+        }
 
         let mut groups: Vec<(&str, gpui::Div)> =
-            COLOUR_GROUPS.iter().map(|(name, _)| (*name, div().grid().grid_cols(4).gap(px(10.)))).collect();
+            COLOUR_GROUPS.iter().map(|(name, _)| (*name, div().flex().flex_wrap().gap(px(6.)))).collect();
         for (n, (token, label)) in EDITABLE_TOKENS.iter().copied().enumerate() {
             let Some(colour) = token_colour(&theme, token) else { continue };
             let edited = overrides.contains_key(token);
@@ -602,34 +693,21 @@ impl Shell {
             *grid = std::mem::replace(grid, div()).child(
                 div()
                     .id(SharedString::from(format!("colour-{token}")))
-                    .relative()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .p(px(10.))
-                    .rounded(px(9.))
+                    .gap(px(6.))
+                    .pl(px(6.))
+                    .pr(px(10.))
+                    .py(px(4.))
+                    .rounded(px(6.))
                     .border_1()
                     .border_color(if open { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.line.to_hsla()))
                     .on_click(cx.listener(move |this, _, window, cx| this.open_picker(static_token, window, cx)))
-                    .child(
-                        div()
-                            .w(px(34.))
-                            .h(px(34.))
-                            .rounded(px(7.))
-                            .bg(colour.to_hsla())
-                            .border_1()
-                            .border_color(theme.line2.to_hsla()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(px(13.)).child(label))
-                            .child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child(hex(colour).to_uppercase())),
-                    )
-                    .when(edited, |d| d.child(div().text_size(px(10.5)).text_color(theme.acc2.to_hsla()).child("edited"))),
+                    .child(div().w(px(22.)).h(px(22.)).rounded_full().bg(colour.to_hsla()).border_1().border_color(theme.line2.to_hsla()))
+                    .child(div().text_size(px(12.)).child(label))
+                    .when(edited, |d| d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(theme.acc2.to_hsla()))),
             );
         }
 
@@ -665,118 +743,15 @@ impl Shell {
                 .children(channels)
         });
 
-        let reset = div()
-            .id("colour-reset")
-            .px(px(12.))
-            .py(px(6.))
-            .rounded(px(6.))
-            .border_1()
-            .border_color(theme.line2.to_hsla())
-            .text_size(px(12.))
-            .opacity(reset_op)
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let key = theme_key(&this.state.settings.theme);
-                this.state.settings.custom_colours.remove(key);
-                this.settings.picker = None;
-                this.refresh_theme(cx);
-            }))
-            .child("Reset to preset");
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(12.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(heading(&format!("COLORS · {name}"), None, &theme))
-                    .child(reset),
-            )
-            .children(groups.into_iter().map(|(name, grid)| div().flex().flex_col().gap(px(6.)).child(caption(name, &theme)).child(grid)))
-            .when_some(editor, |d, editor| d.child(editor))
-            .into_any_element()
-    }
-
-    /// The theme's pairings, then every font with a Titles and a Text button.
-    fn typography_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = self.theme.clone();
-        let key = theme_key(&self.state.settings.theme);
-        let choice = self.state.settings.fonts.get(key).cloned().unwrap_or_default();
-        let preset = theme::preset(&self.state.settings.theme);
-        let name_text = self.state.settings.app_name.clone();
-
-        let mut pairings = div().grid().grid_cols(3).gap(px(10.));
-        for (i, pair) in preset.pairings.iter().enumerate() {
-            let active = choice.pairing == i && choice.display.is_none() && choice.ui.is_none();
-            pairings = pairings.child(
-                card(("pairing", i), active, &theme)
-                    .p(px(14.))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let key = theme_key(&this.state.settings.theme).to_string();
-                        this.state.settings.fonts.insert(key, FontChoice { pairing: i, display: None, ui: None });
-                        this.refresh_theme(cx);
-                    }))
-                    .child(div().font_family(pair.display).text_size(px(30.)).line_height(px(30.)).child(name_text.clone()))
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(theme.muted.to_hsla())
-                            .child(format!("{} · {}", pair.label, pair.ui)),
-                    ),
-            );
-        }
-
-        let pairing = preset.pairings[choice.pairing % 3];
-        let titles = choice.display.clone().unwrap_or_else(|| pairing.display.to_string());
-        let text = choice.ui.clone().unwrap_or_else(|| pairing.ui.to_string());
-        let mut all = div().grid().grid_cols(5).gap(px(8.));
-        for (i, (label, family)) in fonts::all_fonts().into_iter().enumerate() {
-            let (is_titles, is_text) = (titles == family, text == family);
-            all = all.child(
-                card_plain(&theme)
-                    .p(px(10.))
-                    .px(px(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .when(is_titles || is_text, |d| d.border_color(theme.acc.to_hsla()))
-                    .child(div().font_family(family).text_size(px(22.)).line_height(px(26.)).child("Aa Bb"))
-                    .child(div().text_size(px(10.5)).text_color(theme.muted.to_hsla()).child(label))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(4.))
-                            .child(slot_button(("font-titles", i), "Titles", is_titles, &theme).on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    let key = theme_key(&this.state.settings.theme).to_string();
-                                    this.state.settings.fonts.entry(key).or_default().display = Some(family.to_string());
-                                    this.refresh_theme(cx);
-                                },
-                            )))
-                            .child(slot_button(("font-text", i), "Text", is_text, &theme).on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    let key = theme_key(&this.state.settings.theme).to_string();
-                                    this.state.settings.fonts.entry(key).or_default().ui = Some(family.to_string());
-                                    this.refresh_theme(cx);
-                                },
-                            ))),
-                    ),
-            );
-        }
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(12.))
-            .child(heading("TYPOGRAPHY", None, &theme))
-            .child(caption("Theme pairings", &theme))
-            .child(pairings)
-            .child(caption(&format!("All fonts · Titles: {titles} · Text (chat and message box): {text}"), &theme))
-            .child(all)
-            .into_any_element()
+        out = out.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .children(groups.into_iter().map(|(name, grid)| div().flex().flex_col().gap(px(6.)).child(caption(name, &theme)).child(grid)))
+                .when_some(editor, |d, editor| d.child(div().pt(px(8.)).child(editor))),
+        );
+        out.into_any_element()
     }
 
     /// Tiling mode, gap and radius sliders, and the reset for dragged sizes.
@@ -838,48 +813,22 @@ impl Shell {
         section("LAYOUT", rows, &theme)
     }
 
-    /// Panel blur, wallpaper dim, tint and message size.
-    fn effects_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    /// Interface and text size, borders, session highlight, tint and reduce motion.
+    fn window_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let weak = cx.entity().downgrade();
-        let blur = self.state.settings.panel_blur;
-        let dim = self.state.settings.wallpaper_dim;
         let text = self.state.settings.text_size;
         let tint = self.state.settings.tint_all;
         let ring = self.state.settings.session_ring;
         let borders = self.state.settings.borders;
         let reduce_motion = self.state.settings.reduce_motion.unwrap_or_else(anim::reduced_motion);
-        let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
-        let dim_slider = self.slide(Slide::Dim, dim, range(WALLPAPER_DIM, 5.), "%", cx);
-        let opacity = self.state.settings.window_opacity;
-        let opacity_slider = self.slide(Slide::Opacity, opacity, range(crate::app::settings::WINDOW_OPACITY, 5.), "%", cx);
         let text_slider = self.slide(Slide::Text, text, range(TEXT_SIZE, 1.), "px", cx);
         let scale = (self.state.settings.ui_scale * 100.).round();
         let scale_range = (crate::app::settings::UI_SCALE.0 * 100., crate::app::settings::UI_SCALE.1 * 100.);
         let scale_slider = self.slide(Slide::Scale, scale, range(scale_range, 5.), "%", cx);
         let rows = vec![
             SettingRow::new("Interface size", "Scales the whole window, like zooming a page.", &theme).control(scale_slider),
-            SettingRow::new("Panel blur", "Blur behind the sidebars and glass tiles.", &theme).control(blur_slider),
-            SettingRow::new("Wallpaper dim", "", &theme).control(dim_slider),
-            SettingRow::new(
-                "Window opacity",
-                "Below 100% your desktop shows through the background, sidebars and sessions. Text stays solid. With a compositor blur rule for ArchonUI, what shows through is blurred.",
-                &theme,
-            )
-            .control(opacity_slider),
-            toggle_row(
-                "tint-all",
-                "Tint all sessions",
-                "Give unfocused sessions the same solid tint as the focused one.",
-                tint,
-                &weak,
-                &theme,
-                |this, on, cx| {
-                    this.state.settings.tint_all = on;
-                    this.save(cx);
-                },
-                None,
-            ),
+            SettingRow::new("Message text size", "", &theme).control(text_slider),
             toggle_row(
                 "borders",
                 "Borders",
@@ -907,6 +856,19 @@ impl Shell {
                 None,
             ),
             toggle_row(
+                "tint-all",
+                "Tint all sessions",
+                "Give unfocused sessions the same solid tint as the focused one.",
+                tint,
+                &weak,
+                &theme,
+                |this, on, cx| {
+                    this.state.settings.tint_all = on;
+                    this.save(cx);
+                },
+                None,
+            ),
+            toggle_row(
                 "reduce-motion",
                 "Reduce motion",
                 "Collapse the sidebar and panel and reflow tiles instantly.",
@@ -920,38 +882,7 @@ impl Shell {
                 },
                 None,
             ),
-            SettingRow::new("Message text size", "", &theme).control(text_slider),
         ];
-        section("EFFECTS", rows, &theme)
+        section("WINDOW", rows, &theme)
     }
 }
-
-/// A small toggle on a font card that puts the font in one slot; filled when it is in that slot.
-fn slot_button(id: impl Into<ElementId>, label: &'static str, active: bool, theme: &crate::ui::theme::Theme) -> Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .flex_1()
-        .py(px(3.))
-        .rounded(px(5.))
-        .border_1()
-        .border_color(if active { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
-        .when(active, |d| d.bg(theme.acc.to_hsla()).text_color(theme.on.to_hsla()))
-        .text_size(px(10.5))
-        .text_center()
-        .cursor_pointer()
-        .hover(|s| s.bg(theme.line.to_hsla()))
-        .child(label)
-}
-
-/// The plain bordered card used by Identity.
-fn card_plain(theme: &crate::ui::theme::Theme) -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(12.))
-        .p(px(16.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(theme.line2.to_hsla())
-}
-
