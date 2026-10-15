@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The agent's task list reads as a compact plan in its reply: a `▸ plan` header with the count done and
+  in progress, then up to six numbered steps in the code font. ✓ green and muted when finished, ● in the
+  accent with "active" for the step in progress, ○ for waiting ones; longer lists show a window around
+  the active step and a "… N more steps" line. The streaming heading is gone.
 - Gradient backgrounds are soft mesh blends: the theme's base colour with a glow of one colour from
   the top-left and another from the bottom-right, plus faint noise so they don't band. Aurora, Sunset,
   Ocean and Nebula have calm authored surfaces over their glows, Hermes a darker, less saturated navy,

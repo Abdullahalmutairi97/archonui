@@ -108,7 +108,7 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
         .max_w(relative(0.94))
         .child(agent_header(ctx, item, streaming))
         .when(ctx.show_tools && !item.tools.is_empty(), |column| column.child(tool_group(&item.tools, theme)))
-        .when(!item.todos.is_empty(), |column| column.child(checklist(&item.todos, streaming, theme)))
+        .when(!item.todos.is_empty(), |column| column.child(checklist(&item.todos, theme)))
         .when(streaming, |column| {
             column.child(
                 div()
@@ -144,44 +144,100 @@ const PROGRESS_SCALE: f32 = 0.92;
 const ADDED: Rgba = Rgba::hex(0x3fb950);
 const REMOVED: Rgba = Rgba::hex(0xf85149);
 
-/// The agent's task checklist: the task in progress first as a heading while the reply runs, then every
-/// item with its state, finished ones struck through.
-fn checklist(todos: &[Todo], streaming: bool, theme: &Theme) -> AnyElement {
+/// The agent's task list as a compact plan: a header with the counts, then up to six rows, each with
+/// its state glyph and number. The row in progress is marked `active`; finished rows are muted.
+fn checklist(todos: &[Todo], theme: &Theme) -> AnyElement {
     let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
-    let current = todos.iter().find(|t| t.status == TodoStatus::InProgress);
-    let heading = match (streaming, current) {
-        (true, Some(t)) => format!("✻ {}…", t.active.as_deref().unwrap_or(&t.text)),
-        _ => format!("Tasks · {done} of {} done", todos.len()),
-    };
-    let rows = todos.iter().map(|t| {
-        let (mark, colour) = match t.status {
-            TodoStatus::InProgress => ("■", theme.acc2),
-            TodoStatus::Pending => ("□", theme.muted),
-            TodoStatus::Completed => ("✔", ADDED),
+    let active = todos.iter().filter(|t| t.status == TodoStatus::InProgress).count();
+    let mut counts = format!("{done}/{} complete", todos.len());
+    if active > 0 {
+        counts.push_str(&format!(" · {active} in progress"));
+    }
+    let (shown, hidden) = plan_window(todos, PLAN_ROWS);
+    let first = shown.start;
+    let rows = todos[shown].iter().enumerate().map(|(i, t)| {
+        let number = first + i + 1;
+        let (glyph, glyph_colour, text_colour) = match t.status {
+            TodoStatus::Completed => ("✓", ADDED, theme.muted),
+            TodoStatus::InProgress => ("●", theme.acc, theme.fg),
+            TodoStatus::Pending => ("○", theme.muted, theme.fg.alpha(0.75)),
         };
+        let in_progress = t.status == TodoStatus::InProgress;
         div()
             .flex()
-            .items_start()
+            .items_center()
             .gap(px(8.))
-            .child(div().w(px(12.)).flex_none().text_color(colour.to_hsla()).child(mark))
+            .child(div().w(px(12.)).flex_none().text_color(glyph_colour.to_hsla()).child(glyph))
+            .child(
+                div()
+                    .w(px(18.))
+                    .flex_none()
+                    .text_right()
+                    .text_color(theme.muted.to_hsla())
+                    .child(number.to_string()),
+            )
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .when(t.status == TodoStatus::InProgress, |d| d.font_weight(FontWeight::SEMIBOLD))
-                    .when(t.status == TodoStatus::Completed, |d| d.line_through().text_color(theme.muted.to_hsla()))
+                    .text_color(text_colour.to_hsla())
+                    .when(in_progress, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .child(t.text.clone()),
             )
+            .when(in_progress, |d| {
+                d.child(div().flex_none().pl(px(8.)).text_size(px(11.)).text_color(theme.acc.to_hsla()).child("active"))
+            })
+    });
+    let more = (hidden > 0).then(|| {
+        div()
+            .pl(px(38.))
+            .text_color(theme.muted.to_hsla())
+            .child(format!("… {hidden} more {}", if hidden == 1 { "step" } else { "steps" }))
     });
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(px(3.))
         .max_w(px(READING_WIDTH))
+        .px(px(12.))
+        .py(px(8.))
+        .rounded(px(8.))
+        .bg(theme.fg.alpha(0.04).to_hsla())
+        .font_family(theme.code_font.clone())
         .text_size(px(12.5))
-        .child(div().text_color(theme.acc2.to_hsla()).child(heading))
-        .child(div().flex().flex_col().gap(px(3.)).pl(px(10.)).border_l_2().border_color(theme.line2.to_hsla()).children(rows))
+        .line_height(relative(1.5))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().text_color(theme.acc2.to_hsla()).child("▸ plan"))
+                .child(div().text_color(theme.muted.to_hsla()).child(counts)),
+        )
+        .children(rows)
+        .children(more)
         .into_any_element()
+}
+
+/// Rows a checklist shows at most, the last of them the "… N more steps" line when items are hidden.
+const PLAN_ROWS: usize = 6;
+
+/// Which items of a plan are drawn and how many are hidden: all of them when they fit in `max` rows,
+/// otherwise a window of `max - 1` items around the first one in progress (or else the first pending
+/// one), with up to two finished items before it. Once everything is done, the last items are shown.
+fn plan_window(todos: &[Todo], max: usize) -> (Range<usize>, usize) {
+    let n = todos.len();
+    if n <= max {
+        return (0..n, 0);
+    }
+    let size = max.saturating_sub(1).max(1);
+    let focus = todos
+        .iter()
+        .position(|t| t.status == TodoStatus::InProgress)
+        .or_else(|| todos.iter().position(|t| t.status == TodoStatus::Pending))
+        .unwrap_or(n - 1);
+    let start = focus.saturating_sub(2).min(n - size);
+    (start..start + size, n - size)
 }
 
 /// The line between a reply's progress notes and its final answer.
@@ -1051,6 +1107,35 @@ mod tests {
     }
 
     #[test]
+    fn plan_window_keeps_the_active_step_in_view() {
+        fn todos(statuses: &str) -> Vec<Todo> {
+            statuses
+                .chars()
+                .map(|c| Todo {
+                    text: c.to_string(),
+                    status: match c {
+                        'x' => TodoStatus::Completed,
+                        '>' => TodoStatus::InProgress,
+                        _ => TodoStatus::Pending,
+                    },
+                    active: None,
+                })
+                .collect()
+        }
+        // Everything fits in six rows.
+        assert_eq!(plan_window(&todos("xx>..."), 6), (0..6, 0));
+        // Seven steps: five rows and one hidden, the active step with two finished before it.
+        assert_eq!(plan_window(&todos("x>......"), 6), (0..5, 3));
+        assert_eq!(plan_window(&todos("xxx>...."), 6), (1..6, 3));
+        // Near the end the window stays full.
+        assert_eq!(plan_window(&todos("xxxxxxxxx>"), 6), (5..10, 5));
+        // No active step: start at the first pending one.
+        assert_eq!(plan_window(&todos("xxxx.....xx"), 6), (2..7, 6));
+        // All done: the last items.
+        assert_eq!(plan_window(&todos("xxxxxxxxxxxx"), 6), (7..12, 7));
+    }
+
+    #[test]
     fn rtl_follows_the_first_letter() {
         assert!(starts_rtl("مرحبا، كيف حالك؟ Hello"));
         assert!(starts_rtl("123 — شالوم"));
@@ -1059,7 +1144,8 @@ mod tests {
         assert!(!starts_rtl(""));
     }
 
-    use super::{code_bg, diff_counts, duration, starts_rtl, tokens, usage_parts};
+    use super::{code_bg, diff_counts, duration, plan_window, starts_rtl, tokens, usage_parts};
+    use crate::store::{Todo, TodoStatus};
     use crate::store::Usage;
     use crate::ui::{
         fonts::FontChoice,
