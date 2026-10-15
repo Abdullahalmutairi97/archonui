@@ -142,6 +142,21 @@ impl Shell {
             return div().into_any_element();
         }
         let input = self.composer_input(session, window, cx);
+        // Screenshots: `ARCHONUI_OPEN=popover:context` (or `model`, `attach`) opens that popover once.
+        static DEV_POPOVER: std::sync::Once = std::sync::Once::new();
+        if focused {
+            DEV_POPOVER.call_once(|| {
+                let pop = match std::env::var("ARCHONUI_OPEN").ok().as_deref() {
+                    Some("popover:context") => Some(Pop::Context),
+                    Some("popover:model") => Some(Pop::Model),
+                    Some("popover:attach") => Some(Pop::Attach),
+                    _ => None,
+                };
+                if pop.is_some() {
+                    self.composers.set_pop(session, pop);
+                }
+            });
+        }
         let Some(s) = self.state.session(session) else { return div().into_any_element() };
         let theme = &self.theme;
         let draft = input.read(cx).text();
