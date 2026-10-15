@@ -84,6 +84,10 @@ pub enum ThemeId {
     Hunter,
     Shards,
     Vale,
+    Codex,
+    ClaudeCode,
+    Gemini,
+    Hermes,
 }
 
 impl ThemeId {
@@ -139,8 +143,9 @@ pub struct Preset {
     pub pairings: [FontPair; 3],
 }
 
-/// The 12 presets in the prototype's `NAMES` order (L883–896).
-pub const PRESETS: [Preset; 12] = [
+/// The 12 presets in the prototype's `NAMES` order (L883–896), then four look-alikes of other
+/// agent apps.
+pub const PRESETS: [Preset; 16] = [
     Preset {
         id: ThemeId::ArchonUI,
         bg: Rgba::hex(0x050505),
@@ -412,6 +417,95 @@ pub const PRESETS: [Preset; 12] = [
             FontPair { label: "Metamorphous", display: "Metamorphous", ui: "JetBrains Mono" },
             FontPair { label: "Young Serif", display: "Young Serif", ui: "DM Mono" },
             FontPair { label: "Philosopher", display: "Philosopher", ui: "Fira Code" },
+        ],
+    },
+    // Look-alikes of other agent apps, built from the bundled wallpapers, logos and fonts.
+    Preset {
+        id: ThemeId::Codex,
+        bg: Rgba::hex(0x111111),
+        fg: Rgba::hex(0xececec),
+        muted: Rgba::hex(0x9b9b9b),
+        faint: Rgba::hex(0x3d3d3d),
+        acc: Rgba::hex(0x339cff),
+        acc2: Rgba::hex(0x9fd0ff),
+        deep: Rgba::hex(0x0b3a66),
+        alt: Rgba::hex(0xb4b4b4),
+        on: Rgba::hex(0xffffff),
+        soft: Rgba::new(51, 156, 255, 0.18),
+        tune: None,
+        wallpaper: "fhd/archonui4.jpg",
+        logo: "logo-portal.png",
+        render: Render::Auto,
+        pairings: [
+            FontPair { label: "Geist", display: "Geist", ui: "Geist" },
+            FontPair { label: "IBM Plex", display: "IBM Plex Sans", ui: "IBM Plex Mono" },
+            FontPair { label: "Manrope", display: "Manrope", ui: "JetBrains Mono" },
+        ],
+    },
+    Preset {
+        id: ThemeId::ClaudeCode,
+        bg: Rgba::hex(0x262624),
+        fg: Rgba::hex(0xf5f4ed),
+        muted: Rgba::hex(0xa6a39a),
+        faint: Rgba::hex(0x4a4843),
+        acc: Rgba::hex(0xd97757),
+        acc2: Rgba::hex(0xf0b49c),
+        deep: Rgba::hex(0x7a3a24),
+        alt: Rgba::hex(0xc2c0b6),
+        on: Rgba::hex(0x1f1e1d),
+        soft: Rgba::new(217, 119, 87, 0.20),
+        tune: None,
+        wallpaper: "fhd/citadel2.jpg",
+        logo: "logo-sand.png",
+        render: Render::Auto,
+        pairings: [
+            FontPair { label: "Young Serif", display: "Young Serif", ui: "Geist" },
+            FontPair { label: "Cormorant", display: "Cormorant Garamond", ui: "IBM Plex Sans" },
+            FontPair { label: "Terminal", display: "Young Serif", ui: "JetBrains Mono" },
+        ],
+    },
+    Preset {
+        id: ThemeId::Gemini,
+        bg: Rgba::hex(0x131314),
+        fg: Rgba::hex(0xe3e3e3),
+        muted: Rgba::hex(0xa8abaf),
+        faint: Rgba::hex(0x3c4043),
+        acc: Rgba::hex(0x8ab4f8),
+        acc2: Rgba::hex(0xc58af9),
+        deep: Rgba::hex(0x1f3b6e),
+        alt: Rgba::hex(0xd96570),
+        on: Rgba::hex(0x131314),
+        soft: Rgba::new(138, 180, 248, 0.18),
+        tune: None,
+        wallpaper: "fhd/shards2.jpg",
+        logo: "logo-galaxy.png",
+        render: Render::Auto,
+        pairings: [
+            FontPair { label: "DM Sans", display: "DM Sans", ui: "DM Sans" },
+            FontPair { label: "Manrope", display: "Manrope", ui: "Manrope" },
+            FontPair { label: "Grotesk", display: "Space Grotesk", ui: "Space Mono" },
+        ],
+    },
+    Preset {
+        id: ThemeId::Hermes,
+        bg: Rgba::hex(0x0b1530),
+        fg: Rgba::hex(0xf2e6c9),
+        muted: Rgba::hex(0xb7ae94),
+        faint: Rgba::hex(0x34405e),
+        acc: Rgba::hex(0x5b8cff),
+        acc2: Rgba::hex(0xf2e6c9),
+        deep: Rgba::hex(0x1c2f6b),
+        alt: Rgba::hex(0xdd8e35),
+        on: Rgba::hex(0x0b1530),
+        soft: Rgba::new(91, 140, 255, 0.20),
+        tune: None,
+        wallpaper: "fhd/moonlight2.jpg",
+        logo: "logo-helm.png",
+        render: Render::Auto,
+        pairings: [
+            FontPair { label: "Grotesk", display: "Space Grotesk", ui: "IBM Plex Mono" },
+            FontPair { label: "Cinzel", display: "Cinzel", ui: "JetBrains Mono" },
+            FontPair { label: "Pixelify", display: "Pixelify Sans", ui: "Space Mono" },
         ],
     },
 ];
@@ -896,7 +990,9 @@ mod tests {
     fn presets_match_themes_json() {
         let spec: serde_json::Value = serde_json::from_str(THEMES_JSON).unwrap();
         let themes = spec["themes"].as_array().unwrap();
-        for preset in &PRESETS {
+        // themes.json holds the prototype's twelve; the look-alike presets after them are not in it.
+        assert!(themes.len() >= 12);
+        for preset in &PRESETS[..12] {
             let expected = themes.iter().find(|t| t["order"].as_u64() == Some(preset.id as u64));
             let expected = expected.unwrap();
             let t = resolve(preset, &HashMap::new(), FontChoice::default());

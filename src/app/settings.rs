@@ -303,6 +303,10 @@ pub fn theme_key(theme: ThemeId) -> &'static str {
         ThemeId::Hunter => "hunter",
         ThemeId::Shards => "shards",
         ThemeId::Vale => "vale",
+        ThemeId::Codex => "codex",
+        ThemeId::ClaudeCode => "claude-code",
+        ThemeId::Gemini => "gemini",
+        ThemeId::Hermes => "hermes",
     }
 }
 

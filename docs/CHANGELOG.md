@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Four new presets that look like other agent apps: Codex (near-black and grey, blue accent, Geist),
+  Claude Code (warm charcoal and cream, terracotta accent, Young Serif titles), Gemini (Google's dark
+  grey, blue to violet accents, DM Sans) and Hermes (the Desktop app's Nous look: dark blue, cream text,
+  blue and cream accents, Nous orange). They reuse bundled wallpapers, logos and fonts; the wallpaper
+  and icon pickers still list each file once.
 - Appearance › Typography: the Minimal, Display font and Interface font sections are one All fonts
   list, each family once. Each font card has a Titles button (the display font) and a Text button
   (the interface font, also used by the chat and the message box). The theme pairings stay above it.

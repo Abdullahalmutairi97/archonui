@@ -43,6 +43,9 @@ const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
 ];
 
 /// The minimal font pairs' labels, in the order the Typography page shows them.
+/// The presets with their own wallpaper and logo; the rest reuse theirs.
+const ORIGINAL_PRESETS: &[crate::ui::theme::Preset] = PRESETS.split_at(12).0;
+
 /// Captions over the colour cards with how many of `EDITABLE_TOKENS`, in order, each holds.
 const COLOUR_GROUPS: [(&str, usize); 4] = [("Surfaces", 4), ("Text", 4), ("Accents", 4), ("Lines and highlights", 5)];
 
@@ -89,6 +92,10 @@ fn theme_name(id: ThemeId) -> &'static str {
         ThemeId::Hunter => "Hunter",
         ThemeId::Shards => "Shards",
         ThemeId::Vale => "Vale",
+        ThemeId::Codex => "Codex",
+        ThemeId::ClaudeCode => "Claude Code",
+        ThemeId::Gemini => "Gemini",
+        ThemeId::Hermes => "Hermes",
     }
 }
 
@@ -162,10 +169,12 @@ impl Shell {
         let theme_choice = self.state.settings.theme;
 
         let mut grid = div().grid().grid_cols(7).gap(px(8.));
-        for preset in PRESETS.iter() {
+        // The look-alike presets reuse the first twelve's logos, so only those twelve are offered; the
+        // one showing a look-alike's logo is marked when that look-alike is chosen.
+        for preset in ORIGINAL_PRESETS.iter() {
             let active = match &current {
-                AppIcon::Preset(id) => *id == preset.id,
-                AppIcon::Theme => preset.id == theme_choice,
+                AppIcon::Preset(id) => id.preset().logo == preset.logo,
+                AppIcon::Theme => theme_choice.preset().logo == preset.logo,
                 AppIcon::Custom(_) => false,
             };
             let logo_image = self.logo_image(preset.logo);
@@ -305,7 +314,7 @@ impl Shell {
         .detach();
     }
 
-    /// The twelve preset cards. Picking one resets its fonts and wallpaper, as the prototype does.
+    /// The preset cards. Picking one resets its fonts and wallpaper, as the prototype does.
     fn presets_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let current = self.state.settings.theme;
@@ -454,7 +463,7 @@ impl Shell {
         let theme = self.theme.clone();
         let current = self.current_wall();
         let mut grid = div().grid().grid_cols(7).gap(px(10.));
-        let mut names: Vec<(String, Option<PathBuf>)> = PRESETS
+        let mut names: Vec<(String, Option<PathBuf>)> = ORIGINAL_PRESETS
             .iter()
             .map(|p| (wall_name(p.wallpaper).to_string(), None))
             .collect();
