@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Appearance › Typography: the Minimal, Display font and Interface font sections are one All fonts
+  list, each family once. Each font card has a Titles button (the display font) and a Text button
+  (the interface font, also used by the chat and the message box). The theme pairings stay above it.
+- The chat and the message box share one font. Without a Text pick, a monospace theme font is
+  replaced there by Geist; with one, the picked font is used as is.
+- Appearance › Colors: the twelve colour cards are grouped under Surfaces, Text and Accents.
+
 ## 0.2.5
 
 - The conversation is a centred column up to 880px wide, so on a wide window messages read down

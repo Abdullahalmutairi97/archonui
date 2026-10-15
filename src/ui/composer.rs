@@ -220,7 +220,7 @@ impl Shell {
             .px(px(6.))
             .py(px(5.))
             .child(attach_slot)
-            .child(div().flex_1().min_w_0().child(text_input(&input, theme)))
+            .child(div().flex_1().min_w_0().child(text_input(&input, theme).family(theme.chat_font.clone())))
             .child(div().flex_none().max_w(gpui::relative(0.45)).min_w_0().child(self.render_model_trigger(s, pop == Some(Pop::Model), cx)))
             .child(send);
 

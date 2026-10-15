@@ -228,7 +228,7 @@ impl StreamUi {
             .size_full()
             .flex()
             .flex_col()
-            .font_family(env.theme.ui_font.clone())
+            .font_family(env.theme.chat_font.clone())
             .text_size(px(env.text_size))
             .text_color(env.theme.fg.to_hsla())
             .child(body)

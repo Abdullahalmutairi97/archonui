@@ -119,9 +119,7 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
         })
         .when(!item.blocks.is_empty(), |column| {
             column.child(
-                block_column(ctx, ix, "", &item.blocks)
-                    .max_w(px(READING_WIDTH))
-                    .font_family(crate::ui::fonts::reading_font(&theme.ui_font)),
+                block_column(ctx, ix, "", &item.blocks).max_w(px(READING_WIDTH)),
             )
         })
         .into_any_element()

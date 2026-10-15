@@ -464,6 +464,9 @@ pub struct Theme {
     pub bands: [Rgba; 6],
     pub display_font: String,
     pub ui_font: String,
+    /// The chat and the message box: the Text font the user picked, or a proportional stand-in when
+    /// the theme's own interface font is monospace (see `fonts::reading_font`).
+    pub chat_font: String,
     pub code_font: String,
     /// Path under `design/assets/`.
     pub wallpaper: &'static str,
@@ -576,6 +579,7 @@ pub fn resolve(
 
     // Stage 5: fonts. Wallpaper and logo come from the preset.
     let (display_font, ui_font, code_font) = fonts::resolve_fonts(&preset.pairings, &font_choice);
+    let chat_font = if font_choice.ui.is_some() { ui_font.clone() } else { fonts::reading_font(&ui_font) };
 
     Theme {
         id: preset.id,
@@ -598,6 +602,7 @@ pub fn resolve(
         bands: std::array::from_fn(|i| mix(t0.acc, t0.acc2, i as f64 * 0.07)),
         display_font,
         ui_font,
+        chat_font,
         code_font,
         wallpaper: preset.wallpaper,
         logo: preset.logo,

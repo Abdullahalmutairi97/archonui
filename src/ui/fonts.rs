@@ -411,6 +411,18 @@ pub const INTERFACE_FONTS: [&str; 12] = [
     "Space Grotesk",
 ];
 
+/// Every bundled family the Fonts list offers, as `(card name, family)`: the display faces, then the
+/// interface faces that are not already among them.
+pub fn all_fonts() -> Vec<(&'static str, &'static str)> {
+    let mut out: Vec<(&str, &str)> = DISPLAY_FONTS.to_vec();
+    for family in INTERFACE_FONTS {
+        if !out.iter().any(|(_, f)| *f == family) {
+            out.push((family, family));
+        }
+    }
+    out
+}
+
 /// The code family when the UI family is not monospace.
 const GEIST_MONO: &str = "Geist Mono";
 
@@ -493,6 +505,16 @@ mod tests {
         for family in families {
             assert!(FONTS.iter().any(|(f, _, _, _)| *f == family), "{family} is not embedded");
         }
+    }
+
+    #[test]
+    fn all_fonts_lists_each_family_once() {
+        let all = all_fonts();
+        let mut families: Vec<_> = all.iter().map(|(_, f)| *f).collect();
+        families.sort();
+        families.dedup();
+        assert_eq!(families.len(), all.len());
+        assert!(families.contains(&"JetBrains Mono") && families.contains(&"Cinzel"));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::{
     },
     ui::{
         anim,
-        fonts::{FontChoice, DISPLAY_FONTS, INTERFACE_FONTS, MINIMAL_PAIRS},
+        fonts::{self, FontChoice},
         glass::wallpaper_bytes,
         shell::Shell,
         theme::{BackgroundStyle, ThemeId, EDITABLE_TOKENS, PRESETS},
@@ -43,7 +43,8 @@ const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
 ];
 
 /// The minimal font pairs' labels, in the order the Typography page shows them.
-const MINIMAL_LABELS: [&str; 6] = ["Geist · Geist", "IBM Plex · IBM Plex Sans", "DM Sans · DM Sans", "Instrument · Geist Mono", "Manrope · JetBrains Mono", "Grotesk · Space Mono"];
+/// Captions over the colour cards, one per row of four in `EDITABLE_TOKENS`.
+const COLOUR_GROUPS: [&str; 3] = ["Surfaces", "Text", "Accents"];
 
 /// The file name a theme wallpaper path ends in, e.g. `bloodmoon2.jpg` for `fhd/bloodmoon2.jpg`.
 fn wall_name(path: &str) -> &str {
@@ -565,13 +566,15 @@ impl Shell {
         let reset_op = if has_overrides { 1.0 } else { 0.4 };
         let name = theme_name(self.state.settings.theme).to_uppercase();
 
-        let mut grid = div().grid().grid_cols(4).gap(px(10.));
-        for (token, label) in EDITABLE_TOKENS.iter().copied() {
+        let mut groups: Vec<(&str, gpui::Div)> =
+            COLOUR_GROUPS.iter().map(|name| (*name, div().grid().grid_cols(4).gap(px(10.)))).collect();
+        for (n, (token, label)) in EDITABLE_TOKENS.iter().copied().enumerate() {
             let Some(colour) = token_colour(&theme, token) else { continue };
             let edited = overrides.contains_key(token);
             let open = self.settings.picker.as_ref().is_some_and(|p| p.token == token);
             let static_token: &'static str = token;
-            grid = grid.child(
+            let grid = &mut groups[n / 4].1;
+            *grid = std::mem::replace(grid, div()).child(
                 div()
                     .id(SharedString::from(format!("colour-{token}")))
                     .relative()
@@ -667,12 +670,12 @@ impl Shell {
                     .child(heading(&format!("COLORS · {name}"), None, &theme))
                     .child(reset),
             )
-            .child(grid)
+            .children(groups.into_iter().map(|(name, grid)| div().flex().flex_col().gap(px(6.)).child(caption(name, &theme)).child(grid)))
             .when_some(editor, |d, editor| d.child(editor))
             .into_any_element()
     }
 
-    /// Pairings, minimal pairs, display faces and interface faces.
+    /// The theme's pairings, then every font with a Titles and a Text button.
     fn typography_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let key = theme_key(self.state.settings.theme);
@@ -701,58 +704,41 @@ impl Shell {
             );
         }
 
-        let mut minimal = div().grid().grid_cols(3).gap(px(10.));
-        for (i, pair) in MINIMAL_PAIRS.iter().enumerate() {
-            let active = choice.display.as_deref() == Some(pair.display) && choice.ui.as_deref() == Some(pair.ui);
-            minimal = minimal.child(
-                card(("minimal", i), active, &theme)
-                    .p(px(14.))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let key = theme_key(this.state.settings.theme).to_string();
-                        let pair = &MINIMAL_PAIRS[i];
-                        let pairing = this.state.settings.fonts.get(&key).map_or(0, |c| c.pairing);
-                        this.state.settings.fonts.insert(
-                            key,
-                            FontChoice { pairing, display: Some(pair.display.to_string()), ui: Some(pair.ui.to_string()) },
-                        );
-                        this.refresh_theme(cx);
-                    }))
-                    .child(div().font_family(pair.display).text_size(px(28.)).font_weight(gpui::FontWeight::MEDIUM).child(name_text.clone()))
-                    .child(div().text_size(px(11.5)).text_color(theme.muted.to_hsla()).child(MINIMAL_LABELS[i])),
-            );
-        }
-
-        let mut display = div().grid().grid_cols(6).gap(px(8.));
-        for (i, (label, family)) in DISPLAY_FONTS.iter().copied().enumerate() {
-            let active = choice.display.as_deref().unwrap_or(preset.pairings[choice.pairing % 3].display) == family;
-            display = display.child(
-                card(("display-font", i), active, &theme)
+        let pairing = preset.pairings[choice.pairing % 3];
+        let titles = choice.display.clone().unwrap_or_else(|| pairing.display.to_string());
+        let text = choice.ui.clone().unwrap_or_else(|| pairing.ui.to_string());
+        let mut all = div().grid().grid_cols(5).gap(px(8.));
+        for (i, (label, family)) in fonts::all_fonts().into_iter().enumerate() {
+            let (is_titles, is_text) = (titles == family, text == family);
+            all = all.child(
+                card_plain(&theme)
                     .p(px(10.))
                     .px(px(12.))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let key = theme_key(this.state.settings.theme).to_string();
-                        this.state.settings.fonts.entry(key).or_default().display = Some(family.to_string());
-                        this.refresh_theme(cx);
-                    }))
-                    .child(div().font_family(family).text_size(px(22.)).line_height(px(24.)).child(name_text.clone()))
-                    .child(div().text_size(px(10.5)).text_color(theme.muted.to_hsla()).child(label)),
-            );
-        }
-
-        let mut interface = div().grid().grid_cols(6).gap(px(8.));
-        for (i, family) in INTERFACE_FONTS.iter().copied().enumerate() {
-            let active = choice.ui.as_deref().unwrap_or(preset.pairings[choice.pairing % 3].ui) == family;
-            interface = interface.child(
-                card(("ui-font", i), active, &theme)
-                    .p(px(10.))
-                    .px(px(12.))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let key = theme_key(this.state.settings.theme).to_string();
-                        this.state.settings.fonts.entry(key).or_default().ui = Some(family.to_string());
-                        this.refresh_theme(cx);
-                    }))
-                    .child(div().font_family(family).text_size(px(14.)).child("Aa 0O 1lI"))
-                    .child(div().text_size(px(10.5)).text_color(theme.muted.to_hsla()).child(family)),
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .when(is_titles || is_text, |d| d.border_color(theme.acc.to_hsla()))
+                    .child(div().font_family(family).text_size(px(22.)).line_height(px(26.)).child("Aa Bb"))
+                    .child(div().text_size(px(10.5)).text_color(theme.muted.to_hsla()).child(label))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(4.))
+                            .child(slot_button(("font-titles", i), "Titles", is_titles, &theme).on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    let key = theme_key(this.state.settings.theme).to_string();
+                                    this.state.settings.fonts.entry(key).or_default().display = Some(family.to_string());
+                                    this.refresh_theme(cx);
+                                },
+                            )))
+                            .child(slot_button(("font-text", i), "Text", is_text, &theme).on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    let key = theme_key(this.state.settings.theme).to_string();
+                                    this.state.settings.fonts.entry(key).or_default().ui = Some(family.to_string());
+                                    this.refresh_theme(cx);
+                                },
+                            ))),
+                    ),
             );
         }
 
@@ -761,13 +747,10 @@ impl Shell {
             .flex_col()
             .gap(px(12.))
             .child(heading("TYPOGRAPHY", None, &theme))
+            .child(caption("Theme pairings", &theme))
             .child(pairings)
-            .child(caption("Minimal", &theme))
-            .child(minimal)
-            .child(caption("Display font", &theme))
-            .child(display)
-            .child(caption("Interface font", &theme))
-            .child(interface)
+            .child(caption(&format!("All fonts · Titles: {titles} · Text (chat and message box): {text}"), &theme))
+            .child(all)
             .into_any_element()
     }
 
@@ -869,6 +852,23 @@ impl Shell {
 }
 
 /// The plain bordered card used by Identity.
+/// A small toggle on a font card that puts the font in one slot; filled when it is in that slot.
+fn slot_button(id: impl Into<ElementId>, label: &'static str, active: bool, theme: &crate::ui::theme::Theme) -> Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_1()
+        .py(px(3.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(if active { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
+        .when(active, |d| d.bg(theme.acc.to_hsla()).text_color(theme.on.to_hsla()))
+        .text_size(px(10.5))
+        .text_center()
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.line.to_hsla()))
+        .child(label)
+}
+
 fn card_plain(theme: &crate::ui::theme::Theme) -> gpui::Div {
     div()
         .flex()
