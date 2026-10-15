@@ -1,5 +1,0 @@
-[["click","[title=\"Close tile\"]"],["wait",700],
- ["click","[title=\"Close tile\"]"],["wait",700],
- ["clickText","Release notes v0.9",true],["wait",1200],
- ["eval","(()=>{const c=document.querySelector('[data-msgs]');c.scrollTop=c.scrollHeight;return c.scrollTop})()"],["wait",500],
- ["shot","table"]]

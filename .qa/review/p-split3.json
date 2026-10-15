@@ -1,2 +1,0 @@
-[["eval","(()=>{const b=[...document.querySelectorAll('button[title=\"Split new session\"]')];b[b.length-1].click();return b.length})()"],["wait",900],["shot","tiles4f"],
- ["eval","(()=>{const b=[...document.querySelectorAll('button[title=\"Split new session\"]')];b[b.length-1].click();return b.length})()"],["wait",1000],["shot","tiles5f"]]

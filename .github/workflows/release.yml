@@ -1,0 +1,30 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-x11-dev libxkbcommon-dev libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev libssl-dev
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          name=archonui-${GITHUB_REF_NAME}-linux-x86_64
+          mkdir "$name"
+          cp target/release/archonui LICENSE README.md "$name"/
+          cp -r assets/archonui.desktop assets/icons/hicolor scripts/install-desktop.sh "$name"/
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: |
+            archonui-*.tar.gz
+            archonui-*.tar.gz.sha256

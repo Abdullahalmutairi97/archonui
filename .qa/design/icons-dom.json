@@ -1,5 +1,0 @@
-[
-  ["eval", "JSON.stringify({svgPaths: document.querySelectorAll('svg path').length, xdc: !!document.querySelector('x-dc')})", 500],
-  ["eval", "JSON.stringify(Array.from(document.querySelectorAll('svg path')).map(function(p){return p.getAttribute('d')}).filter(function(d){return d && d.indexOf('a0.9 0.9')>=0}))", 2000],
-  ["eval", "JSON.stringify(Array.from(document.querySelectorAll('svg path')).map(function(p){return p.getAttribute('d')}).filter(function(d){return d && (d.indexOf('h2.8v2.8')>=0 || d.indexOf('a1.9 1.9')>=0)}))", 2000]
-]

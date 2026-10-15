@@ -1,3 +1,0 @@
-[["shot","default"],
- ["click","[title=\"Close tile\"]"],["wait",700],["shot","tiles2"],
- ["click","[title=\"Close tile\"]"],["wait",700],["shot","tiles1"]]

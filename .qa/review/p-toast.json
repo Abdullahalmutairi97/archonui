@@ -1,1 +1,0 @@
-[["click","main section button:has-text(\"Copy\")"],["wait",300],["shot","toast"]]

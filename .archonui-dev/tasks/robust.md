@@ -1,5 +1,0 @@
-Display :121. TASK: ROBUSTNESS QA of the new UI. Make each failure graceful (toast or muted inline text in the prototype's style; no panic, no stuck "running", nothing lost):
-- harness binary missing / not executable (settings.harnesses.<id>.binary → /nonexistent, non-exec file); fake CLIs (shell scripts in /tmp/archonui-qa-121) that exit 1 with stderr, print garbage, hang forever (Stop kills it and children), get SIGKILLed mid-stream.
-- session folder deleted while open; unreadable project folder; read-only ARCHONUI_DATA_DIR / ARCHONUI_CONFIG_DIR (save fails → toast, app runs); 100 MB attachment and 11th attachment (limits 64 MB/10); binary/huge file in IDE; non-git folder in Git tab; tmux missing with use_tmux on; Chrome missing for Browser; no network.
-- window close while a turn runs: child killed, partial reply saved; next launch idle, not stuck.
-Surgical fixes (re-read before editing; don't touch src/ui/approval.rs, src/engine/approve.rs); unit tests for pure logic. Table → .qa/integration/robustness-report.md; screenshots .qa/integration/robust-*.png. Report (under 25 lines).

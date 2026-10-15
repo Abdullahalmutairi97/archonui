@@ -1,8 +1,0 @@
-[
-  ["clickText", "Settings", true],
-  ["wait", 600],
-  ["clickText", "Appearance", true],
-  ["wait", 800],
-  ["shot", "identity"],
-  ["eval", "JSON.stringify(Array.from(document.querySelectorAll('div')).filter(function(d){var s=d.getAttribute('style')||'';return s.indexOf('background:url')>=0 && s.indexOf('width: 22px')<0 && s.indexOf('logo')>=0}).map(function(d){var s=d.getAttribute('style');return s.slice(0,160)}))", 5000]
-]

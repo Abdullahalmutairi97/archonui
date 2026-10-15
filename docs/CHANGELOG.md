@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 — first public beta
+
+- Bug fixes across the engine, chat, editor, tabs and widgets.
+- MIT license, `install.sh`, a prebuilt-binary release workflow, CI, and an Arch `PKGBUILD`.
+- `--version` and `--help`; smoke tests that run the binary against a fake agent CLI.
+
 ## Unreleased — new UI
 
 *This build's default interface is the new one: plain `archonui` (or `archonui`) opens it. The previous UI

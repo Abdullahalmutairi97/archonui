@@ -1,5 +1,0 @@
-[
-  ["eval", "JSON.stringify((function(){var els=Array.from(document.querySelectorAll('span')).filter(function(s){return s.textContent==='archonui' && s.children.length===0});return els.map(function(s){var c=getComputedStyle(s);return {fs:c.fontSize,ff:c.fontFamily,th:s.getAttribute('style')}})})())", 2000],
-  ["eval", "JSON.stringify(Array.from(document.querySelectorAll('svg')).filter(function(s){return s.getAttribute('width')==='16'}).slice(0,3).map(function(s){var c=getComputedStyle(s);return {w:s.getAttribute('width'),h:s.getAttribute('height'),vb:s.getAttribute('viewBox'),sw:s.getAttribute('stroke-width'),color:c.color,fill:s.getAttribute('fill')}}))", 2000],
-  ["eval", "JSON.stringify(Array.from(document.querySelectorAll('div[style*=\"background:url\"]')).slice(0,4).map(function(d){var c=getComputedStyle(d);return {w:c.width,h:c.height,style:d.getAttribute('style').slice(0,150)}}))", 3000]
-]

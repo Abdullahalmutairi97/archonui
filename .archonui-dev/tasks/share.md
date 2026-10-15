@@ -1,4 +1,0 @@
-Display :126. You own src/ui/share.rs; in src/ui/sidebar/sessions.rs only the search filter fn.
-1. Share modal: the prototype's "Include file diffs" / "Include terminal output" toggles (match position/copy exactly). Diffs: recorded diff text per edit/write tool if store::Message tools have it, else `git diff` of those files in the session cwd. Terminal: tmux pane history (`tmux -L <socket> capture-pane -p -S - -t <name>`, see src/terminal.rs) as a fenced block. Markdown + JSON + Copy as Markdown honour them. Unit tests.
-2. Sidebar search: match the prototype's filter function exactly (fields, case).
-Verify on :126 (save dialog may not show on Xvfb: unit-test the writer, verify Copy via `xclip -o -selection clipboard`). Screenshots .qa/integration/sharegap-*.png. cargo test. Report (under 15 lines).

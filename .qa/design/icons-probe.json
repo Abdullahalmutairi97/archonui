@@ -1,5 +1,0 @@
-[
-  ["eval", "(function(){var G=[3,8,13],pts=[];G.forEach(function(y){G.forEach(function(x){pts.push([x,y])})});return JSON.stringify(pts)})()", 500],
-  ["eval", "1+1", 100],
-  ["eval", "(function(){var s='M'+(3-0.9)+' '+3;return s})()", 200]
-]

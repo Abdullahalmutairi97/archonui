@@ -1,3 +1,0 @@
-[["eval","(()=>{const b=[...document.querySelectorAll('main section button')].find(x=>x.textContent.trim().indexOf('\u25be')>=0);b.click();return 1})()"],["wait",500],["shot","model-popover"],
- ["key","Escape"],["wait",400],
- ["eval","(()=>{const b=[...document.querySelectorAll('main section button')].find(x=>x.title==='Attach files');b.click();return 1})()"],["wait",500],["shot","attach-popover"]]

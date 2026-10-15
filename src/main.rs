@@ -45,6 +45,11 @@ const UI_FLAGS: [&str; 4] = ["--old-ui", "--new-ui", "--stream-demo", "--widgets
 /// replies (files go with the last prompt).
 fn headless(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
+        Some("--version" | "-V") => println!("archonui {}", env!("CARGO_PKG_VERSION")),
+        Some("--help" | "-h") => println!(
+            "archonui {}\n\nUsage: archonui [FILE]\n       archonui --detect | --discover | --version | --help\n       archonui --ask [--model ID] [--effort LEVEL] [--mode MODE] [--file PATH]... AGENT PROMPT...",
+            env!("CARGO_PKG_VERSION")
+        ),
         Some("--detect") => {
             for a in engine::detect(&harness_settings()) {
                 println!("{:<10} {:<12} {:<9} {}", a.harness.id(), a.version, a.auth.label(), a.path.display());

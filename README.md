@@ -1,5 +1,7 @@
 # ArchonUI
 
+> **Beta (0.1.x).** It works day to day for the author, but expect rough edges and breaking changes. Bug reports are welcome.
+
 A desktop app for working with coding-agent CLIs — Claude Code, Codex CLI, Gemini CLI, OpenCode and
 Pi — side by side in a tiled workspace, with a built-in editor, file tree, git panel, terminal and
 in-app browser.
@@ -20,6 +22,13 @@ goes under `~/.local/share/archonui-src`, `~/.local/bin/archonui` and `~/.local/
 
 The first build compiles ArchonUI's dependencies (GPUI, a syntax highlighter, a terminal emulator, etc.)
 from source, so it takes a few minutes. Later runs of the installer just update and rebuild.
+
+### Other ways to install
+
+- **Prebuilt binary:** download `archonui-vX.Y.Z-linux-x86_64.tar.gz` from the
+  [Releases](https://github.com/Abdullahalmutairi97/archonui/releases) page, unpack it, and run
+  `./archonui-*/archonui` (run `scripts/install-desktop.sh <binary>` for the launcher icon).
+- **Arch Linux:** `packaging/PKGBUILD` builds a package: `cd packaging && makepkg -si`.
 
 ### What you need first
 
@@ -66,7 +75,7 @@ See [docs/CHANGELOG.md](docs/CHANGELOG.md) for what the UI can do.
 
 ```sh
 cargo run              # debug build, opt-level 2 for dependencies (see Cargo.toml)
-cargo test              # unit + integration tests
+cargo test              # unit tests plus tests/cli.rs, which drives the binary against a fake agent CLI
 cargo run -- --detect   # headless: list detected agent CLIs
 ```
 
@@ -75,4 +84,4 @@ and a few `--*-test` flags used by the test suite).
 
 ## License
 
-Not yet decided — treat this as "all rights reserved" until a LICENSE file is added.
+[MIT](LICENSE).

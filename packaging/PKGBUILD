@@ -1,0 +1,33 @@
+# Maintainer: Abdullah Almutairi
+pkgname=archonui
+pkgver=0.1.4
+pkgrel=1
+pkgdesc='Tiled desktop workspace for coding-agent CLIs (Claude Code, Codex, Gemini, OpenCode, Pi)'
+arch=(x86_64)
+url='https://github.com/Abdullahalmutairi97/archonui'
+license=(MIT)
+depends=(vulkan-icd-loader libxkbcommon-x11 fontconfig wayland)
+makedepends=(cargo git)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=(SKIP)
+
+build() {
+  cd "$pkgname-$pkgver"
+  cargo build --release --locked
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  cargo test --locked
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/archonui "$pkgdir/usr/bin/archonui"
+  install -Dm644 assets/archonui.desktop "$pkgdir/usr/share/applications/archonui.desktop"
+  for d in assets/icons/hicolor/*/apps; do
+    s=$(basename "$(dirname "$d")")
+    install -Dm644 "$d/archonui.png" "$pkgdir/usr/share/icons/hicolor/$s/apps/archonui.png"
+  done
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -2,3 +2,7 @@ target/
 .archonui-dev/venv/
 __pycache__/
 *.pyc
+.pi/
+.qa/
+.libs/
+.archonui-dev/

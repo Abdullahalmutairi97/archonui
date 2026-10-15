@@ -1,2 +1,0 @@
-[["click","textarea"],["wait",300],["key","Shift+Tab"],["wait",500],["shot","mode-plan"],
- ["key","Shift+Tab"],["wait",500],["shot","mode-ask"]]
