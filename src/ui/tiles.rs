@@ -291,6 +291,15 @@ impl Shell {
 
     /// Global shortcuts (settings.keys): new split, close tile, focus moves, next theme, toggles.
     pub(super) fn global_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Escape that nothing else took stops the focused session's reply, wherever the keyboard is.
+        let m = ev.keystroke.modifiers;
+        if ev.keystroke.key == "escape" && !(m.shift || m.alt || m.control || m.platform) {
+            if let Some(id) = self.state.workspace.layout.focus.clone().filter(|id| self.state.busy(id)) {
+                self.state.stop(&id);
+                cx.notify();
+                return;
+            }
+        }
         let keys = &self.state.settings.keys;
         let pressed = |action: Action| keys.get(&action).is_some_and(|k| keystroke_matches(k, &ev.keystroke));
         let action = [

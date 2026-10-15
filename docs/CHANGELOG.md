@@ -9,6 +9,8 @@
   (green) and removed (red). Tokens come from Claude Code's and Gemini's result line, Codex's
   `turn.completed`, Pi's `message_end` and OpenCode's `step_finish`.
 - Edit rows show their `+N −M` in green and red.
+- Esc stops the focused session's reply from anywhere in the window, not only from the message box.
+  Popups, the terminal and the editor still get Esc first. The working line says "Esc to stop".
 - Four new presets that look like other agent apps: Codex (near-black and grey, blue accent, Geist),
   Claude Code (warm charcoal and cream, terracotta accent, Young Serif titles), Gemini (Google's dark
   grey, blue to violet accents, DM Sans) and Hermes (the Desktop app's Nous look: dark blue, cream text,

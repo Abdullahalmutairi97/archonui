@@ -114,7 +114,7 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
                     .text_size(px(13.))
                     .text_color(theme.muted.to_hsla())
                     .italic()
-                    .child(format!("Working · {} tool calls", item.tools.len())),
+                    .child(format!("Working · {} tool calls · Esc to stop", item.tools.len())),
             )
         })
         // Notes the agent wrote between tool calls: dimmed, then a divider before the final answer.
