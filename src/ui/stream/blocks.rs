@@ -384,9 +384,9 @@ fn agent_header<H: StreamHost>(ctx: &RowCtx<H>, item: &Item, streaming: bool) ->
     if streaming {
         meta.push("working".to_string());
     } else if let Some(secs) = item.thought_secs {
-        meta.push(format!("thought for {secs}s"));
+        meta.push(format!("thought for {}", duration(secs)));
     } else if let Some(secs) = item.took_secs {
-        meta.push(format!("worked for {secs}s"));
+        meta.push(format!("worked for {}", duration(secs)));
     }
     if !matches!(ctx.mode, Mode::Auto) {
         meta.push(format!("{} mode", ctx.mode.name().to_lowercase()));
