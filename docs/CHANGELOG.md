@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7
+
+- An empty session (nothing sent, typed or attached) is deleted, tile and all, as soon as you move to
+  another session, not only when its tile is closed.
+
 ## 0.1.6
 
 - Tile shortcuts are back on Alt: Alt+Enter (split new session), Alt+Q (close tile), Alt+←/→ (focus),

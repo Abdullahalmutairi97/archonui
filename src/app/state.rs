@@ -314,14 +314,16 @@ impl AppState {
         changed
     }
 
-    /// Deletes every chat that would never be listed: nothing sent, no draft, no terminal, and no
-    /// longer in a tile (closed, or replaced by another chat). Returns whether any went.
+    /// Deletes every chat the user has left empty: nothing sent, typed or attached, no terminal, and
+    /// not the focused tile (its tile was closed or replaced, or another chat was focused). Its tile
+    /// closes with it. Returns whether any went.
     pub fn drop_abandoned(&mut self) -> bool {
+        let focus = self.workspace.layout.focus.as_deref();
         let doomed: Vec<String> = self
             .sessions
             .iter()
             .filter(|s| !s.visible() && s.draft.trim().is_empty())
-            .filter(|s| !self.workspace.layout.contains(&s.id) && !self.busy(&s.id))
+            .filter(|s| focus != Some(s.id.as_str()) && !self.busy(&s.id) && self.pending(&s.id).is_empty())
             .map(|s| s.id.clone())
             .collect();
         for id in &doomed {
@@ -763,16 +765,30 @@ mod tests {
     fn closing_an_empty_chat_deletes_it() {
         let mut app = state();
         let empty = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        // The focused chat stays while it's empty.
+        assert!(!app.drop_abandoned());
         let drafted = app.new_session("pi", "/tmp".into(), Placement::Split { area: WIDE, gap: 8. });
         app.set_draft(&drafted, "keep me");
-        // Still in a tile, so nothing goes.
-        assert!(!app.drop_abandoned());
-        app.workspace.layout.close(&empty);
-        app.workspace.layout.close(&drafted);
-        app.list_left_drafts(false);
+        // Focus moved to the new chat, so the empty one goes, tile and all.
         assert!(app.drop_abandoned());
         assert!(app.session(&empty).is_none());
+        assert!(!app.workspace.layout.contains(&empty));
+        // An empty chat with a file waiting to be sent is kept when left.
+        let attached = app.new_session("pi", "/tmp".into(), Placement::Split { area: WIDE, gap: 8. });
+        app.add_pending(&attached, vec![Attachment { name: "a.txt".into(), path: "/tmp/a.txt".into(), kind: engine::attach::Kind::Text, size: 1 }]);
+        app.workspace.layout.focus(&drafted);
+        assert!(!app.drop_abandoned());
+        // A chat with a draft is listed when its tile closes, not deleted.
+        app.workspace.layout.close(&drafted);
+        app.workspace.layout.focus(&attached);
+        app.list_left_drafts(false);
+        assert!(!app.drop_abandoned());
         assert!(app.session(&drafted).is_some_and(|s| s.listed));
+        // Emptying the waiting files and leaving deletes it.
+        app.remove_pending(&attached, 0);
+        app.workspace.layout.open_in_focused(&drafted);
+        assert!(app.drop_abandoned());
+        assert!(app.session(&attached).is_none());
     }
 
     #[test]
