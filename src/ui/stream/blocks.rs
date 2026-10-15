@@ -110,8 +110,30 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
                     .child(format!("Working · {} tool calls", item.tools.len())),
             )
         })
-        .children(item.blocks.iter().enumerate().map(|(bix, block)| block_view(ctx, ix, &bix.to_string(), block)))
+        .when(!item.blocks.is_empty(), |column| {
+            column.child(
+                block_column(ctx, ix, "", &item.blocks)
+                    .max_w(px(READING_WIDTH))
+                    .font_family(crate::ui::fonts::reading_font(&theme.ui_font)),
+            )
+        })
         .into_any_element()
+}
+
+/// Widest a reply's text runs, about 90 characters, so lines stay easy to follow on a wide window.
+const READING_WIDTH: f32 = 820.;
+/// Space between the paragraphs, lists, tables and code of a reply, so each stands apart.
+const BLOCK_GAP: f32 = 14.;
+/// Extra space above a heading that follows other blocks, so it opens a new section.
+const HEADING_GAP: f32 = 10.;
+
+/// `blocks` stacked with `BLOCK_GAP` between them. `path` prefixes each block's path.
+fn block_column<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, path: &str, blocks: &[Block]) -> Div {
+    div().flex().flex_col().gap(px(BLOCK_GAP)).children(blocks.iter().enumerate().map(|(i, block)| {
+        let path = if path.is_empty() { i.to_string() } else { format!("{path}.{i}") };
+        let heading = matches!(block, Block::Text(Text { heading: Some(_), .. }));
+        div().when(heading && i > 0, |d| d.pt(px(HEADING_GAP))).child(block_view(ctx, ix, &path, block))
+    }))
 }
 
 /// `ARCHONUI · thought for 14s`, with the mode appended for non-Auto sessions (chat.md §1.4 item 1).
@@ -201,15 +223,11 @@ fn block_view<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, path: &str, block: &Blo
     match block {
         Block::Text(text) => text_block(ctx, ix, text),
         Block::List { ordered, start, items } => list_block(ctx, ix, path, *ordered, *start, items),
-        Block::Quote(inner) => div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
+        Block::Quote(inner) => block_column(ctx, ix, path, inner)
             .pl(px(12.))
             .border_l_2()
             .border_color(ctx.theme.line2.to_hsla())
             .text_color(ctx.theme.muted.to_hsla())
-            .children(inner.iter().enumerate().map(|(i, b)| block_view(ctx, ix, &format!("{path}.{i}"), b)))
             .into_any_element(),
         Block::Table { head, rows } => table_block(ctx, ix, head, rows),
         Block::Rule => div().w_full().h(px(1.)).bg(ctx.theme.line.to_hsla()).into_any_element(),
@@ -285,16 +303,29 @@ fn text_block<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, text: &Text) -> AnyElem
     };
 
     div()
-        .line_height(relative(1.6))
+        .line_height(relative(1.65))
         // A paragraph that starts in a right-to-left script reads from the right edge.
         .when(starts_rtl(&text.text), |body| body.w_full().text_right())
         .cursor_text()
         .on_mouse_down(MouseButton::Left, on_down)
         .on_mouse_move(on_drag)
         .on_mouse_up(MouseButton::Left, on_up)
-        .when(text.heading.is_some(), |body| body.text_size(px(16.)).font_weight(FontWeight::SEMIBOLD))
+        .when_some(text.heading, |body, level| {
+            body.text_size(px(ctx.text_size * heading_scale(level)))
+                .line_height(relative(1.3))
+                .font_weight(FontWeight::SEMIBOLD)
+        })
         .child(styled)
         .into_any_element()
+}
+
+/// A heading's size relative to body text: `#` largest, `###` and below just above body size.
+fn heading_scale(level: u8) -> f32 {
+    match level {
+        1 => 1.4,
+        2 => 1.22,
+        _ => 1.08,
+    }
 }
 
 /// Whether the first letter of `text` is in a right-to-left script (Arabic, Hebrew, Syriac, Thaana and
@@ -373,24 +404,14 @@ fn list_block<H: StreamHost>(
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(px(6.))
         .children(items.iter().enumerate().map(|(i, item)| {
             let marker = if ordered { format!("{}.", start + i as u64) } else { "•".to_string() };
             div()
                 .flex()
                 .gap(px(8.))
                 .child(div().w(px(18.)).flex_none().text_right().text_color(ctx.theme.muted.to_hsla()).child(marker))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .children(item.iter().enumerate().map(|(bix, block)| {
-                            block_view(ctx, ix, &format!("{path}.{i}.{bix}"), block)
-                        })),
-                )
+                .child(block_column(ctx, ix, &format!("{path}.{i}"), item).flex_1().min_w_0().gap(px(6.)))
         }))
         .into_any_element()
 }

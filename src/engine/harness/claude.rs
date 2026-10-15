@@ -79,9 +79,7 @@ impl Harness for Claude {
             a.extend(strs(&["--resume", id]));
         }
         // Every turn: each `-p` run is a new process, and a system prompt addition isn't kept on resume.
-        if let Some(project) = input.project {
-            a.extend(["--append-system-prompt".into(), super::scope_note(project)]);
-        }
+        a.extend(["--append-system-prompt".into(), super::chat_note(input)]);
         // `--add-dir` takes several values, so the `=` form keeps it from swallowing the prompt.
         for dir in files.dirs() {
             a.push(format!("--add-dir={}", dir.display()));

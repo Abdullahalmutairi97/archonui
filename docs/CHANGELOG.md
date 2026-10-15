@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.4
+
+- Replies are easier to read. Paragraphs, lists, tables and code have 14px between them, and a
+  heading gets extra space above it and a size by level (`#` 1.4×, `##` 1.22×, `###` and below 1.08×
+  the body text). Reply text is at most 820px wide, and it is set in a proportional font (Geist) when
+  the theme's interface font is monospace; code keeps the code font.
+- Every agent is asked to format its replies: short paragraphs separated by blank lines, headings for
+  longer replies, lists for steps and changes, tables for comparisons, fenced code with a language.
+  Claude Code and Pi get it as a system prompt addition on every turn; Codex, Gemini and OpenCode at
+  the start of the first message of each agent session, except a message that is a slash command.
+
 ## 0.2.3
 
 - A skill reached through a symlink (for example `~/.claude/skills/x` linking to `~/.agents/skills/x`,

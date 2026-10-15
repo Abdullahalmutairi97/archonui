@@ -85,6 +85,8 @@ struct RowCtx<H> {
     selection: Option<Selection>,
     /// Replies in this chat come from more than one agent, so each header names its agent.
     mixed_agents: bool,
+    /// Body text size in px, from the settings; headings scale from it.
+    text_size: f32,
 }
 
 /// The text selected in one block of one message. `anchor` and `head` are byte offsets into the block's text.
@@ -207,6 +209,7 @@ impl StreamUi {
                 show_tools: env.show_tools,
                 selection: self.selection.clone(),
                 mixed_agents: mixed_agents(&env.session.messages),
+                text_size: env.text_size,
             });
             div()
                 .flex_1()

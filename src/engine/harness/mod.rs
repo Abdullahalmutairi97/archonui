@@ -246,13 +246,30 @@ fn scope_note(project: &Path) -> String {
     )
 }
 
-/// `prompt` with the project note in front, on the first turn of an agent session, for CLIs
-/// with no system prompt flag. Later turns resume the session, which already has it.
-fn scoped(input: &TurnInput, prompt: String) -> String {
-    match input.project.filter(|_| input.session.is_none()) {
-        Some(project) => format!("{}\n\n{prompt}", scope_note(project)),
-        None => prompt,
+/// How replies should be laid out. ArchonUI renders Markdown, so structure shows as headings,
+/// lists and separate paragraphs instead of one wall of text.
+const FORMAT_NOTE: &str = "Your replies are shown in a chat that renders Markdown. Make them easy to scan: \
+     short paragraphs of 1-3 sentences separated by a blank line; `##` or `###` headings to split a longer \
+     reply into sections; bulleted or numbered lists for steps, options and changes; **bold** for the key \
+     term at the start of a list item; tables for comparisons; and fenced code blocks with a language for \
+     code. A short answer stays a short paragraph, without headings.";
+
+/// Everything ArchonUI tells the agent about the chat: the reply format, and the project if any.
+fn chat_note(input: &TurnInput) -> String {
+    match input.project {
+        Some(project) => format!("{FORMAT_NOTE}\n\n{}", scope_note(project)),
+        None => FORMAT_NOTE.to_string(),
     }
+}
+
+/// `prompt` with the chat note in front, on the first turn of an agent session, for CLIs with no
+/// system prompt flag. Later turns resume the session, which already has it.
+/// A slash command is sent as typed: text in front of it would stop the CLI reading it as a command.
+fn scoped(input: &TurnInput, prompt: String) -> String {
+    if input.session.is_some() || prompt.starts_with('/') {
+        return prompt;
+    }
+    format!("{}\n\n{prompt}", chat_note(input))
 }
 
 fn strs(xs: &[&str]) -> Vec<String> {
@@ -327,7 +344,7 @@ mod tests {
     #[test]
     fn the_agent_is_told_its_project() {
         let project = Path::new("/code/replica");
-        let note = scope_note(project);
+        let note = format!("{FORMAT_NOTE}\n\n{}", scope_note(project));
         let with = |id: &str, mode: Mode, session: Option<&str>| {
             harness(id).unwrap().plan(&TurnInput { project: Some(project), ..input(mode, session) }).args
         };
@@ -342,9 +359,20 @@ mod tests {
             assert!(first.iter().any(|a| a.starts_with(&note) && a.ends_with("do it")), "{id}: {first:?}");
             assert!(!with(id, Mode::Auto, Some("s1")).iter().any(|a| a.contains(&note)), "{id} resumed");
         }
-        // No project, no note.
+        // No project: the format note alone.
         for h in HARNESSES {
-            assert!(!h.plan(&input(Mode::Auto, None)).args.iter().any(|a| a.contains("This chat is in the project")));
+            let args = h.plan(&input(Mode::Auto, None)).args;
+            assert!(!args.iter().any(|a| a.contains("This chat is in the project")), "{}", h.id());
+            assert!(args.iter().any(|a| a.starts_with(FORMAT_NOTE)), "{}: {args:?}", h.id());
+        }
+    }
+
+    #[test]
+    fn a_slash_command_gets_no_note() {
+        for id in ["codex", "gemini"] {
+            let turn = TurnInput { prompt: "/review", ..input(Mode::Auto, None) };
+            let args = harness(id).unwrap().plan(&turn).args;
+            assert_eq!(args.last().map(String::as_str), Some("/review"), "{id}");
         }
     }
 
@@ -397,9 +425,9 @@ mod tests {
     #[test]
     fn plan_mode_prepends_the_read_only_instruction() {
         let plan = args("codex", Mode::Plan, None);
-        assert!(plan.last().unwrap().starts_with("Plan only:"));
+        assert!(plan.last().unwrap().contains("\n\nPlan only:"));
         assert!(plan.last().unwrap().ends_with("do it"));
-        assert_eq!(args("codex", Mode::Ask, None).last().map(String::as_str), Some("do it"));
+        assert_eq!(args("codex", Mode::Ask, None).last().map(String::as_str), Some(format!("{FORMAT_NOTE}\n\ndo it").as_str()));
     }
 
     #[test]
@@ -414,9 +442,9 @@ mod tests {
     fn plan_preamble_reaches_opencode_and_gemini_as_documented() {
         for id in ["opencode", "gemini"] {
             let plan = args(id, Mode::Plan, None);
-            assert!(plan.last().unwrap().starts_with(PLAN_PREAMBLE), "{id}: {plan:?}");
+            assert!(plan.last().unwrap().starts_with(&format!("{FORMAT_NOTE}\n\n{PLAN_PREAMBLE}")), "{id}: {plan:?}");
             assert!(plan.last().unwrap().ends_with("do it"), "{id}: {plan:?}");
-            assert_eq!(args(id, Mode::Ask, None).last().map(String::as_str), Some("do it"), "{id}");
+            assert_eq!(args(id, Mode::Ask, None).last().cloned(), Some(format!("{FORMAT_NOTE}\n\ndo it")), "{id}");
         }
     }
 
@@ -439,7 +467,7 @@ mod tests {
         let ask = args("pi", Mode::Ask, None);
         assert!(has_pair(&ask, "--tools", "read,grep,find,ls"));
         assert!(ask.contains(&"--no-mcp".to_string()));
-        assert!(!ask.contains(&"--append-system-prompt".to_string()));
+        assert!(has_pair(&ask, "--append-system-prompt", FORMAT_NOTE), "Ask gets only the format note");
         assert!(args("pi", Mode::Plan, None).contains(&"--append-system-prompt".to_string()));
     }
 

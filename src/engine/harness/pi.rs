@@ -1,7 +1,7 @@
 //! Pi: `pi -p` with inlined `@file` arguments. Pi has no permission system,
 //! so Plan and Ask narrow the tool list instead.
 
-use super::{prompt_arg, scope_note, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput, PLAN_PREAMBLE};
+use super::{chat_note, prompt_arg, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput, PLAN_PREAMBLE};
 use crate::app::settings::{McpServer, Permission, Permissions};
 use crate::engine::{
     attach::{Delivery, Kind},
@@ -58,15 +58,13 @@ impl Harness for Pi {
             a.extend(strs(&["--thinking", &effort.to_lowercase()]));
         }
         a.extend(mode_flags(input.mode));
-        // One system prompt addition: the plan-only instruction in Plan, and the chat's project.
+        // One system prompt addition: the plan-only instruction in Plan, then the chat note.
         let system: Vec<String> =
-            [(input.mode == Mode::Plan).then(|| PLAN_PREAMBLE.to_string()), input.project.map(scope_note)]
+            [(input.mode == Mode::Plan).then(|| PLAN_PREAMBLE.to_string()), Some(chat_note(input))]
                 .into_iter()
                 .flatten()
                 .collect();
-        if !system.is_empty() {
-            a.extend(["--append-system-prompt".into(), system.join("\n\n")]);
-        }
+        a.extend(["--append-system-prompt".into(), system.join("\n\n")]);
         a.extend(tool_flags(&input.tools));
         a.extend(mcp.args);
         if let Some(id) = input.session {

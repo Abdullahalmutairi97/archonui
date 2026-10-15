@@ -436,6 +436,15 @@ pub fn resolve_fonts(pairings: &[FontPair; 3], choice: &FontChoice) -> (String, 
     (display, ui, code)
 }
 
+/// Sans family for reply prose when the UI family is monospace: paragraphs read better
+/// proportional, and code blocks keep the code font.
+const READING_FALLBACK: &str = "Geist";
+
+/// The family chat replies are set in: the UI family, unless that is monospace.
+pub fn reading_font(ui: &str) -> String {
+    if is_monospace(ui) { READING_FALLBACK.to_string() } else { ui.to_string() }
+}
+
 fn is_monospace(family: &str) -> bool {
     let family = family.to_ascii_lowercase();
     family.contains("mono") || family.contains("code")
@@ -484,6 +493,13 @@ mod tests {
         for family in families {
             assert!(FONTS.iter().any(|(f, _, _, _)| *f == family), "{family} is not embedded");
         }
+    }
+
+    #[test]
+    fn replies_read_in_a_proportional_font() {
+        assert_eq!(reading_font("JetBrains Mono"), "Geist");
+        assert_eq!(reading_font("Fira Code"), "Geist");
+        assert_eq!(reading_font("IBM Plex Sans"), "IBM Plex Sans");
     }
 
     #[test]
