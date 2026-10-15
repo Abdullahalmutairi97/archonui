@@ -126,8 +126,8 @@ pub struct Preset {
     pub pairings: [FontPair; 3],
 }
 
-/// The ArchonUI mark every built-in theme uses.
-pub const DEFAULT_LOGO: &str = "sword-logo-diag.png";
+/// The ArchonUI mark (a plain "A") every built-in theme uses.
+pub const DEFAULT_LOGO: &str = "archonui-mark.png";
 
 /// The theme a new install starts with, and the fallback for an id that no longer exists.
 pub const DEFAULT_THEME: &str = "archonui";

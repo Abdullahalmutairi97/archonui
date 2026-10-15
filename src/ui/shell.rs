@@ -141,7 +141,23 @@ impl Shell {
         this.left_w = Animator::new(l, anim::SIDEBAR_COLLAPSE);
         this.right_w = Animator::new(r, anim::PANEL_COLLAPSE);
         this.rescan(cx);
+        this.dev_open(cx);
         this
+    }
+
+    /// A developer switch for screenshots: `ARCHONUI_OPEN=settings:appearance` opens that settings page,
+    /// and `ARCHONUI_SCROLL=600` scrolls it down by that many pixels. Unset, nothing happens.
+    fn dev_open(&mut self, cx: &mut Context<Self>) {
+        let Ok(target) = std::env::var("ARCHONUI_OPEN") else { return };
+        if let Some(page) = target.strip_prefix("settings:") {
+            self.settings_open(cx);
+            if let Some(page) = super::settings::Page::from_label(page) {
+                self.settings.page = page;
+            }
+            if let Some(y) = std::env::var("ARCHONUI_SCROLL").ok().and_then(|v| v.parse::<f32>().ok()) {
+                self.settings.body_scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-y)));
+            }
+        }
     }
 
     /// Detects installed harnesses, then discovers each one's commands and models.

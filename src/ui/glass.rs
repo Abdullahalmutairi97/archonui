@@ -46,7 +46,7 @@ pub fn wallpaper_bytes(_name: &str) -> Option<&'static [u8]> {
 pub fn logo_bytes(name: &str) -> Option<Arc<[u8]>> {
     static FILES: OnceLock<Mutex<HashMap<String, Option<Arc<[u8]>>>>> = OnceLock::new();
     match name {
-        "sword-logo-diag.png" => Some(Arc::from(include_bytes!("../../assets/themes/logos/sword-logo-diag.png").as_slice())),
+        "archonui-mark.png" => Some(Arc::from(include_bytes!("../../assets/logo/archonui-mark.png").as_slice())),
         path if Path::new(path).is_absolute() => {
             let mut files = FILES.get_or_init(Default::default).lock().ok()?;
             files.entry(path.to_string()).or_insert_with(|| std::fs::read(path).ok().map(Arc::from)).clone()
@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn the_logo_and_gradients_need_no_wallpaper_files() {
-        assert!(logo_bytes("sword-logo-diag.png").is_some());
+        assert!(logo_bytes("archonui-mark.png").is_some());
         assert!(logo_bytes("logo-bm.png").is_none(), "personal logos are files, not embedded");
         let blend = gradient_image([0x000000, 0x808080, 0xffffff]);
         assert_eq!(blend.get_pixel(0, 0).0, [0, 0, 0, 255]);

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New neutral mark: a plain "A", for the app icon (all hicolor sizes) and the built-in themes' logo.
+  The sword logo and the castle artwork are no longer in the repository.
 - Context meter: a small bar beside the model picker shows how full the agent's context is, with no
   numbers. It turns the highlight colour past 70% and red past 90%. Clicking it shows the share, the
   tokens used of the window, and whether the window came from the agent or is the usual one for the

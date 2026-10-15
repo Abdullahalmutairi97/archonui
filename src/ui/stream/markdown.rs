@@ -477,25 +477,25 @@ mod tests {
 
     #[test]
     fn image_fence_resolves_local_files() {
-        let blocks = parse("```image assets/themes/logos/sword-logo-diag.png fire.png\nfire.wgsl · 1920×1080\n```", &cwd());
+        let blocks = parse("```image assets/logo/archonui-mark.png fire.png\nfire.wgsl · 1920×1080\n```", &cwd());
         let Block::Image(image) = &blocks[0] else { panic!("{blocks:?}") };
         assert_eq!(image.name, "fire.png");
         assert_eq!(image.caption, "fire.wgsl · 1920×1080");
-        assert!(matches!(&image.source, Source::Local(p) if p.ends_with("sword-logo-diag.png")));
+        assert!(matches!(&image.source, Source::Local(p) if p.ends_with("archonui-mark.png")));
     }
 
     #[test]
     fn markdown_images_and_remote_urls() {
-        let blocks = parse("![the sky](assets/themes/logos/sword-logo-diag.png)\n\n![x](https://example.com/a.png)", &cwd());
+        let blocks = parse("![the sky](assets/logo/archonui-mark.png)\n\n![x](https://example.com/a.png)", &cwd());
         assert!(matches!(&blocks[0], Block::Image(i) if i.name == "the sky"));
         assert!(matches!(&blocks[1], Block::Image(i) if matches!(i.source, Source::Remote(_))));
     }
 
     #[test]
     fn bare_existing_image_paths_become_images() {
-        let blocks = parse("Frame saved to assets/themes/logos/sword-logo-diag.png.", &cwd());
+        let blocks = parse("Frame saved to assets/logo/archonui-mark.png.", &cwd());
         assert!(matches!(&blocks[0], Block::Text(_)));
-        assert!(matches!(&blocks[1], Block::Image(i) if i.name == "sword-logo-diag.png"));
+        assert!(matches!(&blocks[1], Block::Image(i) if i.name == "archonui-mark.png"));
         let none = parse("See missing/shot.png", &cwd());
         assert_eq!(none.len(), 1);
     }

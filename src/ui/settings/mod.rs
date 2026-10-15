@@ -103,6 +103,13 @@ const NAV: [NavEntry; 11] = [
 ];
 
 impl Page {
+    /// The page whose label is `name`, in any case.
+    pub fn from_label(name: &str) -> Option<Self> {
+        [Page::General, Page::Appearance, Page::Keyboard, Page::Harnesses, Page::Models, Page::Tools, Page::Skills, Page::Extensions]
+            .into_iter()
+            .find(|p| p.label().eq_ignore_ascii_case(name))
+    }
+
     fn label(self) -> &'static str {
         match self {
             Page::General => "General",
@@ -159,6 +166,8 @@ type Field = (Entity<TextInput>, Subscription);
 pub struct SettingsUi {
     pub(super) open: bool,
     pub(super) page: Page,
+    /// The page body's scroll, reset when the page changes.
+    pub(super) body_scroll: gpui::ScrollHandle,
     /// The app name field on Appearance, made on first render.
     pub(super) name: Option<Field>,
     /// The extension search field, made on first render.
@@ -341,6 +350,7 @@ impl Shell {
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
+            .track_scroll(&self.settings.body_scroll)
             .flex()
             .flex_col()
             .gap(px(28.))
@@ -462,6 +472,7 @@ impl Shell {
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.settings.page = page;
+                                this.settings.body_scroll.set_offset(gpui::point(px(0.), px(0.)));
                                 if page == Page::Tools {
                                     this.check_mcp(None, cx);
                                 }
