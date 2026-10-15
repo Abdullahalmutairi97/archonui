@@ -182,6 +182,13 @@ pub struct Session {
     /// Model to pass the agent; `None` uses the agent's default.
     #[serde(default)]
     pub model: Option<String>,
+    /// Tokens in the agent's context after its latest model call: the prompt, history and reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_used: Option<u64>,
+    /// The model's context window as the agent reported it. `None` until it does; the meter then
+    /// uses `engine::context_window`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
     /// Effort level to pass the agent; `None` uses the agent's default.
     #[serde(default)]
     pub effort: Option<String>,
@@ -221,6 +228,8 @@ impl Session {
             cwd,
             agent_session: None,
             model: None,
+            context_used: None,
+            context_window: None,
             effort: None,
             mode: Mode::default(),
             handoff: false,

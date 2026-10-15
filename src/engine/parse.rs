@@ -45,6 +45,10 @@ pub enum Out {
     Usage(Usage),
     /// The agent's task checklist, whole, after a change.
     Todos(Vec<Todo>),
+    /// Tokens in the context after a model call: everything sent plus the reply.
+    ContextUsed(u64),
+    /// The model's context window, when the agent reports it.
+    ContextWindow(u64),
 }
 
 /// Turns one turn's output into events. Claude's results name only their call,
@@ -99,6 +103,8 @@ impl Parser {
         let mut out = Vec::new();
         if s("/type").as_deref() == Some("result") {
             out.extend(claude_usage(v));
+            let windows = v["modelUsage"].as_object().into_iter().flat_map(|m| m.values());
+            out.extend(windows.filter_map(|m| m["contextWindow"].as_u64()).max().map(Out::ContextWindow));
         }
         match s("/type").as_deref() {
             Some("system") => out.extend(s("/session_id").map(Out::Session)),
@@ -126,6 +132,12 @@ impl Parser {
             }
             // Each complete block arrives in its own message, with its whole input.
             Some("assistant") => {
+                let u = &v["message"]["usage"];
+                if u.is_object() && v["parent_tool_use_id"].is_null() {
+                    let n = |k: &str| u[k].as_u64().unwrap_or(0);
+                    let used = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens") + n("output_tokens");
+                    out.push(Out::ContextUsed(used));
+                }
                 for block in blocks(v).filter(|b| b["type"] == "tool_use") {
                     out.extend(self.claude_call(block));
                 }
@@ -304,6 +316,8 @@ impl Parser {
                 let n = |k: &str| u[k].as_u64().unwrap_or(0);
                 if u.is_object() {
                     let cached = n("cached_input_tokens");
+                    // The turn's total; with several model calls it overstates the context a little.
+                    out.push(Out::ContextUsed(n("input_tokens") + n("output_tokens")));
                     out.push(Out::Usage(Usage {
                         input: n("input_tokens").saturating_sub(cached),
                         output: n("output_tokens"),
@@ -355,6 +369,7 @@ impl Parser {
                 let u = &v["message"]["usage"];
                 let n = |k: &str| u[k].as_u64().unwrap_or(0);
                 if u.is_object() {
+                    out.push(Out::ContextUsed(n("input") + n("cacheRead") + n("cacheWrite") + n("output")));
                     out.push(Out::Usage(Usage {
                         input: n("input"),
                         output: n("output"),
@@ -418,6 +433,7 @@ impl Parser {
                 let t = &v["part"]["tokens"];
                 let n = |p: &str| t.pointer(p).and_then(Value::as_u64).unwrap_or(0);
                 if t.is_object() {
+                    out.push(Out::ContextUsed(n("/input") + n("/cache/read") + n("/cache/write") + n("/output") + n("/reasoning")));
                     out.push(Out::Usage(Usage {
                         input: n("/input"),
                         output: n("/output") + n("/reasoning"),
@@ -483,6 +499,7 @@ fn gemini(v: &Value, line: &str) -> Vec<Out> {
         Some("result") if v["stats"]["input_tokens"].is_u64() => {
             let n = |k: &str| v["stats"][k].as_u64().unwrap_or(0);
             let cached = n("cached");
+            out.push(Out::ContextUsed(n("input_tokens") + n("output_tokens")));
             out.push(Out::Usage(Usage {
                 input: n("input_tokens").saturating_sub(cached),
                 output: n("output_tokens"),
@@ -1059,6 +1076,26 @@ mod tests {
         assert_eq!(names(&last(events(Protocol::OpenCode, opencode)).unwrap()), ["a:InProgress"]);
         let gemini = r#"{"type":"tool_use","tool_name":"write_todos","parameters":{"todos":[{"description":"a","status":"pending"},{"description":"b","status":"cancelled"}]}}"#;
         assert_eq!(names(&last(events(Protocol::Gemini, gemini)).unwrap()), ["a:Pending"]);
+    }
+
+    #[test]
+    fn context_used_and_window() {
+        let ctx = |proto, line: &str| {
+            events(proto, line).into_iter().filter_map(|e| match e {
+                Out::ContextUsed(n) => Some(("used", n)),
+                Out::ContextWindow(n) => Some(("window", n)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        // Claude: each model call's usage; the result line names the window per model.
+        let call = r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[],"usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":900,"output_tokens":8}}}"#;
+        assert_eq!(ctx(Protocol::Claude, call), [("used", 1010)]);
+        let sub = r#"{"type":"assistant","parent_tool_use_id":"t1","message":{"content":[],"usage":{"input_tokens":5}}}"#;
+        assert!(ctx(Protocol::Claude, sub).is_empty(), "a subagent's calls are its own context");
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"result":"hi","modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}}}"#;
+        assert_eq!(ctx(Protocol::Claude, result), [("window", 1_000_000)]);
+        let pi = r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":5,"cacheRead":50,"cacheWrite":0}}}"#;
+        assert_eq!(ctx(Protocol::Pi, pi), [("used", 155)]);
     }
 
     #[test]

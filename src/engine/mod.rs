@@ -4,6 +4,7 @@
 //! it offers, and whether it is signed in. `detect` scans the machine for
 //! those binaries; `start_turn` runs one prompt and streams normalized events back.
 
+pub mod context;
 pub mod approve;
 pub mod attach;
 mod detect;

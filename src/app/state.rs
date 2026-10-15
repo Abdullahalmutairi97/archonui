@@ -218,6 +218,10 @@ impl AppState {
     /// Sets the model, effort and mode a chat passes to its agent. `None` model or effort uses the agent's default.
     pub fn set_options(&mut self, id: &str, model: Option<String>, effort: Option<String>, mode: Mode) {
         if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+            // Another model has another window; the agent reports the new one on its next turn.
+            if s.model != model {
+                s.context_window = None;
+            }
             s.model = model;
             s.effort = effort;
             s.mode = mode;
@@ -243,6 +247,9 @@ impl AppState {
         }
         s.agent = agent.to_string();
         s.agent_session = None;
+        // The new agent starts its own context.
+        s.context_used = None;
+        s.context_window = None;
         s.handoff = !s.messages.is_empty();
         s.model = model;
         s.effort = effort;
@@ -535,6 +542,8 @@ impl AppState {
                 }
             }
             Event::Out(Out::Usage(u)) => live.usage.get_or_insert_default().add(u),
+            Event::Out(Out::ContextUsed(n)) => s.context_used = Some(n),
+            Event::Out(Out::ContextWindow(n)) => s.context_window = Some(n),
             Event::Out(Out::Todos(todos)) => {
                 if let Some(m) = s.reply_mut() {
                     m.todos = todos;

@@ -34,6 +34,33 @@ const PIN: &str = "M8 3.5v6M5.5 6l2.5-2.5 2.5 2.5M4.5 12.5h7";
 pub(super) enum Pop {
     Model,
     Attach,
+    Context,
+}
+
+/// Tokens in the session's context, the model's window, and whether the agent reported the window.
+fn context_state(s: &Session) -> (u64, u64, bool) {
+    let window = s.context_window.filter(|w| *w > 0);
+    let fallback = crate::engine::context::context_window(&s.agent, s.model.as_deref());
+    (s.context_used.unwrap_or(0), window.unwrap_or(fallback), window.is_some())
+}
+
+/// The meter's colour: the accent, then the highlight past 70%, then red past 90%, when the agent is
+/// close to compacting or refusing.
+fn context_colour(share: f32, theme: &Theme) -> crate::ui::theme::Rgba {
+    match share {
+        s if s >= 0.9 => crate::ui::theme::Rgba::hex(0xf85149),
+        s if s >= 0.7 => theme.acc2,
+        _ => theme.acc,
+    }
+}
+
+/// `950`, `12k`, `1.2M` tokens.
+fn tokens(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{}k", (n as f64 / 1e3).round()),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
 }
 
 /// The effort scale of a session's model.
@@ -232,6 +259,79 @@ impl Shell {
         // The panel opens from the trigger's top-right corner, so it grows leftwards.
         let panel = open.then(|| float_above(self.render_model_popover(s, cx), Corner::BottomRight));
         div().flex().flex_row().items_start().flex_shrink().min_w_0().child(row).children(panel).into_any_element()
+    }
+
+    /// How full the agent's context is: a bar with no numbers. Clicking it opens the details.
+    pub(super) fn render_context_meter(&self, s: &Session, open: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let id = s.id.clone();
+        let (used, window, _) = context_state(s);
+        let share = (used as f32 / window as f32).clamp(0., 1.);
+        let fill = context_colour(share, theme);
+        let meter = div()
+            .id(gpui::SharedString::from(format!("composer-context-{id}")))
+            .flex_none()
+            .h(px(32.))
+            .px(px(7.))
+            .flex()
+            .items_center()
+            .rounded(px(7.))
+            .cursor_pointer()
+            .when(open, |d| d.bg(theme.line2.to_hsla()))
+            .hover(|h| h.bg(theme.line.to_hsla()))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_popover(&id, Pop::Context, cx)))
+            .child(
+                div()
+                    .w(px(34.))
+                    .h(px(5.))
+                    .rounded(px(3.))
+                    .bg(theme.line2.to_hsla())
+                    .overflow_hidden()
+                    .child(div().h_full().w(gpui::relative(share)).rounded(px(3.)).bg(fill.to_hsla())),
+            );
+        let panel = open.then(|| float_above(self.render_context_popover(s), Corner::BottomRight));
+        div().flex().flex_row().items_start().flex_none().child(meter).children(panel).into_any_element()
+    }
+
+    /// The context details: the share used, the tokens used of the window, and where the window comes from.
+    fn render_context_popover(&self, s: &Session) -> AnyElement {
+        let theme = &self.theme;
+        let (used, window, reported) = context_state(s);
+        let share = (used as f32 / window as f32).clamp(0., 1.);
+        let percent = (share * 100.).round() as u32;
+        let model = s.model.clone().unwrap_or_else(|| format!("{} default model", crate::engine::agent_name(&s.agent)));
+        div()
+            .w(px(240.))
+            .p(px(14.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .rounded(px(10.))
+            .bg(theme.pop.to_hsla())
+            .border_1()
+            .border_color(theme.line2.to_hsla())
+            .occlude()
+            .child(div().text_size(px(10.5)).text_color(theme.muted.to_hsla()).child("CONTEXT"))
+            .child(div().text_size(px(20.)).font_weight(gpui::FontWeight::SEMIBOLD).child(format!("{percent}% full")))
+            .child(
+                div()
+                    .h(px(6.))
+                    .rounded(px(3.))
+                    .bg(theme.line2.to_hsla())
+                    .overflow_hidden()
+                    .child(div().h_full().w(gpui::relative(share)).bg(context_colour(share, theme).to_hsla())),
+            )
+            .child(div().text_size(px(12.5)).child(format!("{} of {} tokens used", tokens(used), tokens(window))))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme.muted.to_hsla())
+                    .child(if reported { format!("{model} · window reported by the agent") } else { format!("{model} · usual window for this model") }),
+            )
+            .when(used == 0, |d| {
+                d.child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child("Fills in after the agent's first reply."))
+            })
+            .into_any_element()
     }
 
     /// The model popover: MODE cards, the MODEL list and the EFFORT moons.

@@ -873,7 +873,7 @@ impl ChatView {
                 }
             }
             // This view shows no usage.
-            Event::Out(Out::Usage(_) | Out::Todos(_)) => {}
+            Event::Out(Out::Usage(_) | Out::Todos(_) | Out::ContextUsed(_) | Out::ContextWindow(_)) => {}
             Event::Out(Out::Status(st)) => {
                 live.log(st.clone());
                 live.status = Some(st);

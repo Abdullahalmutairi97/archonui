@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Context meter: a small bar beside the model picker shows how full the agent's context is, with no
+  numbers. It turns the highlight colour past 70% and red past 90%. Clicking it shows the share, the
+  tokens used of the window, and whether the window came from the agent or is the usual one for the
+  model. Claude Code reports its window after each turn; Pi's comes from its `models.json`; other
+  models go by family (Claude 200k, or 1M with `[1m]`; GPT-5 and Codex 400k; Gemini 1M). Usage is the
+  latest model call for Claude, Pi and OpenCode, and the turn's total for Codex and Gemini. Switching
+  agent resets it; changing model drops the reported window.
 - Appearance › Effects › Window opacity (20–100%): below 100% the desktop shows through the
   background, wallpaper, sidebars and sessions; text and popovers stay solid. A compositor blur rule
   for the window blurs what shows through.
