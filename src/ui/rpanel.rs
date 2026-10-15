@@ -137,8 +137,7 @@ impl Shell {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .border_l_1()
-            .border_color(self.theme.line2.to_hsla())
+            .when(self.state.settings.borders, |d| d.border_l_1().border_color(self.theme.line2.to_hsla()))
             .child(content);
         let mut panel = div().child(glass).child(frame);
         if open {

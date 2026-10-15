@@ -118,7 +118,7 @@ impl Shell {
             let rect = animator.value(now);
 
             let focused = focus.as_deref() == Some(id.as_str());
-            let ring_w = if focused { RING_FOCUSED } else { RING_IDLE };
+            let ring_w = self.ring_width(focused);
             let ring: Background = if focused && self.state.settings.session_ring {
                 linear_gradient(
                     135.,
@@ -429,6 +429,15 @@ impl Shell {
     }
 
     /// The header's meta line: project, model, effort, mode and running state. Spec: chat.md §0.5.
+    /// A tile's border width: the focus ring or the idle border, or none when borders are off.
+    fn ring_width(&self, focused: bool) -> f32 {
+        match (self.state.settings.borders, focused) {
+            (false, _) => 0.,
+            (true, true) => RING_FOCUSED,
+            (true, false) => RING_IDLE,
+        }
+    }
+
     fn session_meta(&self, s: &Session) -> String {
         let project = s
             .project
@@ -568,7 +577,7 @@ impl Shell {
         ));
         // 52 px below the 2 px focus-ring inset; an unfocused tile's 1 px border is topped up so every
         // header's bottom border sits on the same line as the sidebar header and the panel tab bar.
-        let ring_w = if focused { RING_FOCUSED } else { RING_IDLE };
+        let ring_w = self.ring_width(focused);
         div()
             .h(px(HEADER_H + RING_FOCUSED - ring_w))
             .pt(px(RING_FOCUSED - ring_w))

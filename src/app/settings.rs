@@ -59,6 +59,9 @@ pub struct AppSettings {
     /// Draw the accent gradient ring around the focused session. Off, it gets the same plain border
     /// as the others.
     pub session_ring: bool,
+    /// Draw the borders around sessions and the edge line of the tools panel. Off, sessions sit
+    /// edge to edge with their neighbours when the gaps are 0.
+    pub borders: bool,
     /// Message text size, px.
     pub text_size: f32,
     /// Interface size: every design size is multiplied by this, like zooming a page.
@@ -142,6 +145,7 @@ impl Default for AppSettings {
             wallpaper_dim: 0.,
             tint_all: false,
             session_ring: true,
+            borders: true,
             text_size: 15.,
             ui_scale: default_ui_scale(),
             reduce_motion: None,

@@ -809,6 +809,7 @@ impl Shell {
         let text = self.state.settings.text_size;
         let tint = self.state.settings.tint_all;
         let ring = self.state.settings.session_ring;
+        let borders = self.state.settings.borders;
         let reduce_motion = self.state.settings.reduce_motion.unwrap_or_else(anim::reduced_motion);
         let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
         let dim_slider = self.slide(Slide::Dim, dim, range(WALLPAPER_DIM, 5.), "%", cx);
@@ -829,6 +830,19 @@ impl Shell {
                 &theme,
                 |this, on, cx| {
                     this.state.settings.tint_all = on;
+                    this.save(cx);
+                },
+                None,
+            ),
+            toggle_row(
+                "borders",
+                "Borders",
+                "Lines around sessions and along the tools panel's edge. Off, sessions have no border.",
+                borders,
+                &weak,
+                &theme,
+                |this, on, cx| {
+                    this.state.settings.borders = on;
                     this.save(cx);
                 },
                 None,
