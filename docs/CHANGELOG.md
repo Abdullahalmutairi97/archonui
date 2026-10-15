@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- The agent knows which project its chat is in. A chat filed under a project tells the agent the
+  project's folder, so a request that names no project ("fix the UI", "the app") means that one.
+  It is context, not a limit: ask for another folder and the agent goes there. Claude Code and Pi
+  get it as a system prompt addition on every turn; Codex, Gemini and OpenCode at the start of the
+  first message of each agent session.
+
 ## 0.2.0
 
 - A chat runs in its project's folder. New chats filed under a project start there whichever way they

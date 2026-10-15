@@ -1,7 +1,7 @@
 //! OpenCode: `opencode run --format json`. Auto runs the default `build`
 //! agent; Plan and Ask run the read-only `plan` agent.
 
-use super::{planned, prompt_arg, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
+use super::{planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
 use crate::app::settings::{McpServer, McpTransport};
 use crate::engine::{
     attach::{Delivery, Kind},
@@ -68,7 +68,7 @@ impl Harness for OpenCode {
                 a.extend(strs(&["--command", name]));
                 (!args.trim().is_empty() || !files.by_path.is_empty()).then(|| files.prompt(args.trim()))
             }
-            None => Some(planned(input.mode, files.prompt(input.prompt))),
+            None => Some(scoped(input, planned(input.mode, files.prompt(input.prompt)))),
         };
         for f in &files.native {
             a.extend(["-f".into(), f.path.display().to_string()]);

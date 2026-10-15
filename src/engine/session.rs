@@ -102,6 +102,8 @@ pub struct TurnOptions<'a> {
     pub mode: Mode,
     pub files: &'a [Attachment],
     pub tools: ToolSettings<'a>,
+    /// The chat's project folder, which the agent is told it is in.
+    pub project: Option<&'a Path>,
 }
 
 /// Run one prompt against `agent` in `cwd`, resuming `session` if given.
@@ -121,6 +123,7 @@ pub fn start_turn(
         effort: opts.effort,
         mode: opts.mode,
         tools: opts.tools,
+        project: opts.project,
     };
     spawn(agent.harness, &agent.path, &input)
 }
@@ -249,6 +252,7 @@ mod tests {
             effort: None,
             mode: Mode::Auto,
             tools: ToolSettings::default(),
+            project: None,
         };
         spawn(&Shell, Path::new("/bin/sh"), &input).unwrap()
     }

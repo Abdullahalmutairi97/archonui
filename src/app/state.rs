@@ -393,7 +393,7 @@ impl AppState {
         let agent = agents.iter().find(|a| a.harness.id() == session.agent)?;
         // A chat filed under a project works in that project's folder. Only before the agent has a
         // session of its own: agents keep resumable sessions per folder, so a started chat stays put.
-        if let Some(dir) = project_dir.filter(|_| session.agent_session.is_none() && session.messages.is_empty()) {
+        if let Some(dir) = project_dir.clone().filter(|_| session.agent_session.is_none() && session.messages.is_empty()) {
             session.cwd = dir;
         }
         let files = self.live.get_mut(id).map(|l| std::mem::take(&mut l.pending)).unwrap_or_default();
@@ -440,6 +440,8 @@ impl AppState {
                     ask_network: self.settings.ask_network,
                     approval: Some(engine::approve::Route { socket: engine::approve::socket(), session: id }),
                 },
+                // The agent is told which project it is in, while the chat runs in that project's folder.
+                project: project_dir.as_deref().filter(|dir| *dir == session.cwd),
             },
         );
         self.dirty.insert(id.to_string());

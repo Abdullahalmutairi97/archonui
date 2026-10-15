@@ -118,6 +118,9 @@ pub struct TurnInput<'a> {
     pub effort: Option<&'a str>,
     pub mode: Mode,
     pub tools: ToolSettings<'a>,
+    /// The folder of the project the chat is filed under, when the chat runs in it. The agent is told
+    /// it is in that project (see `scope_note`).
+    pub project: Option<&'a Path>,
 }
 
 /// Writes the agent's stdin; runs on a background thread.
@@ -180,6 +183,7 @@ pub trait Harness: Send + Sync {
             effort: None,
             mode: Mode::Ask,
             tools: ToolSettings::default(),
+            project: None,
         };
         let turn = spawn(self, path, &input).map_err(|e| e.to_string())?;
         let deadline = Instant::now() + TIMEOUT;
@@ -232,6 +236,25 @@ fn planned(mode: Mode, prompt: String) -> String {
     }
 }
 
+/// Tells the agent which project its chat is in, so a request that names no project means this one.
+/// Context, not a limit: the user can still point it anywhere.
+fn scope_note(project: &Path) -> String {
+    format!(
+        "This chat is in the project at {}. When the user asks for something without naming a project \
+         (\"fix the UI\", \"the app\", \"this project\"), they mean this one.",
+        project.display()
+    )
+}
+
+/// `prompt` with the project note in front, on the first turn of an agent session, for CLIs
+/// with no system prompt flag. Later turns resume the session, which already has it.
+fn scoped(input: &TurnInput, prompt: String) -> String {
+    match input.project.filter(|_| input.session.is_none()) {
+        Some(project) => format!("{}\n\n{prompt}", scope_note(project)),
+        None => prompt,
+    }
+}
+
 fn strs(xs: &[&str]) -> Vec<String> {
     xs.iter().map(|s| s.to_string()).collect()
 }
@@ -280,6 +303,7 @@ mod tests {
             effort: None,
             mode,
             tools: ToolSettings::default(),
+            project: None,
         }
     }
 
@@ -298,6 +322,30 @@ mod tests {
         }
         assert_eq!(Mode::from_name("yolo"), None);
         assert_eq!(Mode::default(), Mode::Auto);
+    }
+
+    #[test]
+    fn the_agent_is_told_its_project() {
+        let project = Path::new("/code/replica");
+        let note = scope_note(project);
+        let with = |id: &str, mode: Mode, session: Option<&str>| {
+            harness(id).unwrap().plan(&TurnInput { project: Some(project), ..input(mode, session) }).args
+        };
+        // System prompt flags carry it on every turn; Pi's Plan instruction shares the one flag.
+        assert!(has_pair(&with("claude", Mode::Auto, Some("s1")), "--append-system-prompt", &note));
+        let pi_plan = with("pi", Mode::Plan, Some("s1"));
+        assert_eq!(pi_plan.iter().filter(|a| *a == "--append-system-prompt").count(), 1);
+        assert!(has_pair(&pi_plan, "--append-system-prompt", &format!("{PLAN_PREAMBLE}\n\n{note}")));
+        // The others get it in front of a new session's first prompt only.
+        for id in ["codex", "gemini", "opencode"] {
+            let first = with(id, Mode::Auto, None);
+            assert!(first.iter().any(|a| a.starts_with(&note) && a.ends_with("do it")), "{id}: {first:?}");
+            assert!(!with(id, Mode::Auto, Some("s1")).iter().any(|a| a.contains(&note)), "{id} resumed");
+        }
+        // No project, no note.
+        for h in HARNESSES {
+            assert!(!h.plan(&input(Mode::Auto, None)).args.iter().any(|a| a.contains("This chat is in the project")));
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! config and holds on `exec resume` (where `-s` is not accepted). The sandbox
 //! setting uses the same flag in Auto, so resumed turns get it too.
 
-use super::{planned, prompt_arg, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
+use super::{planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
 use crate::app::settings::{McpServer, McpTransport};
 use crate::engine::{
     attach::{Delivery, Kind},
@@ -83,7 +83,7 @@ impl Harness for Codex {
         if !files.native.is_empty() {
             a.push("--".into());
         }
-        a.push(prompt_arg(&planned(input.mode, files.prompt(input.prompt))));
+        a.push(prompt_arg(&scoped(input, planned(input.mode, files.prompt(input.prompt)))));
         Plan { args: a, env: mcp.env, ..Default::default() }
     }
 

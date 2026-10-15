@@ -78,6 +78,10 @@ impl Harness for Claude {
         if let Some(id) = input.session {
             a.extend(strs(&["--resume", id]));
         }
+        // Every turn: each `-p` run is a new process, and a system prompt addition isn't kept on resume.
+        if let Some(project) = input.project {
+            a.extend(["--append-system-prompt".into(), super::scope_note(project)]);
+        }
         // `--add-dir` takes several values, so the `=` form keeps it from swallowing the prompt.
         for dir in files.dirs() {
             a.push(format!("--add-dir={}", dir.display()));
@@ -322,6 +326,7 @@ mod tests {
             effort: None,
             mode,
             tools: harness::ToolSettings { permissions, ..Default::default() },
+            project: None,
         };
         tool_flags(&input)
     }
@@ -406,6 +411,7 @@ mod tests {
             effort: None,
             mode: Mode::Auto,
             tools: harness::ToolSettings { mcp: &servers, ..Default::default() },
+            project: None,
         };
         let args = Claude.plan(&input).args;
         assert!(args.last().unwrap().starts_with("do it"), "the prompt is last: {args:?}");

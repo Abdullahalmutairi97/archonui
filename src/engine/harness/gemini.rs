@@ -2,7 +2,7 @@
 //! was written, so every flag here comes from its documentation; see
 //! `docs/HARNESS_MAPPING.md`.
 
-use super::{planned, prompt_arg, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
+use super::{planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
 use crate::engine::{attach::Delivery, parse::Protocol};
 
 pub struct Gemini;
@@ -57,7 +57,7 @@ impl Harness for Gemini {
         }
         a.extend(strs(&["--output-format", "stream-json"]));
         // Plan and Ask share `--approval-mode plan`, so Plan also asks for a plan in the prompt.
-        a.extend(["-p".into(), prompt_arg(&planned(input.mode, files.prompt(input.prompt)))]);
+        a.extend(["-p".into(), prompt_arg(&scoped(input, planned(input.mode, files.prompt(input.prompt))))]);
         Plan { args: a, ..Default::default() }
     }
 

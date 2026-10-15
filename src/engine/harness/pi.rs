@@ -1,7 +1,7 @@
 //! Pi: `pi -p` with inlined `@file` arguments. Pi has no permission system,
 //! so Plan and Ask narrow the tool list instead.
 
-use super::{prompt_arg, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput, PLAN_PREAMBLE};
+use super::{prompt_arg, scope_note, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput, PLAN_PREAMBLE};
 use crate::app::settings::{McpServer, Permission, Permissions};
 use crate::engine::{
     attach::{Delivery, Kind},
@@ -58,6 +58,15 @@ impl Harness for Pi {
             a.extend(strs(&["--thinking", &effort.to_lowercase()]));
         }
         a.extend(mode_flags(input.mode));
+        // One system prompt addition: the plan-only instruction in Plan, and the chat's project.
+        let system: Vec<String> =
+            [(input.mode == Mode::Plan).then(|| PLAN_PREAMBLE.to_string()), input.project.map(scope_note)]
+                .into_iter()
+                .flatten()
+                .collect();
+        if !system.is_empty() {
+            a.extend(["--append-system-prompt".into(), system.join("\n\n")]);
+        }
         a.extend(tool_flags(&input.tools));
         a.extend(mcp.args);
         if let Some(id) = input.session {
@@ -180,13 +189,13 @@ fn auth_in(dir: &Path) -> AuthStatus {
 }
 
 /// Plan and Ask keep only read tools, and `--no-mcp` because `--tools` would
-/// otherwise keep MCP tools enabled. Plan also gets the plan-only instruction
-/// as a system prompt addition.
+/// otherwise keep MCP tools enabled. Plan's plan-only instruction is added to the
+/// system prompt in `plan`.
 fn mode_flags(mode: Mode) -> Vec<String> {
     const READ_ONLY: &str = "read,grep,find,ls";
     match mode {
         Mode::Auto => Vec::new(),
-        Mode::Plan => strs(&["--tools", READ_ONLY, "--no-mcp", "--append-system-prompt", PLAN_PREAMBLE]),
+        Mode::Plan => strs(&["--tools", READ_ONLY, "--no-mcp"]),
         Mode::Ask => strs(&["--tools", READ_ONLY, "--no-mcp"]),
     }
 }
@@ -275,6 +284,7 @@ mod tests {
             effort: Some("High"),
             mode: Mode::Auto,
             tools: ToolSettings::default(),
+            project: None,
         };
         let args = Pi.plan(&input).args;
         let pair = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].as_str());
@@ -296,6 +306,7 @@ mod tests {
             effort: None,
             mode: Mode::Auto,
             tools: ToolSettings::default(),
+            project: None,
         };
         assert_eq!(Pi.plan(&input).args.last().map(String::as_str), Some(" @notes.md summarise"));
     }
