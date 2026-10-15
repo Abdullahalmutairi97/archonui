@@ -1,7 +1,7 @@
 //! Tiling model for the centre column: tile order, focus, split fractions and
 //! divider geometry. Pure logic; the UI draws what `Layout::compute` returns.
 //! Ported from `design/ArchonUI Agent v3.dc.html` (`renderVals`, `newSession`,
-//! `openSession`, `closeTile`, the Ctrl+Shift+arrow handler). Spec: `docs/design/layout.md` §3.2.
+//! `openSession`, `closeTile`, the Alt+arrow handler). Spec: `docs/design/layout.md` §3.2.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -72,7 +72,7 @@ pub enum HandleKey {
     Master,
 }
 
-/// Ctrl+Shift+arrow direction.
+/// Alt+arrow direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrow {
     Left,
@@ -173,7 +173,7 @@ impl Layout {
         true
     }
 
-    /// Ctrl+Shift+arrow focus move: Right/Down go to the next tile and Left/Up to the previous,
+    /// Alt+arrow focus move: Right/Down go to the next tile and Left/Up to the previous,
     /// wrapping. Follows tile order, not geometry, as the prototype does.
     pub fn focus_arrow(&mut self, arrow: Arrow) {
         let n = self.tiles.len() as isize;

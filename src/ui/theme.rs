@@ -67,7 +67,7 @@ pub fn mix(a: Rgba, b: Rgba, t: f64) -> Rgba {
 }
 
 /// Stable config id of a preset, serialised kebab-case (`blood-moon`). Order is the prototype's
-/// `NAMES` order, which `Ctrl+Shift+T` cycles through.
+/// `NAMES` order, which `Alt+T` cycles through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeId {

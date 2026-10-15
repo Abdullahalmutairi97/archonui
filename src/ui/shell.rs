@@ -392,8 +392,10 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A chat left with an unsent draft joins the sidebar; save it so it survives a crash.
-        if self.state.list_left_drafts(false) {
+        // A chat left with an unsent draft joins the sidebar; save it so it survives a crash. An empty
+        // chat whose tile is gone is deleted.
+        let listed = self.state.list_left_drafts(false);
+        if self.state.drop_abandoned() || listed {
             self.flush_sessions(cx);
         }
         // rem-based sizes (`p_2`, `text_sm`…) follow the interface scale like `px` does.

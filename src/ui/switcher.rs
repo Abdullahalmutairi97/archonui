@@ -1,5 +1,5 @@
 //! The session switcher (Ctrl+K): a palette over every session, searched by title and message text.
-//! Enter opens a session in the focused tile and Ctrl+Shift+Enter in a new split, as a sidebar click does.
+//! Enter opens a session in the focused tile and Alt+Enter in a new split, as a sidebar click does.
 
 use super::{
     shell::Shell,

@@ -85,7 +85,7 @@ pub struct AppSettings {
     /// Action to keystroke in GPUI form (`ctrl-shift-enter`). An empty string leaves the action unbound.
     #[serde(deserialize_with = "known_keys")]
     pub keys: HashMap<Action, String>,
-    /// The `KEYS_VERSION` `keys` was saved with. Files without it predate the move off Alt.
+    /// The `KEYS_VERSION` `keys` was saved with. Files without it predate the move off Alt and back.
     #[serde(default)]
     pub keys_version: u32,
     // Harnesses and models
@@ -197,7 +197,7 @@ impl AppSettings {
                 effort.make_ascii_lowercase();
             }
         }
-        // Defaults that moved off Alt (Hyprland grabs Alt+key). An action still on its old default is upgraded,
+        // Defaults that moved back from Ctrl+Shift to Alt. An action still on its old default is upgraded,
         // once per file, so a user who binds the old key again keeps it. The new key is skipped if another
         // action already took it.
         if self.keys_version < KEYS_VERSION {
@@ -400,12 +400,12 @@ impl Action {
     /// The keystroke this action starts with (settings.md §4, plus the four new ones).
     pub fn default_key(self) -> &'static str {
         match self {
-            Action::SplitNewSession => "ctrl-shift-enter",
-            Action::CloseTile => "ctrl-shift-w",
-            Action::FocusNext => "ctrl-shift-right",
-            Action::FocusPrev => "ctrl-shift-left",
+            Action::SplitNewSession => "alt-enter",
+            Action::CloseTile => "alt-q",
+            Action::FocusNext => "alt-right",
+            Action::FocusPrev => "alt-left",
             Action::CycleMode => "shift-tab",
-            Action::NextTheme => "ctrl-shift-t",
+            Action::NextTheme => "alt-t",
             Action::Send => "enter",
             Action::Newline => "shift-enter",
             Action::CloseDialog => "escape",
@@ -422,15 +422,16 @@ pub fn default_keys() -> HashMap<Action, String> {
 }
 
 /// The version of the default keybindings. Bumped when defaults move, so `normalize` upgrades older files.
-const KEYS_VERSION: u32 = 1;
+const KEYS_VERSION: u32 = 2;
 
-/// Actions whose default moved in `KEYS_VERSION` 1, with their old default (canonical form).
+/// Actions whose default moved back to Alt in `KEYS_VERSION` 2, with the Ctrl+Shift default
+/// version 1 gave them (canonical form). Version 0 files are on Alt already.
 const MOVED_DEFAULTS: [(Action, &str); 5] = [
-    (Action::SplitNewSession, "alt-enter"),
-    (Action::CloseTile, "alt-q"),
-    (Action::FocusNext, "alt-right"),
-    (Action::FocusPrev, "alt-left"),
-    (Action::NextTheme, "alt-t"),
+    (Action::SplitNewSession, "ctrl-shift-enter"),
+    (Action::CloseTile, "ctrl-shift-w"),
+    (Action::FocusNext, "ctrl-shift-right"),
+    (Action::FocusPrev, "ctrl-shift-left"),
+    (Action::NextTheme, "ctrl-shift-t"),
 ];
 
 /// Keystrokes bound to more than one action, with those actions. Modifier order and case don't
@@ -509,34 +510,40 @@ mod tests {
         let back: AppSettings = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), json);
         assert_eq!(back.theme, ThemeId::Neon);
-        assert_eq!(back.keys[&Action::CloseTile], "ctrl-shift-w");
+        assert_eq!(back.keys[&Action::CloseTile], "alt-q");
     }
 
     #[test]
-    fn old_alt_defaults_migrate_and_custom_keys_stay() {
-        // A file from before the move has no `keys_version`.
-        let mut s: AppSettings = serde_json::from_str(r#"{"keys": {"close_tile": "alt-q", "next_theme": "ctrl-alt-t"}}"#).unwrap();
+    fn ctrl_shift_defaults_move_back_to_alt_and_custom_keys_stay() {
+        let json = r#"{"keys_version": 1, "keys": {"close_tile": "ctrl-shift-w", "focus_next": "shift-ctrl-right", "next_theme": "ctrl-alt-t"}}"#;
+        let mut s: AppSettings = serde_json::from_str(json).unwrap();
         s.normalize();
-        assert_eq!(s.keys[&Action::CloseTile], "ctrl-shift-w");
+        assert_eq!(s.keys[&Action::CloseTile], "alt-q");
+        assert_eq!(s.keys[&Action::FocusNext], "alt-right");
         assert_eq!(s.keys[&Action::NextTheme], "ctrl-alt-t", "user-customised keys are kept");
         assert!(conflicts(&s.keys).is_empty());
+
+        // A file from before any move has no `keys_version` and is on Alt already.
+        let mut s: AppSettings = serde_json::from_str(r#"{"keys": {"close_tile": "alt-q"}}"#).unwrap();
+        s.normalize();
+        assert_eq!(s.keys[&Action::CloseTile], "alt-q");
     }
 
     #[test]
     fn the_alt_migration_runs_once_and_only_for_the_action_it_was_default_for() {
-        let json = r#"{"keys": {"session_switcher": "alt-q", "split_new_session": "alt-enter", "new_session": "ctrl-shift-enter"}}"#;
+        let json = r#"{"keys_version": 1, "keys": {"session_switcher": "ctrl-shift-w", "split_new_session": "ctrl-shift-enter", "new_session": "alt-enter"}}"#;
         let mut s: AppSettings = serde_json::from_str(json).unwrap();
         s.normalize();
-        assert_eq!(s.keys[&Action::SessionSwitcher], "alt-q", "alt-q was never this action's default");
-        assert_eq!(s.keys[&Action::SplitNewSession], "alt-enter", "the new default is taken by another action");
+        assert_eq!(s.keys[&Action::SessionSwitcher], "ctrl-shift-w", "ctrl-shift-w was never this action's default");
+        assert_eq!(s.keys[&Action::SplitNewSession], "ctrl-shift-enter", "the new default is taken by another action");
         assert!(conflicts(&s.keys).is_empty());
 
         // Once saved, binding the old key again sticks.
         let mut s: AppSettings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
-        s.keys.insert(Action::CloseTile, "alt-q".into());
+        s.keys.insert(Action::CloseTile, "ctrl-shift-w".into());
         let mut back: AppSettings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
         back.normalize();
-        assert_eq!(back.keys[&Action::CloseTile], "alt-q");
+        assert_eq!(back.keys[&Action::CloseTile], "ctrl-shift-w");
     }
 
     #[test]

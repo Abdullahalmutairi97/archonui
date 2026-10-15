@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6
+
+- Tile shortcuts are back on Alt: Alt+Enter (split new session), Alt+Q (close tile), Alt+←/→ (focus),
+  Alt+T (next theme). Settings still on the Ctrl+Shift defaults move back; keys you rebound stay.
+- An empty session (nothing sent or typed) is deleted when its tile is closed or replaced.
+
 ## 0.1.5
 
 - A new session stays out of the sessions list until its first message is sent.

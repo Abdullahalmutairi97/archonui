@@ -301,7 +301,7 @@ impl Shell {
     }
 
     /// Starts a chat with the default agent in the current project's folder, split beside the
-    /// focused tile. Ctrl+Shift+Enter does the same.
+    /// focused tile. Alt+Enter does the same.
     pub(in crate::ui) fn new_session(&mut self, window: &Window, cx: &mut Context<Self>) {
         let agent = crate::ui::shell::pick_harness(self.state.settings.default_harness.as_deref(), &self.agents);
         let Some(agent) = agent else {

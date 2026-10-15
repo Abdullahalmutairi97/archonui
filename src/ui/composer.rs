@@ -467,7 +467,7 @@ impl Shell {
     }
 
     /// Keys for the focused composer. Returns true when consumed. Enter is not handled here: the
-    /// input's submit event does that. Ctrl+Shift+Enter is left to the global handler.
+    /// input's submit event does that. Alt+Enter is left to the global handler.
     pub(super) fn composer_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(id) = self.state.workspace.layout.focus.clone() else { return false };
         let Some(input) = self.composers.input(&id) else { return false };

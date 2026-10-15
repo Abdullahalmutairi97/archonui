@@ -314,6 +314,22 @@ impl AppState {
         changed
     }
 
+    /// Deletes every chat that would never be listed: nothing sent, no draft, no terminal, and no
+    /// longer in a tile (closed, or replaced by another chat). Returns whether any went.
+    pub fn drop_abandoned(&mut self) -> bool {
+        let doomed: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|s| !s.visible() && s.draft.trim().is_empty())
+            .filter(|s| !self.workspace.layout.contains(&s.id) && !self.busy(&s.id))
+            .map(|s| s.id.clone())
+            .collect();
+        for id in &doomed {
+            self.delete_session(id);
+        }
+        !doomed.is_empty()
+    }
+
     /// Files to go with the next message to `id`.
     pub fn add_pending(&mut self, id: &str, files: Vec<Attachment>) {
         self.live.entry(id.to_string()).or_default().pending.extend(files);
@@ -741,6 +757,22 @@ mod tests {
         app.workspace.layout.open_in_focused(&b);
         app.list_left_drafts(true);
         assert_eq!(listed(&app), [b]);
+    }
+
+    #[test]
+    fn closing_an_empty_chat_deletes_it() {
+        let mut app = state();
+        let empty = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let drafted = app.new_session("pi", "/tmp".into(), Placement::Split { area: WIDE, gap: 8. });
+        app.set_draft(&drafted, "keep me");
+        // Still in a tile, so nothing goes.
+        assert!(!app.drop_abandoned());
+        app.workspace.layout.close(&empty);
+        app.workspace.layout.close(&drafted);
+        app.list_left_drafts(false);
+        assert!(app.drop_abandoned());
+        assert!(app.session(&empty).is_none());
+        assert!(app.session(&drafted).is_some_and(|s| s.listed));
     }
 
     #[test]

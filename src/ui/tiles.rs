@@ -351,7 +351,7 @@ impl Shell {
         self.render_lightbox(window, cx).into_iter().chain(self.render_info(cx)).chain(self.render_settings(window, cx)).chain(self.render_share(cx)).chain(self.render_switcher(window, cx)).collect()
     }
 
-    /// Starts a session in a new tile after the focused one (`Ctrl+Shift+Enter`, the `+` button).
+    /// Starts a session in a new tile after the focused one (`Alt+Enter`, the `+` button).
     pub(super) fn new_session_split(&mut self, cx: &mut Context<Self>) {
         let Some((area, gap)) = self.tiles.area else { return };
         self.start_session(Placement::Split { area, gap }, cx);
@@ -386,7 +386,7 @@ impl Shell {
         }
     }
 
-    /// Ctrl+Shift+arrow focus move, wrapping through the tile list.
+    /// Alt+arrow focus move, wrapping through the tile list.
     fn move_focus(&mut self, arrow: Arrow, cx: &mut Context<Self>) {
         self.state.workspace.layout.focus_arrow(arrow);
         self.save(cx);
