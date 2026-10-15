@@ -56,6 +56,9 @@ pub struct AppSettings {
     pub wallpaper_dim: f32,
     /// Give unfocused tiles the focused tile's tint.
     pub tint_all: bool,
+    /// Draw the accent gradient ring around the focused session. Off, it gets the same plain border
+    /// as the others.
+    pub session_ring: bool,
     /// Message text size, px.
     pub text_size: f32,
     /// Interface size: every design size is multiplied by this, like zooming a page.
@@ -138,6 +141,7 @@ impl Default for AppSettings {
             panel_blur: 24.,
             wallpaper_dim: 0.,
             tint_all: false,
+            session_ring: true,
             text_size: 15.,
             ui_scale: default_ui_scale(),
             reduce_motion: None,

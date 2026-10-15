@@ -46,6 +46,12 @@ pub(super) fn token_colour(theme: &Theme, token: &str) -> Option<Rgba> {
         "acc2" => theme.acc2,
         "alt" => theme.alt,
         "deep" => theme.deep,
+        // Derived tokens are drawn translucent; the card and editor show the opaque colour.
+        "line" => theme.line.alpha(1.),
+        "line2" => theme.line2.alpha(1.),
+        "soft" => theme.soft.alpha(1.),
+        "ring1" => theme.border[0],
+        "ring2" => theme.border[2],
         _ => return None,
     })
 }

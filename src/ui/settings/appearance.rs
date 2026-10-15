@@ -43,8 +43,8 @@ const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
 ];
 
 /// The minimal font pairs' labels, in the order the Typography page shows them.
-/// Captions over the colour cards, one per row of four in `EDITABLE_TOKENS`.
-const COLOUR_GROUPS: [&str; 3] = ["Surfaces", "Text", "Accents"];
+/// Captions over the colour cards with how many of `EDITABLE_TOKENS`, in order, each holds.
+const COLOUR_GROUPS: [(&str, usize); 4] = [("Surfaces", 4), ("Text", 4), ("Accents", 4), ("Lines and highlights", 5)];
 
 /// The file name a theme wallpaper path ends in, e.g. `bloodmoon2.jpg` for `fhd/bloodmoon2.jpg`.
 fn wall_name(path: &str) -> &str {
@@ -567,13 +567,14 @@ impl Shell {
         let name = theme_name(self.state.settings.theme).to_uppercase();
 
         let mut groups: Vec<(&str, gpui::Div)> =
-            COLOUR_GROUPS.iter().map(|name| (*name, div().grid().grid_cols(4).gap(px(10.)))).collect();
+            COLOUR_GROUPS.iter().map(|(name, _)| (*name, div().grid().grid_cols(4).gap(px(10.)))).collect();
         for (n, (token, label)) in EDITABLE_TOKENS.iter().copied().enumerate() {
             let Some(colour) = token_colour(&theme, token) else { continue };
             let edited = overrides.contains_key(token);
             let open = self.settings.picker.as_ref().is_some_and(|p| p.token == token);
             let static_token: &'static str = token;
-            let grid = &mut groups[n / 4].1;
+            let group = COLOUR_GROUPS.iter().scan(0, |end, (_, len)| { *end += len; Some(*end) }).position(|end| n < end).unwrap_or(0);
+            let grid = &mut groups[group].1;
             *grid = std::mem::replace(grid, div()).child(
                 div()
                     .id(SharedString::from(format!("colour-{token}")))
@@ -807,6 +808,7 @@ impl Shell {
         let dim = self.state.settings.wallpaper_dim;
         let text = self.state.settings.text_size;
         let tint = self.state.settings.tint_all;
+        let ring = self.state.settings.session_ring;
         let reduce_motion = self.state.settings.reduce_motion.unwrap_or_else(anim::reduced_motion);
         let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
         let dim_slider = self.slide(Slide::Dim, dim, range(WALLPAPER_DIM, 5.), "%", cx);
@@ -832,6 +834,19 @@ impl Shell {
                 None,
             ),
             toggle_row(
+                "session-ring",
+                "Session highlight",
+                "Draw the coloured ring around the focused session. Off, it gets the same plain border as the others.",
+                ring,
+                &weak,
+                &theme,
+                |this, on, cx| {
+                    this.state.settings.session_ring = on;
+                    this.save(cx);
+                },
+                None,
+            ),
+            toggle_row(
                 "reduce-motion",
                 "Reduce motion",
                 "Collapse the sidebar and panel and reflow tiles instantly.",
@@ -851,7 +866,6 @@ impl Shell {
     }
 }
 
-/// The plain bordered card used by Identity.
 /// A small toggle on a font card that puts the font in one slot; filled when it is in that slot.
 fn slot_button(id: impl Into<ElementId>, label: &'static str, active: bool, theme: &crate::ui::theme::Theme) -> Stateful<gpui::Div> {
     div()
@@ -869,6 +883,7 @@ fn slot_button(id: impl Into<ElementId>, label: &'static str, active: bool, them
         .child(label)
 }
 
+/// The plain bordered card used by Identity.
 fn card_plain(theme: &crate::ui::theme::Theme) -> gpui::Div {
     div()
         .flex()

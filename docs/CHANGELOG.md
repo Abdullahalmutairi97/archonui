@@ -7,7 +7,12 @@
   (the interface font, also used by the chat and the message box). The theme pairings stay above it.
 - The chat and the message box share one font. Without a Text pick, a monospace theme font is
   replaced there by Geist; with one, the picked font is used as is.
-- Appearance › Colors: the twelve colour cards are grouped under Surfaces, Text and Accents.
+- Appearance › Colors: the colour cards are grouped under Surfaces, Text, Accents, and Lines and
+  highlights. The last group is new: Borders, Strong borders, Selection (selected rows and your
+  message bubble), and Highlight start and end (the focused session's ring). Borders and Selection
+  keep their transparency; the colour picked sets their hue.
+- Appearance › Effects › Session highlight: off removes the coloured ring around the focused
+  session, which then gets the same plain border as the others.
 
 ## 0.2.5
 

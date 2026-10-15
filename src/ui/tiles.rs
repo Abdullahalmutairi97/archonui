@@ -119,7 +119,7 @@ impl Shell {
 
             let focused = focus.as_deref() == Some(id.as_str());
             let ring_w = if focused { RING_FOCUSED } else { RING_IDLE };
-            let ring: Background = if focused {
+            let ring: Background = if focused && self.state.settings.session_ring {
                 linear_gradient(
                     135.,
                     linear_color_stop(theme.border[0].to_hsla(), 0.),

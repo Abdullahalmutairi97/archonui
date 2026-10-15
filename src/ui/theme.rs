@@ -416,8 +416,10 @@ pub const PRESETS: [Preset; 12] = [
     },
 ];
 
-/// The 12 colour tokens a user can override per theme, as `(key, label)` (themes.md §5.1).
-pub const EDITABLE_TOKENS: [(&str, &str); 12] = [
+/// The colour tokens a user can override per theme, as `(key, label)` (themes.md §5.1). The first
+/// twelve are base tokens; the last five are derived ones (`line`, `line2`, `soft`, and the focus
+/// ring's ends), applied after the derivation so they win over it.
+pub const EDITABLE_TOKENS: [(&str, &str); 17] = [
     ("bg", "Background"),
     ("tile", "Session tile"),
     ("panel", "Sidebar"),
@@ -430,7 +432,17 @@ pub const EDITABLE_TOKENS: [(&str, &str); 12] = [
     ("acc2", "Highlight"),
     ("alt", "Secondary"),
     ("deep", "Deep accent"),
+    ("line", "Borders"),
+    ("line2", "Strong borders"),
+    ("soft", "Selection"),
+    ("ring1", "Highlight start"),
+    ("ring2", "Highlight end"),
 ];
+
+/// The alpha each derived token is drawn at; an override sets its colour and keeps this alpha.
+pub const LINE_ALPHA: f32 = 0.09;
+pub const LINE2_ALPHA: f32 = 0.22;
+pub const SOFT_ALPHA: f32 = 0.28;
 
 /// Alpha of a collapsed-rail band when its session is focused, and when it is not.
 const BAND_ALPHA_FOCUSED: f32 = 0.42;
@@ -554,6 +566,11 @@ impl Tokens {
     }
 }
 
+/// The user's colour for a derived token, or `base`.
+fn derived(custom: &HashMap<String, String>, key: &str, base: Rgba) -> Rgba {
+    custom.get(key).and_then(|hex| Rgba::parse(hex)).unwrap_or(base)
+}
+
 /// Resolves a preset with per-theme colour overrides and a font choice into the rendered tokens
 /// (themes.md §2.2). `custom` maps keys from [`EDITABLE_TOKENS`] to `#rrggbb`; other keys and
 /// values that do not parse are ignored.
@@ -595,10 +612,10 @@ pub fn resolve(
         acc2: t0.acc2,
         alt: t0.alt,
         deep: t0.deep,
-        line: t0.fg.alpha(0.09),
-        line2: t0.fg.alpha(0.22),
-        soft,
-        border: [t0.acc2, t0.acc, t0.deep],
+        line: derived(custom, "line", t0.fg).alpha(LINE_ALPHA),
+        line2: derived(custom, "line2", t0.fg).alpha(LINE2_ALPHA),
+        soft: custom.get("soft").and_then(|hex| Rgba::parse(hex)).map_or(soft, |c| c.alpha(SOFT_ALPHA)),
+        border: [derived(custom, "ring1", t0.acc2), t0.acc, derived(custom, "ring2", t0.deep)],
         bands: std::array::from_fn(|i| mix(t0.acc, t0.acc2, i as f64 * 0.07)),
         display_font,
         ui_font,
@@ -857,7 +874,7 @@ mod tests {
     #[test]
     fn unknown_or_invalid_overrides_are_ignored() {
         let custom = HashMap::from([
-            ("soft".to_string(), "#ff0000".to_string()),
+            ("bands".to_string(), "#ff0000".to_string()),
             ("acc".to_string(), "not-a-colour".to_string()),
         ]);
         let t = resolve(&ThemeId::Moonlight.preset(), &custom, FontChoice::default());
@@ -1011,6 +1028,24 @@ mod tests {
         assert!((canvas.wallpaper.brightness - 0.8).abs() < 1e-6);
         let ambient = BackgroundStyle::Ambient.surfaces(&t, dimmed);
         assert!((ambient.wallpaper.brightness - 0.44).abs() < 1e-6);
+    }
+
+    #[test]
+    fn derived_colour_overrides_keep_their_alpha() {
+        let preset = ThemeId::default().preset();
+        let custom: HashMap<String, String> =
+            [("line", "#ff0000"), ("line2", "#00ff00"), ("soft", "#0000ff"), ("ring1", "#123456"), ("ring2", "#abcdef")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        let t = resolve(&preset, &custom, FontChoice::default());
+        assert_eq!(t.line, Rgba::hex(0xff0000).alpha(LINE_ALPHA));
+        assert_eq!(t.line2, Rgba::hex(0x00ff00).alpha(LINE2_ALPHA));
+        assert_eq!(t.soft, Rgba::hex(0x0000ff).alpha(SOFT_ALPHA));
+        assert_eq!((t.border[0], t.border[2]), (Rgba::hex(0x123456), Rgba::hex(0xabcdef)));
+        // Without overrides the derived tokens follow the base ones.
+        let plain = resolve(&preset, &HashMap::new(), FontChoice::default());
+        assert_eq!(plain.line, plain.fg.alpha(LINE_ALPHA));
     }
 
     #[test]
