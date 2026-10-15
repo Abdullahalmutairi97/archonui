@@ -746,6 +746,7 @@ mod tests {
                 agent: None,
                 final_at: None,
                 usage: None,
+                todos: Vec::new(),
             },
             Message {
                 role: Role::Agent,
@@ -765,6 +766,7 @@ mod tests {
                 agent: None,
                 final_at: None,
                 usage: None,
+                todos: Vec::new(),
             },
         ];
         s

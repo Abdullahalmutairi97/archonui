@@ -96,6 +96,7 @@ mod tests {
             agent: agent.map(str::to_string),
             final_at: None,
             usage: None,
+            todos: Vec::new(),
         }
     }
 

@@ -10,7 +10,7 @@ mod markdown;
 use super::{shell::Shell, theme::Theme};
 use crate::{
     engine::{attach::Attachment, Mode},
-    store::{Message, Role, Session, ToolCall, Usage},
+    store::{Message, Role, Session, Todo, ToolCall, Usage},
 };
 use blocks::{logo, message_row};
 use gpui::{
@@ -72,11 +72,12 @@ struct Item {
     /// The reply, or its final answer when `progress` is not empty.
     blocks: Vec<Block>,
     usage: Option<Usage>,
+    todos: Vec<Todo>,
 }
 
 /// What changes when a message grows or a tool row finishes. Streaming only appends, so lengths cover it;
 /// the final-answer offset and usage arrive when the turn ends.
-type Sig = (usize, usize, usize, usize, Option<u32>, Option<u32>, Option<usize>, bool);
+type Sig = (usize, usize, usize, usize, Option<u32>, Option<u32>, Option<usize>, bool, u64);
 
 /// What every row of one render needs.
 struct RowCtx<H> {
@@ -143,6 +144,7 @@ impl Item {
             progress,
             blocks,
             usage: message.usage,
+            todos: message.todos.clone(),
         }
     }
 }
@@ -163,7 +165,19 @@ fn signature(message: &Message) -> Sig {
         message.took_secs,
         message.final_at,
         message.usage.is_some(),
+        todo_sig(&message.todos),
     )
+}
+
+/// Changes whenever a checklist item is added, removed, renamed or changes status.
+fn todo_sig(todos: &[Todo]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for t in todos {
+        t.text.hash(&mut h);
+        (t.status as u8).hash(&mut h);
+    }
+    h.finish()
 }
 
 impl StreamUi {

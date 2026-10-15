@@ -20,6 +20,12 @@ use std::{
 
 pub struct Claude;
 
+/// Print mode leaves out Claude Code's task list tools (TaskCreate, TaskUpdate); this puts them back,
+/// so the chat can show the agent's checklist.
+fn claude_env() -> Vec<(String, String)> {
+    vec![("CLAUDE_CODE_ENABLE_TODO_TOOLS".into(), "1".into())]
+}
+
 impl Harness for Claude {
     fn id(&self) -> &'static str {
         "claude"
@@ -86,14 +92,14 @@ impl Harness for Claude {
         }
         if files.native.is_empty() {
             a.push(super::prompt_arg(&prompt));
-            return Plan { args: a, files: mcp.files, ..Default::default() };
+            return Plan { args: a, env: claude_env(), files: mcp.files, ..Default::default() };
         }
         a.extend(strs(&["--input-format", "stream-json"]));
         let native: Vec<Attachment> = files.native.into_iter().cloned().collect();
         Plan {
             args: a,
             stdin: Some(Box::new(move |w| write_claude_message(w, &native, &prompt))),
-            env: Vec::new(),
+            env: claude_env(),
             files: mcp.files,
         }
     }

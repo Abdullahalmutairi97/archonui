@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The agent's task checklist shows in its reply, as in Claude Code: while it works, the task in
+  progress as a heading, then ■ the current task, □ waiting ones and a green ✔ with strikethrough for
+  finished ones; afterwards "Tasks · N of M done". Claude Code runs with
+  `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, which print mode needs for TaskCreate and TaskUpdate; TodoWrite is
+  read too. Codex's `todo_list`, OpenCode's `todowrite` and Gemini's `write_todos` feed it as well.
+  Pi has no task list tool.
 - A reply that used tools separates its final answer: the notes written between tool calls are
   dimmed and smaller, then a FINAL ANSWER divider, then the answer at full size.
 - A finished reply ends with a line: ✓ Done, how long it worked, tokens in and out, the share of input

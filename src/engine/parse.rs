@@ -1,6 +1,6 @@
 //! Normalizes each agent's stdout into a common event stream.
 
-use crate::store::{ToolKind, Usage};
+use crate::store::{Todo, TodoStatus, ToolKind, Usage};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -43,6 +43,8 @@ pub enum Out {
     Thinking(bool),
     /// Tokens used by model calls since the last `Usage`; the turn's total is their sum.
     Usage(Usage),
+    /// The agent's task checklist, whole, after a change.
+    Todos(Vec<Todo>),
 }
 
 /// Turns one turn's output into events. Claude's results name only their call,
@@ -54,6 +56,10 @@ pub struct Parser {
     calls: HashMap<String, Finish>,
     /// Index of the Claude thinking block now open, to match its stop.
     thinking: Option<u64>,
+    /// Claude's task list, built from TaskCreate and TaskUpdate calls: (task id, item).
+    tasks: Vec<(String, Todo)>,
+    /// TaskCreate calls waiting for the result that names their task id.
+    creating: HashMap<String, Todo>,
 }
 
 /// How a Claude tool result is summarized, decided when its call starts.
@@ -66,7 +72,7 @@ enum Finish {
 
 impl Parser {
     pub fn new(proto: Protocol, cwd: &Path) -> Self {
-        Self { proto, cwd: cwd.to_path_buf(), calls: HashMap::new(), thinking: None }
+        Self { proto, cwd: cwd.to_path_buf(), calls: HashMap::new(), thinking: None, tasks: Vec::new(), creating: HashMap::new() }
     }
 
     /// The events in one line of output. Lines that aren't events are ignored.
@@ -152,11 +158,48 @@ impl Parser {
         out
     }
 
+    /// Claude's task list as an event.
+    fn task_list(&self) -> Out {
+        Out::Todos(self.tasks.iter().map(|(_, t)| t.clone()).collect())
+    }
+
     /// A tool call from a complete `tool_use` block.
     fn claude_call(&mut self, block: &Value) -> Vec<Out> {
         let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) else {
             return vec![];
         };
+        // Task list calls feed the checklist rather than a tool row.
+        let input = &block["input"];
+        match name {
+            "TodoWrite" => return todos_from(&input["todos"], "content").map(Out::Todos).into_iter().collect(),
+            "TaskCreate" => {
+                let text = input["subject"].as_str().unwrap_or_default().to_string();
+                let active = input["activeForm"].as_str().map(str::to_string);
+                self.creating.insert(id.into(), Todo { text, status: TodoStatus::Pending, active });
+                return vec![];
+            }
+            "TaskUpdate" => {
+                let Some(task) = input["taskId"].as_str() else { return vec![] };
+                if input["status"].as_str() == Some("deleted") {
+                    self.tasks.retain(|(t, _)| t != task);
+                } else if let Some((_, todo)) = self.tasks.iter_mut().find(|(t, _)| t == task) {
+                    if let Some(status) = input["status"].as_str() {
+                        todo.status = TodoStatus::parse(status);
+                    }
+                    if let Some(subject) = input["subject"].as_str() {
+                        todo.text = subject.into();
+                    }
+                    if let Some(active) = input["activeForm"].as_str() {
+                        todo.active = Some(active.into());
+                    }
+                } else {
+                    return vec![];
+                }
+                return vec![self.task_list()];
+            }
+            "TaskList" | "TaskGet" => return vec![],
+            _ => {}
+        }
         let finish = match tool_kind(name) {
             ToolKind::Run => Some(Finish::Run),
             ToolKind::Edit | ToolKind::Write => claude_diff(name, &block["input"]).map(Finish::Diff),
@@ -173,6 +216,19 @@ impl Parser {
         let Some(id) = block["tool_use_id"].as_str() else {
             return vec![];
         };
+        // "Task #3 created successfully: …" names the id later updates use.
+        if let Some(todo) = self.creating.remove(id) {
+            let text = result_text(&block["content"]);
+            let task = text.split_once('#').and_then(|(_, rest)| rest.split(|c: char| !c.is_ascii_digit()).next());
+            return match task.filter(|t| !t.is_empty()) {
+                Some(task) => {
+                    self.tasks.push((task.to_string(), todo));
+                    vec![self.task_list()]
+                }
+                None => vec![],
+            };
+        }
+        // A TaskUpdate's result ends a call with no row, which the chat ignores.
         let ok = block["is_error"].as_bool() != Some(true);
         let detail = match self.calls.remove(id) {
             Some(Finish::Diff(diff)) => ok.then_some(diff),
@@ -222,6 +278,18 @@ impl Parser {
                 ok: item["status"].as_str() == Some("completed"),
                 detail: None,
             }),
+            (Some("item.started" | "item.updated" | "item.completed"), Some("todo_list")) => {
+                let items = item["items"].as_array().into_iter().flatten();
+                out.push(Out::Todos(
+                    items
+                        .map(|i| Todo {
+                            text: i["text"].as_str().unwrap_or_default().into(),
+                            status: if i["completed"].as_bool() == Some(true) { TodoStatus::Completed } else { TodoStatus::Pending },
+                            active: None,
+                        })
+                        .collect(),
+                ));
+            }
             (Some("item.started"), Some("reasoning")) => out.push(Out::Thinking(true)),
             (Some("item.completed"), Some("reasoning")) => out.push(Out::Thinking(false)),
             (Some("item.completed"), Some("agent_message")) => {
@@ -371,6 +439,9 @@ impl Parser {
             return vec![];
         };
         let state = &part["state"];
+        if name == "todowrite" {
+            return todos_from(&state["input"]["todos"], "content").map(Out::Todos).into_iter().collect();
+        }
         let mut out = vec![tool_start(&self.cwd, id, name, &state["input"])];
         match state["status"].as_str() {
             Some("completed") => {
@@ -396,6 +467,9 @@ fn gemini(v: &Value, line: &str) -> Vec<Out> {
     match s("/type").as_deref() {
         Some("init") => out.extend(s("/session_id").map(Out::Session)),
         Some("message") if s("/role").as_deref() == Some("assistant") => out.extend(s("/content").map(Out::Text)),
+        Some("tool_use") if s("/tool_name").as_deref() == Some("write_todos") => {
+            out.extend(todos_from(&v["parameters"]["todos"], "description").map(Out::Todos))
+        }
         Some("tool_use") => out.extend(s("/tool_name").map(|t| Out::Status(format!("using {t}")))),
         // Text after a tool call is a new message, not a continuation.
         Some("tool_result") => out.push(Out::Break),
@@ -419,6 +493,23 @@ fn gemini(v: &Value, line: &str) -> Vec<Out> {
         _ => {}
     }
     out
+}
+
+/// A checklist from a `todos` array whose items carry `status` and their text under `text_key`.
+/// `None` when it isn't an array.
+fn todos_from(todos: &Value, text_key: &str) -> Option<Vec<Todo>> {
+    let items = todos.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter(|t| t["status"].as_str() != Some("cancelled"))
+            .map(|t| Todo {
+                text: t[text_key].as_str().unwrap_or_default().into(),
+                status: TodoStatus::parse(t["status"].as_str().unwrap_or_default()),
+                active: t["activeForm"].as_str().map(str::to_string),
+            })
+            .collect(),
+    )
 }
 
 /// A Claude `result` line's usage: the whole turn's tokens and cost.
@@ -935,6 +1026,39 @@ mod tests {
         assert!(matches!(&events(Protocol::Gemini, result)[..], [Out::Error(m)] if m == "no key"));
         let ok = r#"{"type":"result","status":"success","stats":{}}"#;
         assert!(events(Protocol::Gemini, ok).is_empty());
+    }
+
+    #[test]
+    fn task_lists_from_each_agent() {
+        let names = |todos: &[Todo]| todos.iter().map(|t| format!("{}:{:?}", t.text, t.status)).collect::<Vec<_>>();
+        let last = |out: Vec<Out>| out.into_iter().rev().find_map(|e| match e {
+            Out::Todos(t) => Some(t),
+            _ => None,
+        });
+        // Claude: TaskCreate's result names the id that TaskUpdate uses. The calls get no tool rows.
+        let mut p = Parser::new(Protocol::Claude, Path::new("/"));
+        let call = |id: &str, name: &str, input: &str| format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#);
+        let result = |id: &str, text: &str| format!(r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"{text}"}}]}}}}"#);
+        assert!(p.parse(&call("c1", "TaskCreate", r#"{"subject":"alpha","activeForm":"Doing alpha"}"#)).is_empty());
+        p.parse(&result("c1", "Task #1 created successfully: alpha"));
+        p.parse(&call("c2", "TaskCreate", r#"{"subject":"beta"}"#));
+        let created = last(p.parse(&result("c2", "Task #2 created successfully: beta"))).unwrap();
+        assert_eq!(names(&created), ["alpha:Pending", "beta:Pending"]);
+        let updated = last(p.parse(&call("c3", "TaskUpdate", r#"{"taskId":"1","status":"in_progress"}"#))).unwrap();
+        assert_eq!(names(&updated), ["alpha:InProgress", "beta:Pending"]);
+        assert_eq!(updated[0].active.as_deref(), Some("Doing alpha"));
+        let done = last(p.parse(&call("c4", "TaskUpdate", r#"{"taskId":"1","status":"completed"}"#))).unwrap();
+        assert_eq!(names(&done)[0], "alpha:Completed");
+        // TodoWrite replaces the list.
+        let todo = call("c5", "TodoWrite", r#"{"todos":[{"content":"x","status":"completed","activeForm":"Xing"}]}"#);
+        assert_eq!(names(&last(p.parse(&todo)).unwrap()), ["x:Completed"]);
+        // Codex's todo_list item, OpenCode's todowrite and Gemini's write_todos.
+        let codex = r#"{"type":"item.updated","item":{"id":"t","type":"todo_list","items":[{"text":"a","completed":true},{"text":"b","completed":false}]}}"#;
+        assert_eq!(names(&last(events(Protocol::Codex, codex)).unwrap()), ["a:Completed", "b:Pending"]);
+        let opencode = r#"{"type":"tool_use","part":{"callID":"t","tool":"todowrite","state":{"status":"completed","input":{"todos":[{"content":"a","status":"in_progress"}]}}}}"#;
+        assert_eq!(names(&last(events(Protocol::OpenCode, opencode)).unwrap()), ["a:InProgress"]);
+        let gemini = r#"{"type":"tool_use","tool_name":"write_todos","parameters":{"todos":[{"description":"a","status":"pending"},{"description":"b","status":"cancelled"}]}}"#;
+        assert_eq!(names(&last(events(Protocol::Gemini, gemini)).unwrap()), ["a:Pending"]);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     engine::{attach::{human_size, Attachment, Kind}, Mode},
-    store::{Role, ToolCall, ToolKind, Usage},
+    store::{Role, Todo, TodoStatus, ToolCall, ToolKind, Usage},
     ui::{
         glass,
         theme::{Rgba, Theme},
@@ -108,6 +108,7 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
         .max_w(relative(0.94))
         .child(agent_header(ctx, item, streaming))
         .when(ctx.show_tools && !item.tools.is_empty(), |column| column.child(tool_group(&item.tools, theme)))
+        .when(!item.todos.is_empty(), |column| column.child(checklist(&item.todos, streaming, theme)))
         .when(streaming, |column| {
             column.child(
                 div()
@@ -142,6 +143,46 @@ const PROGRESS_SCALE: f32 = 0.92;
 /// Lines added and removed, the colours diff views use, readable on every dark theme.
 const ADDED: Rgba = Rgba::hex(0x3fb950);
 const REMOVED: Rgba = Rgba::hex(0xf85149);
+
+/// The agent's task checklist: the task in progress first as a heading while the reply runs, then every
+/// item with its state, finished ones struck through.
+fn checklist(todos: &[Todo], streaming: bool, theme: &Theme) -> AnyElement {
+    let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+    let current = todos.iter().find(|t| t.status == TodoStatus::InProgress);
+    let heading = match (streaming, current) {
+        (true, Some(t)) => format!("✻ {}…", t.active.as_deref().unwrap_or(&t.text)),
+        _ => format!("Tasks · {done} of {} done", todos.len()),
+    };
+    let rows = todos.iter().map(|t| {
+        let (mark, colour) = match t.status {
+            TodoStatus::InProgress => ("■", theme.acc2),
+            TodoStatus::Pending => ("□", theme.muted),
+            TodoStatus::Completed => ("✔", ADDED),
+        };
+        div()
+            .flex()
+            .items_start()
+            .gap(px(8.))
+            .child(div().w(px(12.)).flex_none().text_color(colour.to_hsla()).child(mark))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(t.status == TodoStatus::InProgress, |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .when(t.status == TodoStatus::Completed, |d| d.line_through().text_color(theme.muted.to_hsla()))
+                    .child(t.text.clone()),
+            )
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .max_w(px(READING_WIDTH))
+        .text_size(px(12.5))
+        .child(div().text_color(theme.acc2.to_hsla()).child(heading))
+        .child(div().flex().flex_col().gap(px(3.)).pl(px(10.)).border_l_2().border_color(theme.line2.to_hsla()).children(rows))
+        .into_any_element()
+}
 
 /// The line between a reply's progress notes and its final answer.
 fn answer_divider(theme: &Theme) -> AnyElement {

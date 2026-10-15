@@ -374,7 +374,7 @@ mod tests {
         let mut s = Session::new("claude", "/".into());
         s.title = title.into();
         for text in texts {
-            s.messages.push(Message { role: Role::Agent, text: (*text).into(), attachments: Vec::new(), tools: Vec::new(), thought_secs: None, took_secs: None, agent: None, final_at: None, usage: None });
+            s.messages.push(Message { role: Role::Agent, text: (*text).into(), attachments: Vec::new(), tools: Vec::new(), thought_secs: None, took_secs: None, agent: None, final_at: None, usage: None, todos: Vec::new() });
         }
         s
     }

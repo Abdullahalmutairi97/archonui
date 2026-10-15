@@ -51,6 +51,38 @@ pub struct Message {
     /// Tokens and cost of the turn that wrote this reply, when the agent reports them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// The agent's task checklist as it last wrote it during this reply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<Todo>,
+}
+
+/// One item of an agent's task checklist.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Todo {
+    pub text: String,
+    pub status: TodoStatus,
+    /// What the agent says while doing it, e.g. "Running tests" for "Run tests".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    /// The status names the agents use: `pending`, `in_progress`, `completed`, and Codex's flag.
+    pub fn parse(name: &str) -> Self {
+        match name {
+            "in_progress" | "in-progress" | "active" => Self::InProgress,
+            "completed" | "complete" | "done" => Self::Completed,
+            _ => Self::Pending,
+        }
+    }
 }
 
 /// What one turn used, summed over its model calls. `input` excludes cached tokens.
@@ -212,7 +244,7 @@ impl Session {
 
     pub fn push_with(&mut self, role: Role, text: impl Into<String>, attachments: Vec<Attachment>) {
         let agent = (role == Role::Agent).then(|| self.agent.clone());
-        self.messages.push(Message { role, text: text.into(), attachments, tools: Vec::new(), thought_secs: None, took_secs: None, agent, final_at: None, usage: None });
+        self.messages.push(Message { role, text: text.into(), attachments, tools: Vec::new(), thought_secs: None, took_secs: None, agent, final_at: None, usage: None, todos: Vec::new() });
         self.updated = now();
     }
 

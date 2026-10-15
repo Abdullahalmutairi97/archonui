@@ -438,6 +438,7 @@ mod tests {
                 agent: None,
                 final_at: None,
                 usage: None,
+                todos: Vec::new(),
             })
             .collect();
         s

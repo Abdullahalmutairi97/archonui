@@ -535,6 +535,11 @@ impl AppState {
                 }
             }
             Event::Out(Out::Usage(u)) => live.usage.get_or_insert_default().add(u),
+            Event::Out(Out::Todos(todos)) => {
+                if let Some(m) = s.reply_mut() {
+                    m.todos = todos;
+                }
+            }
             Event::Out(Out::Break) => {
                 if let Some(m) = s.reply_mut().filter(|m| !m.text.is_empty()) {
                     if !m.text.ends_with("\n\n") {
