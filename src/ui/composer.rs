@@ -694,7 +694,9 @@ impl Shell {
         if rows.is_empty() {
             return false;
         }
-        let row = (self.composers.row(id) as isize + delta).rem_euclid(rows.len() as isize) as usize;
+        // Step from the row shown, which is clamped when the list has shrunk since it was set.
+        let cur = self.composers.row(id).min(rows.len() - 1);
+        let row = (cur as isize + delta).rem_euclid(rows.len() as isize) as usize;
         self.composers.set_row(id, row);
         cx.notify();
         true
