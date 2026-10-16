@@ -25,6 +25,9 @@ pub struct Skill {
     pub agents: Vec<&'static str>,
 }
 
+/// The harnesses that read `~/.agents/skills`.
+const HUB_READERS: [&str; 4] = ["codex", "gemini", "opencode", "pi"];
+
 /// What `sync` did, one line per change.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SyncReport {
@@ -370,9 +373,16 @@ fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
     // Into the hub: every skill its readers do not reach yet.
     let mut in_hub: HashSet<PathBuf> = walk(&hub, Depth::One).iter().filter_map(|d| fs::canonicalize(d).ok()).collect();
     let names: HashMap<&Path, &str> = found.iter().map(|f| (f.canonical.as_path(), f.skill.name.as_str())).collect();
-    // Skill names the hub's readers already load: a second skill under the same name would be a
-    // duplicate to them, so it is skipped rather than linked under another folder name.
-    let mut hub_names: HashSet<String> = in_hub.iter().filter_map(|c| names.get(c.as_path())).map(|n| n.to_string()).collect();
+    // Skill names the hub's readers already load, from the hub or their own folders, with the
+    // folders and readers that have each: a second skill under the same name would be a duplicate
+    // to them, so it is skipped rather than linked under another folder name.
+    let mut hub_names: HashMap<String, Vec<(PathBuf, Vec<&str>)>> = HashMap::new();
+    for f in &found {
+        let readers: Vec<&str> = f.skill.agents.iter().copied().filter(|a| HUB_READERS.contains(a)).collect();
+        if !readers.is_empty() {
+            hub_names.entry(f.skill.name.clone()).or_default().push((f.canonical.clone(), readers));
+        }
+    }
     for f in &found {
         // A personal skill below the hub's top level is Pi's alone; linking it would list it twice.
         if f.skill.source == "Personal" || in_hub.contains(&f.canonical) {
@@ -382,13 +392,23 @@ fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
             skip_off(&f.skill, &mut report.skipped);
             continue;
         }
-        if hub_names.contains(&f.skill.name) {
-            report.skipped.push(format!("{} ({}): {} already has a skill with this name", f.skill.name, f.skill.source, tilde(home, &hub)));
+        let others: Vec<&(PathBuf, Vec<&str>)> =
+            hub_names.get(&f.skill.name).into_iter().flatten().filter(|(c, _)| *c != f.canonical).collect();
+        if !others.is_empty() {
+            let holder = if others.iter().any(|(c, _)| in_hub.contains(c)) {
+                tilde(home, &hub)
+            } else {
+                let mut readers: Vec<&str> = others.iter().flat_map(|(_, r)| r.iter().copied()).collect();
+                readers.sort_by_key(|a| AGENTS.iter().position(|b| b == a));
+                readers.dedup();
+                readers.iter().map(|a| super::agent_name(a)).collect::<Vec<_>>().join(" and ")
+            };
+            report.skipped.push(format!("{} ({}): {holder} already has a skill with this name", f.skill.name, f.skill.source));
             continue;
         }
         link(home, &hub, &f.canonical, &f.skill.source, &[], &mut report)?;
         in_hub.insert(f.canonical.clone());
-        hub_names.insert(f.skill.name.clone());
+        hub_names.entry(f.skill.name.clone()).or_default().push((f.canonical.clone(), HUB_READERS.to_vec()));
     }
     // Into Claude Code's folder: every hub skill it does not load yet.
     let sources: HashMap<&Path, &str> = found.iter().map(|f| (f.canonical.as_path(), f.skill.source.as_str())).collect();
@@ -961,6 +981,22 @@ mod tests {
         // Hub skills reach Claude under their own folder names; the plugin link is already Claude's.
         assert!(fs::symlink_metadata(home.join(".claude/skills/discovery")).is_ok());
         assert!(fs::symlink_metadata(home.join(".claude/skills/runpod-discovery")).is_err());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_skips_a_skill_whose_name_a_hub_reader_has_in_its_own_folder() {
+        let home = scratch("reader-name");
+        // Gemini loads its own `review`; linking Claude Code's `review` into the hub would give it two.
+        skill_md(&home.join(".claude/skills/review"), "---\nname: review\n---\n");
+        skill_md(&home.join(".gemini/skills/review"), "---\nname: review\n---\n");
+        let report = sync_in(&home, &[]).unwrap();
+        assert!(fs::symlink_metadata(home.join(".agents/skills/review")).is_err(), "{report:?}");
+        assert!(report.linked.is_empty(), "{report:?}");
+        assert_eq!(
+            report.skipped,
+            ["review (Claude Code): Gemini CLI already has a skill with this name", "review (Gemini): OpenCode already has a skill with this name"]
+        );
         let _ = fs::remove_dir_all(&home);
     }
 
