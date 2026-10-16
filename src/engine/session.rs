@@ -14,7 +14,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -28,6 +28,11 @@ pub enum Event {
 
 /// How long a cancelled agent gets to exit on SIGTERM before its group is sent SIGKILL.
 const KILL_AFTER: Duration = Duration::from_secs(3);
+
+/// How long output may still arrive after the agent exits. Output already in the pipe is drained in this time.
+const OUTPUT_GRACE: Duration = Duration::from_secs(2);
+/// How long to wait for the stderr tail once the agent has exited.
+const STDERR_GRACE: Duration = Duration::from_millis(500);
 
 /// One running prompt. Dropping it stops the agent.
 pub struct Turn {
@@ -157,37 +162,62 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
     let stderr = child.stderr.take().expect("piped stderr");
     let group = Arc::new(Group { pid, reaped: Mutex::new(false) });
     let (tx, rx) = unbounded();
+    // Set when `Finished` is sent; output read after that is dropped. A lock, not a flag, so a line
+    // being sent can't land after `Finished`.
+    let finished = Arc::new(Mutex::new(false));
+    // Shared rather than returned, so the lines read so far are kept even if the pipe never closes.
+    let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    let (eof_tx, eof_rx) = mpsc::channel();
 
-    let stderr_tail = thread::spawn(move || {
-        let mut tail = VecDeque::new();
+    let tail = stderr_tail.clone();
+    thread::spawn(move || {
         // Bytes, not `lines()`: a line that isn't UTF-8 must not stop the drain, or the pipe fills.
         for bytes in BufReader::new(stderr).split(b'\n').map_while(Result::ok) {
+            let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
             if tail.len() == 12 {
                 tail.pop_front();
             }
             tail.push_back(String::from_utf8_lossy(&bytes).trim_end_matches('\r').to_string());
         }
-        Vec::from(tail).join("\n")
+        let _ = stderr_tx.send(());
     });
 
     let mut parser = Parser::new(harness.protocol(), input.cwd);
-    let reaper = group.clone();
+    let reader_tx = tx.clone();
+    let reader_finished = finished.clone();
     thread::spawn(move || {
         // Bytes, not `lines()`: `map_while` would end the stream at the first non-UTF-8 line.
         for bytes in BufReader::new(stdout).split(b'\n').map_while(Result::ok) {
             let line = String::from_utf8_lossy(&bytes);
-            for out in parser.parse(line.trim_end_matches('\r')) {
-                let _ = tx.send_blocking(Event::Out(out));
+            let outs = parser.parse(line.trim_end_matches('\r'));
+            let finished = reader_finished.lock().unwrap_or_else(|e| e.into_inner());
+            if *finished {
+                break;
+            }
+            for out in outs {
+                let _ = reader_tx.send_blocking(Event::Out(out));
             }
         }
+        let _ = eof_tx.send(());
+    });
+
+    // A background process the agent started can hold stdout and stderr open after the agent exits,
+    // so the result waits only a short grace period for the pipes to close.
+    let reaper = group.clone();
+    thread::spawn(move || {
         reaper.wait_exit();
         let status = child.wait();
-        let tail = stderr_tail.join().unwrap_or_default();
+        let _ = eof_rx.recv_timeout(OUTPUT_GRACE);
+        let _ = stderr_rx.recv_timeout(STDERR_GRACE);
+        let tail = Vec::from(stderr_tail.lock().unwrap_or_else(|e| e.into_inner()).clone()).join("\n");
         let result = match status {
             Ok(s) if s.success() => Ok(()),
             Ok(s) => Err(format!("{s}\n{tail}").trim().to_string()),
             Err(e) => Err(e.to_string()),
         };
+        let mut finished = finished.lock().unwrap_or_else(|e| e.into_inner());
+        *finished = true;
         let _ = tx.send_blocking(Event::Finished(result));
     });
 
@@ -292,6 +322,42 @@ mod tests {
         // Once reaped, cancelling again sends nothing.
         assert!(!turn.group.signal(0));
         turn.cancel();
+    }
+
+    #[test]
+    fn a_background_process_does_not_hold_up_the_finish() {
+        // `sleep` inherits stdout, so the pipe stays open after the shell exits.
+        let turn = run_shell("sleep 8 & echo hi");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut text = String::new();
+        let result = loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let next = smol::block_on(smol::future::or(async { turn.events.recv().await.ok() }, async {
+                smol::Timer::after(left).await;
+                None
+            }));
+            match next {
+                Some(Event::Out(Out::Text(t))) => text.push_str(&t),
+                Some(Event::Finished(result)) => break result,
+                Some(_) => {}
+                None => panic!("the turn did not finish within 5 seconds"),
+            }
+        };
+        assert_eq!(text, "hi\n", "output before the exit arrives before Finished");
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn a_failed_exit_keeps_its_stderr_when_a_background_process_holds_the_pipe() {
+        let turn = run_shell("sleep 4 >&2 & echo boom >&2; exit 3");
+        let result = loop {
+            match smol::block_on(turn.events.recv()) {
+                Ok(Event::Finished(result)) => break result,
+                Ok(_) => {}
+                Err(_) => panic!("the turn ended without Finished"),
+            }
+        };
+        assert_eq!(result, Err("exit status: 3\nboom".to_string()));
     }
 
     #[test]
