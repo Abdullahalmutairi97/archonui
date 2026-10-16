@@ -225,7 +225,7 @@ fn connection(stream: TcpStream, ip: IpAddr, hub: Hub, requests: smol::channel::
     if stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() {
         return;
     }
-    let mut ws = match tungstenite::accept(stream) {
+    let mut ws = match tungstenite::accept_with_config(stream, Some(proto::ws_config())) {
         Ok(ws) => ws,
         Err(e) => {
             eprintln!("archonui host: handshake failed: {e}");
