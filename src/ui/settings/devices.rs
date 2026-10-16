@@ -189,6 +189,19 @@ impl Shell {
                 ),
             );
         }
+        rows.push(toggle_row(
+            "sync-copy-secrets",
+            "Copy secret files",
+            "Off: .env files, keys and certificates stay on this device and are left out of the cloud copy.",
+            self.state.settings.sync.copy_secrets,
+            weak,
+            &theme,
+            |this, on, cx| {
+                this.state.settings.sync.copy_secrets = on;
+                this.save(cx);
+            },
+            None,
+        ));
         rows.push(button_row(
             "cloud-refresh",
             "Cloud copy",

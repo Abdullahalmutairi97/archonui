@@ -51,11 +51,13 @@ pub struct SyncSettings {
     /// `Device::id` of the device that keeps the always-on cloud copy, if any. Must be one of
     /// `devices` or this device itself.
     pub cloud: Option<String>,
+    /// Copy secret-looking files (.env, keys, certificates) to the cloud too. Off: they stay on this device.
+    pub copy_secrets: bool,
 }
 
 impl Default for SyncSettings {
     fn default() -> Self {
-        Self { enabled: false, port: DEFAULT_PORT, devices: Vec::new(), cloud: None }
+        Self { enabled: false, port: DEFAULT_PORT, devices: Vec::new(), cloud: None, copy_secrets: false }
     }
 }
 

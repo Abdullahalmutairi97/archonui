@@ -19,9 +19,10 @@ pub fn wip_ref(device: &str) -> String {
 }
 
 /// Snapshots the working files of `dir` as a commit on `wip_ref(device)`. Returns the new commit
-/// id, or None when nothing changed since the last snapshot.
-pub fn take(dir: &Path, device: &str) -> Result<Option<String>, String> {
-    take_in(dir, device, &snapshots_dir())
+/// id, or None when nothing changed since the last snapshot. Secret-looking files are left out
+/// unless `secrets` is true.
+pub fn take(dir: &Path, device: &str, secrets: bool) -> Result<Option<String>, String> {
+    take_in(dir, device, &snapshots_dir(), secrets)
 }
 
 /// A git bundle of `wip_ref(device)` holding only what `since` lacks. A full bundle when `since`
@@ -58,23 +59,26 @@ pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
     result
 }
 
-fn take_in(dir: &Path, device: &str, snapshots: &Path) -> Result<Option<String>, String> {
+fn take_in(dir: &Path, device: &str, snapshots: &Path, secrets: bool) -> Result<Option<String>, String> {
     check_device(device)?;
     let repo = Repo::open(dir, snapshots)?;
     let index = temp_path("index");
-    let result = take_with(&repo, device, &index);
+    let result = take_with(&repo, device, &index, secrets);
     let _ = fs::remove_file(&index);
     result
 }
 
 /// The snapshot itself, built in a temporary index so the real one is never touched.
-fn take_with(repo: &Repo, device: &str, index: &Path) -> Result<Option<String>, String> {
+fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<Option<String>, String> {
     let r = wip_ref(device);
     let has_head = succeeds(repo.git().args(["rev-parse", "--verify", "-q", "HEAD"]));
     if has_head {
         run(indexed(repo, index).args(["read-tree", "HEAD"]))?;
     }
     run(indexed(repo, index).args(["add", "-A"]))?;
+    if !secrets {
+        drop_secrets(repo, index)?;
+    }
     let tree = run(indexed(repo, index).args(["write-tree"]))?;
 
     let prev = run(repo.git().args(["rev-parse", "--verify", "-q", r.as_str()])).ok();
@@ -202,6 +206,49 @@ fn indexed(repo: &Repo, index: &Path) -> Command {
     cmd
 }
 
+/// Removes secret-looking paths from the temporary index only. The project's files and real index
+/// are untouched, so the snapshot simply lacks those paths.
+fn drop_secrets(repo: &Repo, index: &Path) -> Result<(), String> {
+    let paths = secret_paths(repo, index)?;
+    for chunk in paths.chunks(500) {
+        let specs: Vec<String> = chunk.iter().map(|p| format!(":(top,literal){p}")).collect();
+        run(indexed(repo, index).args(["rm", "-q", "--cached", "--ignore-unmatch", "--"]).args(&specs))?;
+    }
+    Ok(())
+}
+
+/// Paths in the temporary index, from the top of the repository, whose file name is a secret.
+fn secret_paths(repo: &Repo, index: &Path) -> Result<Vec<String>, String> {
+    let out = indexed(repo, index)
+        .args(["ls-files", "-z", "--full-name", "--", ":/"])
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("git ls-files: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(out
+        .stdout
+        .split(|b| *b == 0)
+        .filter_map(|p| std::str::from_utf8(p).ok())
+        .filter(|p| is_secret(p.rsplit('/').next().unwrap_or_default()))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Whether a file name looks like a secret: env files, private keys, certificates and credentials.
+/// Example and template env files are not secrets.
+fn is_secret(name: &str) -> bool {
+    if matches!(name, ".env.example" | ".env.sample" | ".env.template") {
+        return false;
+    }
+    let env = name == ".env" || name.starts_with(".env.");
+    let key = [".pem", ".key", ".p12", ".pfx"].iter().any(|ext| name.ends_with(*ext));
+    let ssh = matches!(name, "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa");
+    let creds = matches!(name, ".npmrc" | ".pypirc" | ".netrc" | "credentials.json");
+    let service = name.starts_with("service-account") && name.ends_with(".json");
+    env || key || ssh || creds || service
+}
+
 /// Runs `cmd` and returns its trimmed stdout, or the git error with the arguments that failed.
 fn run(cmd: &mut Command) -> Result<String, String> {
     let label = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
@@ -309,13 +356,13 @@ mod tests {
         let head = git(&proj, &["rev-parse", "HEAD"]);
         let status_before = git(&proj, &["status", "--porcelain"]);
 
-        let c1 = take_in(&proj, "n1", &snaps).unwrap().expect("first snapshot");
+        let c1 = take_in(&proj, "n1", &snaps, false).unwrap().expect("first snapshot");
         assert_eq!(git(&proj, &["status", "--porcelain"]), status_before);
         assert_eq!(git(&proj, &["rev-parse", "HEAD"]), head);
-        assert_eq!(take_in(&proj, "n1", &snaps).unwrap(), None);
+        assert_eq!(take_in(&proj, "n1", &snaps, false).unwrap(), None);
 
         fs::write(proj.join("tracked.txt"), "two\n").unwrap();
-        let c2 = take_in(&proj, "n1", &snaps).unwrap().expect("second snapshot");
+        let c2 = take_in(&proj, "n1", &snaps, false).unwrap().expect("second snapshot");
         assert_ne!(c1, c2);
         let parent = format!("{c2}^");
         assert_eq!(git(&proj, &["rev-parse", parent.as_str()]), c1);
@@ -335,9 +382,9 @@ mod tests {
         fs::write(proj.join("notes.txt"), "draft\n").unwrap();
         fs::create_dir_all(proj.join("target")).unwrap();
         fs::write(proj.join("target/x"), "built\n").unwrap();
-        take_in(&proj, "n1", &snaps).unwrap();
+        take_in(&proj, "n1", &snaps, false).unwrap();
         fs::write(proj.join("tracked.txt"), "two\n").unwrap();
-        let c2 = take_in(&proj, "n1", &snaps).unwrap().expect("second snapshot");
+        let c2 = take_in(&proj, "n1", &snaps, false).unwrap().expect("second snapshot");
 
         let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
         assert!(!full.is_empty());
@@ -362,9 +409,9 @@ mod tests {
         let proj = base.join("proj");
         let snaps = base.join("snaps");
         init_repo(&proj);
-        let c1 = take_in(&proj, "n1", &snaps).unwrap().expect("first snapshot");
+        let c1 = take_in(&proj, "n1", &snaps, false).unwrap().expect("first snapshot");
         fs::write(proj.join("tracked.txt"), "two\n").unwrap();
-        let c2 = take_in(&proj, "n1", &snaps).unwrap().expect("second snapshot");
+        let c2 = take_in(&proj, "n1", &snaps, false).unwrap().expect("second snapshot");
 
         let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
         let inc = bundle_in(&proj, "n1", Some(c1.as_str()), &snaps).unwrap();
@@ -390,9 +437,9 @@ mod tests {
         fs::write(folder.join("skip.log"), "log\n").unwrap();
         fs::write(folder.join(".gitignore"), "*.log\n").unwrap();
 
-        let c = take_in(&folder, "n1", &snaps).unwrap().expect("snapshot");
+        let c = take_in(&folder, "n1", &snaps, false).unwrap().expect("snapshot");
         assert!(!folder.join(".git").exists());
-        assert_eq!(take_in(&folder, "n1", &snaps).unwrap(), None);
+        assert_eq!(take_in(&folder, "n1", &snaps, false).unwrap(), None);
 
         let full = bundle_in(&folder, "n1", None, &snaps).unwrap();
         let dest = base.join("restored");
@@ -401,6 +448,73 @@ mod tests {
         assert!(!dest.join("skip.log").exists());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Adds secret-looking files, and look-alikes that are not secrets, to `dir`.
+    fn add_secret_files(dir: &Path) {
+        fs::write(dir.join(".env"), "KEY=1\n").unwrap();
+        fs::write(dir.join(".env.example"), "KEY=\n").unwrap();
+        fs::create_dir_all(dir.join("keys")).unwrap();
+        fs::write(dir.join("keys/server.pem"), "pem\n").unwrap();
+        fs::write(dir.join("id_rsa.pub"), "pub\n").unwrap();
+    }
+
+    fn snapshot_files(dir: &Path, commit: &str) -> Vec<String> {
+        git(dir, &["ls-tree", "-r", "--name-only", commit]).lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn secret_files_stay_out_by_default() {
+        if !git_available() {
+            return;
+        }
+        let base = root("secrets");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        add_secret_files(&proj);
+        let status_before = git(&proj, &["status", "--porcelain"]);
+
+        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let files = snapshot_files(&proj, &c);
+        assert!(files.contains(&"tracked.txt".to_string()));
+        assert!(files.contains(&".env.example".to_string()));
+        assert!(files.contains(&"id_rsa.pub".to_string()));
+        assert!(!files.contains(&".env".to_string()));
+        assert!(!files.contains(&"keys/server.pem".to_string()));
+        assert_eq!(git(&proj, &["status", "--porcelain"]), status_before);
+        assert!(proj.join(".env").exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn secret_files_are_copied_when_asked_for() {
+        if !git_available() {
+            return;
+        }
+        let base = root("secrets-on");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        add_secret_files(&proj);
+
+        let c = take_in(&proj, "n1", &snaps, true).unwrap().expect("snapshot");
+        let files = snapshot_files(&proj, &c);
+        assert!(files.contains(&".env".to_string()));
+        assert!(files.contains(&"keys/server.pem".to_string()));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn secret_names() {
+        for name in [".env", ".env.local", "server.pem", "api.key", "cert.p12", "cert.pfx", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", ".npmrc", ".pypirc", ".netrc", "credentials.json", "service-account-prod.json"] {
+            assert!(is_secret(name), "{name}");
+        }
+        for name in [".env.example", ".env.sample", ".env.template", "environment.txt", "id_rsa.pub", "main.rs", "service-account.txt", "keys.json", "credentials.toml"] {
+            assert!(!is_secret(name), "{name}");
+        }
     }
 
     #[test]

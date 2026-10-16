@@ -23,9 +23,9 @@ without Tailscale must behave exactly as before. That is a hard requirement from
 - **None of it has run on real devices yet.** The previous agent's sandbox could not reach the
   tailnet. Expect bugs in the networking and UI parts; the unit-tested parts (protocol, snapshots,
   cloud store, state) are likely solid.
-- Possibly landing soon from the previous agent (run `git pull` before starting):
-  - attachments in remote chats (`ClientMsg::Prompt.files`);
-  - leaving secret files (`.env`, keys) out of the cloud copy by default (`SyncSettings::copy_secrets`).
+- Also built: attachments in remote chats (`ClientMsg::Prompt.files`), secret files (`.env`, keys)
+  left out of the cloud copy by default (`SyncSettings::copy_secrets`), and "+ New on <device>"
+  buttons in the sidebar to start a chat on another device.
 
 ## Machines
 
@@ -112,9 +112,8 @@ listens on 7420 (`ss -ltn`), and `tailscale` is never run.
 
 - Running `--serve` and the app on the **same** machine: both use port 7420 and the same chat files.
   The app will fail to listen (it shows a toast). Don't do it; or give one a different `--bind` port.
-- New chats on another device can only be started with `--remote … new` for now; there's no UI
-  button yet. That was the next task: a "New chat on <device>" action in the sidebar. On the host,
-  `ClientMsg::NewSession` with an empty `cwd` should fall back to the host's default folder.
+- "+ New on <device>" sends `NewSession` with an empty agent and folder; the host fills in its own
+  defaults. Check the new chat opens in the focused tile on the asking device.
 - Not built: the other device's files, git and terminal in the side panel.
 - The Devices page sends `ListCloud` on each render until the cloud answers. Fine while connected;
   worth tidying.
