@@ -156,7 +156,19 @@ fn read_or_default<T: DeserializeOwned + Serialize + Default>(path: &Path) -> T 
     let Ok(bytes) = fs::read(path) else { return T::default() };
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
         eprintln!("ignoring {}: {e}", path.display());
-        let _ = fs::copy(path, path.with_extension("json.corrupt"));
+        // Earlier backups are kept, so each bad file gets the next free name. The same bad file, read
+        // again on the next launch, is not backed up twice.
+        let mut backup = path.with_extension("json.corrupt");
+        let mut n = 2;
+        let mut saved = false;
+        while backup.exists() {
+            saved |= fs::read(&backup).is_ok_and(|old| old == bytes);
+            backup = path.with_extension(format!("json.corrupt.{n}"));
+            n += 1;
+        }
+        if !saved {
+            let _ = fs::copy(path, backup);
+        }
         serde_json::from_slice(&bytes).ok().and_then(salvage).unwrap_or_default()
     })
 }
@@ -445,6 +457,22 @@ mod tests {
         let loaded = load(&config, &dir.join("none.json"));
         assert_eq!(loaded.settings.gaps, 14.);
         assert!(config.join("settings.json.corrupt").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_second_corrupt_file_does_not_overwrite_the_first_backup() {
+        let dir = temp("corrupt-twice");
+        let config = dir.join("config");
+        let settings = config.join(SETTINGS_FILE);
+        write_atomic(&settings, b"{ first").unwrap();
+        load(&config, &dir.join("none.json"));
+        write_atomic(&settings, b"{ second").unwrap();
+        load(&config, &dir.join("none.json"));
+        assert_eq!(fs::read(config.join("settings.json.corrupt")).unwrap(), b"{ first");
+        assert_eq!(fs::read(config.join("settings.json.corrupt.2")).unwrap(), b"{ second");
+        load(&config, &dir.join("none.json"));
+        assert!(!config.join("settings.json.corrupt.3").exists(), "the same bad file is backed up once");
         fs::remove_dir_all(dir).unwrap();
     }
 
