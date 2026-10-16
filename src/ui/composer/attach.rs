@@ -110,10 +110,12 @@ impl Shell {
     pub(super) fn render_attach_popover(&self, id: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let mut rows: Vec<AnyElement> = Vec::new();
+        let cwd = self.state.session(id).map(|s| s.cwd.clone()).unwrap_or_default();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
         for (i, path) in self.composers.recent(id).iter().enumerate() {
             let (id, path) = (id.to_string(), path.clone());
             let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-            let folder = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
+            let folder = path.parent().map(|p| short_folder(p, &cwd, home.as_deref())).unwrap_or_default();
             rows.push(self.attach_row(
                 format!("composer-recent-{id}-{i}"),
                 name,
@@ -284,9 +286,32 @@ fn recent_files(root: &Path) -> Vec<PathBuf> {
     found.into_iter().take(RECENT_FILES).map(|(_, path)| path).collect()
 }
 
+/// A recent file's folder as the attach popover shows it: relative to the session's folder (`.` for the
+/// folder itself), else with the home folder as `~`. Full paths ran past the popover's edge.
+fn short_folder(folder: &Path, cwd: &Path, home: Option<&Path>) -> String {
+    if let Ok(rest) = folder.strip_prefix(cwd) {
+        return if rest.as_os_str().is_empty() { ".".into() } else { rest.display().to_string() };
+    }
+    match home.and_then(|h| folder.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => folder.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_file_folders_are_shown_short() {
+        let (cwd, home) = (Path::new("/home/a/proj"), Some(Path::new("/home/a")));
+        assert_eq!(short_folder(Path::new("/home/a/proj/src/ui"), cwd, home), "src/ui");
+        assert_eq!(short_folder(Path::new("/home/a/proj"), cwd, home), ".");
+        assert_eq!(short_folder(Path::new("/home/a/other/x"), cwd, home), "~/other/x");
+        assert_eq!(short_folder(Path::new("/etc"), cwd, home), "/etc");
+        assert_eq!(short_folder(Path::new("/home/a/x"), cwd, None), "/home/a/x");
+    }
 
     #[test]
     fn recent_files_skip_hidden_and_build_folders_and_stop_at_the_depth_limit() {
