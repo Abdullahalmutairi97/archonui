@@ -321,6 +321,21 @@ const COPY_HOOK_JS: &str = r#"(() => {
   };
 })()"#;
 
+/// Reports the top page's `document.title` to `__archonuiTitle` whenever it changes. Chrome sends
+/// no target or page event when script sets the title, only on navigation.
+const TITLE_HOOK_JS: &str = r#"(() => {
+  if (window.__archonuiTitleHooked || window !== window.top) return;
+  window.__archonuiTitleHooked = true;
+  let last = null;
+  const check = () => {
+    if (document.title === last || typeof window.__archonuiTitle !== 'function') return;
+    last = document.title;
+    window.__archonuiTitle(last);
+  };
+  new MutationObserver(check).observe(document, { subtree: true, childList: true, characterData: true });
+  check();
+})()"#;
+
 /// The DevTools connection, run on its own thread.
 struct Session {
     ws: WebSocket<MaybeTlsStream<TcpStream>>,
@@ -430,6 +445,7 @@ impl Session {
                             json!({"patterns": [{"urlPattern": "file://*", "requestStage": "Request"}]}),
                         );
                         self.install_copy_hook();
+                        self.install_title_hook();
                         let id = self.call(None, "Browser.getVersion", json!({}));
                         self.pending.insert(id, Pending::Version);
                         let (w, h, scale) = self.viewport;
@@ -504,6 +520,11 @@ impl Session {
             "Runtime.bindingCalled" if params["name"] == "__archonuiCopy" => {
                 if let Some(text) = params["payload"].as_str().filter(|t| !t.is_empty()) {
                     let _ = self.copies.send_blocking(text.to_string());
+                }
+            }
+            "Runtime.bindingCalled" if params["name"] == "__archonuiTitle" => {
+                if let Some(title) = params["payload"].as_str().filter(|t| !t.is_empty()) {
+                    self.emit(BrowserEvent::Title(title.to_string()));
                 }
             }
             "Target.targetCreated"
@@ -589,6 +610,13 @@ impl Session {
         self.page_call("Runtime.addBinding", json!({"name": "__archonuiCopy"}));
         self.page_call("Page.addScriptToEvaluateOnNewDocument", json!({"source": COPY_HOOK_JS}));
         self.page_call("Runtime.evaluate", json!({"expression": COPY_HOOK_JS}));
+    }
+
+    /// Reports title changes made by the page's script, which Chrome sends no event for.
+    fn install_title_hook(&mut self) {
+        self.page_call("Runtime.addBinding", json!({"name": "__archonuiTitle"}));
+        self.page_call("Page.addScriptToEvaluateOnNewDocument", json!({"source": TITLE_HOOK_JS}));
+        self.page_call("Runtime.evaluate", json!({"expression": TITLE_HOOK_JS}));
     }
 
     fn resize(&mut self, width: u32, height: u32, scale: f32) {
@@ -1191,6 +1219,28 @@ mod tests {
         assert_eq!(key_press("space", true), press(" ", "Space", 32, ""));
         assert_eq!(key_press("enter", false), press("Enter", "Enter", 13, "\r"));
         assert_eq!(key_press("shift", false), None);
+    }
+
+    /// A title set by the page's script, not only by loading it, reaches the panel. Needs Chrome:
+    /// `cargo test title_set_by_script -- --ignored`.
+    #[test]
+    #[ignore = "launches headless Chrome"]
+    fn title_set_by_script() {
+        let browser = Browser::launch().expect("Chrome launches");
+        let page = "<title>start</title><script>setTimeout(() => document.title = 'changed', 500)</script>";
+        browser.send(Command::Navigate(format!("data:text/html,{page}")));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut titles = Vec::new();
+        while !titles.iter().any(|t| t == "changed") {
+            match browser.events.try_recv() {
+                Ok(BrowserEvent::Title(t)) => titles.push(t),
+                Ok(BrowserEvent::Error(e)) => panic!("{e}"),
+                _ => {
+                    assert!(Instant::now() < deadline, "titles seen: {titles:?}");
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
     }
 
     /// Clipboard writes from the page reach `copies`. Needs Chrome:
