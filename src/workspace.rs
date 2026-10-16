@@ -159,8 +159,32 @@ pub fn rename(root: &Path, from: &Path, to: &Path) -> io::Result<(PathBuf, PathB
     if fs::symlink_metadata(&to).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination exists"));
     }
+    #[cfg(target_os = "linux")]
+    if rename_no_replace(&from, &to)? {
+        return Ok((from, to));
+    }
     fs::rename(&from, &to)?;
     Ok((from, to))
+}
+
+/// Renames `from` to `to` in one step that refuses an existing `to`, so a file created since the check
+/// above is never replaced. Returns `Ok(false)` when the filesystem can't do that (EINVAL or ENOSYS).
+#[cfg(target_os = "linux")]
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<bool> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e));
+    let (from, to) = (c(from)?, c(to)?);
+    // SAFETY: both paths are NUL-terminated and outlive the call, and AT_FDCWD only affects relative paths,
+    // which these are not.
+    let ret = unsafe { libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE) };
+    if ret == 0 {
+        return Ok(true);
+    }
+    match io::Error::last_os_error().raw_os_error() {
+        Some(libc::EEXIST) => Err(io::Error::new(io::ErrorKind::AlreadyExists, "the destination exists")),
+        Some(libc::EINVAL | libc::ENOSYS) => Ok(false),
+        _ => Err(io::Error::last_os_error()),
+    }
 }
 
 /// Deletes `path` inside the project root: to the trash with `gio trash`, or for good (a folder with its
@@ -584,6 +608,23 @@ mod tests {
         }
         assert!(resolve(root, &outside.0.join("secret.txt")).is_err());
         assert!(resolve(root, Path::new("/")).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rename_never_replaces_an_existing_file() {
+        let dir = TempDir::new();
+        let root = dir.0.as_path();
+        fs::write(root.join("from.txt"), "moved").unwrap();
+        fs::write(root.join("to.txt"), "kept").unwrap();
+
+        let err = rename_no_replace(&root.join("from.txt"), &root.join("to.txt")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(root.join("to.txt")).unwrap(), "kept");
+        assert!(root.join("from.txt").exists());
+
+        assert!(rename_no_replace(&root.join("from.txt"), &root.join("new.txt")).unwrap());
+        assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "moved");
     }
 
     #[cfg(unix)]
