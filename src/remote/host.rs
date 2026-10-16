@@ -602,6 +602,8 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
 /// device's shell can't know it.
 fn host_folder(cwd: PathBuf, home: Option<&Path>) -> PathBuf {
     match (cwd.strip_prefix("~"), home) {
+        // `join("")` would add a trailing slash, which then shows in the chat's folder.
+        (Ok(rest), Some(home)) if rest.as_os_str().is_empty() => home.to_path_buf(),
         (Ok(rest), Some(home)) => home.join(rest),
         _ => cwd,
     }
@@ -615,6 +617,8 @@ mod tests {
     fn a_leading_tilde_is_this_devices_home() {
         let home = Path::new("/home/me");
         assert_eq!(host_folder(PathBuf::from("~"), Some(home)), PathBuf::from("/home/me"));
+        // `PathBuf` equality ignores a trailing slash; the folder sent to clients does not.
+        assert_eq!(host_folder(PathBuf::from("~"), Some(home)).to_str(), Some("/home/me"));
         assert_eq!(host_folder(PathBuf::from("~/code/x"), Some(home)), PathBuf::from("/home/me/code/x"));
         assert_eq!(host_folder(PathBuf::from("/srv/x"), Some(home)), PathBuf::from("/srv/x"));
         assert_eq!(host_folder(PathBuf::from("~other/x"), Some(home)), PathBuf::from("~other/x"));
