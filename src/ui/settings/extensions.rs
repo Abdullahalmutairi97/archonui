@@ -1,4 +1,4 @@
-//! The Extensions page: search, installed and browsable plugins. Spec: settings.md §9.
+//! The Extensions page: search, installed and browsable plugins, each marked with its agent. Spec: settings.md §9.
 
 use super::controls::{edit, heading, listen};
 use crate::{
@@ -7,6 +7,7 @@ use crate::{
         shell::Shell,
         theme::Theme,
         widgets::{
+            agents::agent_chips,
             button::{Button, ButtonStyle},
             text_input::text_input,
             toggle::Toggle,
@@ -196,7 +197,15 @@ fn name_meta(ext: &Extension, theme: &Theme) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .child(div().text_size(px(14.)).child(ext.name.clone()))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().text_size(px(14.)).child(ext.name.clone()))
+                // An extension belongs to one agent: its own CLI installs and loads it.
+                .child(agent_chips(SharedString::from(format!("ext-agent-{}", ext.id)), &[ext.harness.as_str()], |_| true, theme)),
+        )
         .when(!credit.is_empty(), |d| {
             d.child(div().text_size(px(11.5)).text_color(theme.muted.to_hsla()).child(credit))
         })

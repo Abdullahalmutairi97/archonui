@@ -1,5 +1,6 @@
 //! Shared controls styled from the theme tokens (docs/design/settings.md §1.6, chat.md §4).
 
+pub mod agents;
 pub mod badge;
 pub mod button;
 pub mod demo;
