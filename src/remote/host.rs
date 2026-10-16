@@ -534,7 +534,7 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
     let agents = engine::detect(&harness_settings);
     // The headless host keeps the cloud copy: `--serve` is meant for the always-on box.
     let cloud = Store::open_default();
-    eprintln!("archonui host listening on {bind}");
+    eprintln!("archonui host listening on {}", hub.local_addr());
     let (work_tx, work_rx) = smol::channel::unbounded::<Work>();
     let from_requests = work_tx.clone();
     thread::spawn(move || {
@@ -696,5 +696,127 @@ mod tests {
         assert!(is_cloud(&ClientMsg::PutChats { device: "n1".into(), sessions: Vec::new() }));
         assert!(!is_cloud(&ClientMsg::ListSessions));
         assert!(!is_cloud(&ClientMsg::Cancel { session: "s1".into() }));
+    }
+
+    /// Waits up to 30 s for `f`; `None` when it timed out.
+    fn within<T>(f: impl std::future::Future<Output = Option<T>>) -> Option<T> {
+        smol::block_on(smol::future::or(f, async {
+            smol::Timer::after(Duration::from_secs(30)).await;
+            None
+        }))
+    }
+
+    fn next_msg(c: &super::super::client::Client) -> HostMsg {
+        use super::super::client::ClientEvent;
+        within(async {
+            match c.events.recv().await {
+                Ok(ClientEvent::Msg(m)) => Some(m),
+                _ => None,
+            }
+        })
+        .expect("a message from the host")
+    }
+
+    fn next_request(requests: &smol::channel::Receiver<Request>) -> Request {
+        within(async { requests.recv().await.ok() }).expect("a request from a client")
+    }
+
+    /// Two real clients on loopback follow one chat. An approval reaches both; the first answer settles
+    /// it, both are told it is done, and the second answer is refused.
+    #[test]
+    fn an_approval_reaches_every_follower_and_the_first_answer_wins() {
+        use super::super::client::Client;
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let port = hub.local_addr().port();
+        let a = Client::connect("127.0.0.1", port, "a").unwrap();
+        let b = Client::connect("127.0.0.1", port, "b").unwrap();
+        let mut conns = Vec::new();
+        for c in [&a, &b] {
+            c.send(&ClientMsg::Subscribe { session: "s1".into() }).unwrap();
+            let req = next_request(&requests);
+            assert!(matches!(&req.msg, ClientMsg::Subscribe { session } if session == "s1"));
+            hub.subscribe(req.conn, "s1");
+            conns.push(req.conn);
+        }
+        assert_ne!(conns[0], conns[1]);
+
+        let allowances = approve::Allowances::default();
+        let mut approvals = Approvals::default();
+        let (req, verdict) = approve::forwarded("s1".into(), "Bash".into(), serde_json::json!({"command": "ls"}));
+        let id = approvals.add(req, &hub);
+        for c in [&a, &b] {
+            match next_msg(c) {
+                HostMsg::Approval { session, request, tool, input } => {
+                    assert_eq!((session.as_str(), request, tool.as_str()), ("s1", id, "Bash"));
+                    assert_eq!(input["command"], "ls");
+                }
+                other => panic!("expected an approval, got {other:?}"),
+            }
+        }
+
+        // A answers first.
+        a.send(&ClientMsg::Answer { session: "s1".into(), request: id, allow: true, always: false }).unwrap();
+        let first = next_request(&requests);
+        assert_eq!(first.conn, conns[0]);
+        assert!(approvals.answer(&first, &allowances, &hub));
+        assert_eq!(verdict.recv_timeout(Duration::from_secs(30)).unwrap(), approve::Verdict::Allow);
+        for c in [&a, &b] {
+            assert_eq!(next_msg(c), HostMsg::ApprovalDone { session: "s1".into(), request: id });
+        }
+
+        // B's late answer matches nothing: the owner hands it to `handle`, which refuses it.
+        b.send(&ClientMsg::Answer { session: "s1".into(), request: id, allow: false, always: false }).unwrap();
+        let second = next_request(&requests);
+        assert_eq!(second.conn, conns[1]);
+        assert!(!approvals.answer(&second, &allowances, &hub));
+        assert!(handle(&mut state(), &[], &hub, None, second).is_none());
+        match next_msg(&b) {
+            HostMsg::Error { message } => assert!(message.contains("Nothing is waiting"), "{message}"),
+            other => panic!("expected an error, got {other:?}"),
+        }
+        assert!(verdict.try_recv().is_err(), "only one verdict is ever sent");
+        assert!(!allowances.allowed("s1", "Bash"));
+    }
+
+    /// "Always" settles every waiting request for the same tool in the chat and remembers it; a turn
+    /// that ends denies what still waits; a late follower is sent what waits.
+    #[test]
+    fn always_allow_settles_the_same_tool_and_a_finished_turn_denies_the_rest() {
+        use super::super::client::Client;
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let c = Client::connect("127.0.0.1", hub.local_addr().port(), "a").unwrap();
+        c.send(&ClientMsg::Subscribe { session: "s1".into() }).unwrap();
+        let conn = next_request(&requests).conn;
+        hub.subscribe(conn, "s1");
+
+        let allowances = approve::Allowances::default();
+        let mut approvals = Approvals::default();
+        let ask = |tool: &str| approve::forwarded("s1".into(), tool.into(), serde_json::json!({}));
+        let (r1, v1) = ask("Bash");
+        let (r2, v2) = ask("Bash");
+        let (r3, v3) = ask("Write");
+        let id1 = approvals.add(r1, &hub);
+        approvals.add(r2, &hub);
+        approvals.add(r3, &hub);
+
+        // A follower that arrives now is sent all three.
+        let late = Client::connect("127.0.0.1", hub.local_addr().port(), "b").unwrap();
+        late.send(&ClientMsg::ListSessions).unwrap();
+        let late_conn = next_request(&requests).conn;
+        approvals.send_waiting(&hub, late_conn, "s1");
+        for _ in 0..3 {
+            assert!(matches!(next_msg(&late), HostMsg::Approval { .. }));
+        }
+
+        let answer = Request { conn, msg: ClientMsg::Answer { session: "s1".into(), request: id1, allow: true, always: true } };
+        assert!(approvals.answer(&answer, &allowances, &hub));
+        assert_eq!(v1.recv_timeout(Duration::from_secs(30)).unwrap(), approve::Verdict::Allow);
+        assert_eq!(v2.recv_timeout(Duration::from_secs(30)).unwrap(), approve::Verdict::Allow);
+        assert!(allowances.allowed("s1", "Bash"));
+        assert!(v3.try_recv().is_err(), "another tool still waits");
+
+        approvals.end("s1", &hub);
+        assert!(matches!(v3.recv_timeout(Duration::from_secs(30)).unwrap(), approve::Verdict::Deny(_)));
+        assert!(approvals.waiting.is_empty());
     }
 }
