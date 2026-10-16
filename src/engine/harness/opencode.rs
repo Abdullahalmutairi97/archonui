@@ -64,6 +64,7 @@ impl Harness for OpenCode {
         // Plan and Ask share the `plan` agent, so Plan also asks for a plan in the message.
         let message = match input.prompt.strip_prefix('/').filter(|rest| !rest.trim().is_empty()) {
             Some(rest) => {
+                let rest = rest.trim_start();
                 let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
                 a.extend(strs(&["--command", name]));
                 (!args.trim().is_empty() || !files.by_path.is_empty()).then(|| files.prompt(args.trim()))
@@ -242,6 +243,24 @@ mod tests {
         assert_eq!(config["mcp"]["remote"]["type"], "remote");
         assert_eq!(config["mcp"]["remote"]["enabled"], false);
         assert!(config_env(&[], &[], "build", None).is_none());
+    }
+
+    #[test]
+    fn a_space_after_the_slash_still_names_the_command() {
+        let input = TurnInput {
+            cwd: Path::new("/"),
+            prompt: "/ review the diff",
+            session: None,
+            files: &[],
+            model: None,
+            effort: None,
+            mode: Mode::Auto,
+            tools: crate::engine::harness::ToolSettings::default(),
+            project: None,
+        };
+        let args = OpenCode.plan(&input).args;
+        let at = args.iter().position(|a| a == "--command").expect("a command flag");
+        assert_eq!(args[at + 1], "review");
     }
 
     #[test]
