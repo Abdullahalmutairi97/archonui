@@ -3,7 +3,12 @@
 
 use gpui::{div, prelude::*, AnyElement, SharedString};
 
-use crate::ui::{composer::icons::harness_icon, scale::px, theme::Theme};
+use crate::ui::{
+    composer::icons::harness_icon,
+    scale::px,
+    theme::Theme,
+    widgets::popover::{tooltip, TooltipColors},
+};
 
 /// The short name a chip shows for agent `id`.
 pub fn short_name(id: &str) -> &str {
@@ -19,25 +24,51 @@ pub fn short_name(id: &str) -> &str {
 
 /// One chip per agent in `installed`, in that order. A chip is lit when `reaches` holds for its id.
 pub fn agent_chips(id: impl Into<SharedString>, installed: &[&str], reaches: impl Fn(&str) -> bool, theme: &Theme) -> AnyElement {
-    let mut row = div().id(id.into()).flex().flex_wrap().items_center().gap(px(4.));
-    for agent in installed {
-        let on = reaches(agent);
+    let marks: Vec<AgentMark> = installed.iter().map(|agent| AgentMark { agent, lit: reaches(agent), struck: false, note: None }).collect();
+    agent_marks(id, &marks, theme)
+}
+
+/// How one agent's chip is drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentMark<'a> {
+    pub agent: &'a str,
+    /// The item reaches this agent: the chip is lit.
+    pub lit: bool,
+    /// The agent ignores a setting the user chose: the faded chip is also struck through.
+    pub struck: bool,
+    /// Shown as the chip's tooltip.
+    pub note: Option<String>,
+}
+
+/// One chip per mark, in order: lit, faded, or faded and struck through, each with its note as a tooltip.
+pub fn agent_marks(id: impl Into<SharedString>, marks: &[AgentMark], theme: &Theme) -> AnyElement {
+    let id: SharedString = id.into();
+    let mut row = div().id(id.clone()).flex().flex_wrap().items_center().gap(px(4.));
+    for mark in marks {
+        let on = mark.lit;
         let colour = if on { theme.fg } else { theme.faint };
-        row = row.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .px(px(6.))
-                .py(px(2.))
-                .rounded(px(5.))
-                .border_1()
-                .border_color(if on { theme.line2.to_hsla() } else { theme.line.to_hsla() })
-                .when(on, |d| d.bg(theme.line.to_hsla()))
-                .opacity(if on { 1.0 } else { 0.5 })
-                .child(harness_icon(agent, 11., 1.5, colour.to_hsla()))
-                .child(div().text_size(px(11.)).text_color(colour.to_hsla()).child(short_name(agent).to_string())),
-        );
+        let chip = div()
+            .id(SharedString::from(format!("{id}-{}", mark.agent)))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .px(px(6.))
+            .py(px(2.))
+            .rounded(px(5.))
+            .border_1()
+            .border_color(if on { theme.line2.to_hsla() } else { theme.line.to_hsla() })
+            .when(on, |d| d.bg(theme.line.to_hsla()))
+            .opacity(if on { 1.0 } else { 0.5 })
+            .child(harness_icon(mark.agent, 11., 1.5, colour.to_hsla()))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(colour.to_hsla())
+                    .when(mark.struck, |d| d.line_through())
+                    .child(short_name(mark.agent).to_string()),
+            )
+            .when_some(mark.note.clone(), |d, note| d.tooltip(tooltip(note, TooltipColors::of(theme))));
+        row = row.child(chip);
     }
     row.into_any_element()
 }

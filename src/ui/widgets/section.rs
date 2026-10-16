@@ -64,6 +64,8 @@ pub struct SettingRow {
     name: SharedString,
     description: SharedString,
     control: Option<AnyElement>,
+    /// Shown under the description, such as the agents a setting reaches.
+    detail: Option<AnyElement>,
     colors: Colors,
 }
 
@@ -77,12 +79,19 @@ impl SettingRow {
             name: name.into(),
             description: description.into(),
             control: None,
+            detail: None,
             colors: Colors::of(theme),
         }
     }
 
     pub fn control(mut self, control: impl IntoElement) -> Self {
         self.control = Some(control.into_any_element());
+        self
+    }
+
+    /// An element under the description.
+    pub fn detail(mut self, detail: impl IntoElement) -> Self {
+        self.detail = Some(detail.into_any_element());
         self
     }
 }
@@ -111,7 +120,8 @@ impl RenderOnce for SettingRow {
                             .line_height(px(14.))
                             .text_color(c.muted)
                             .child(self.description),
-                    ),
+                    )
+                    .when_some(self.detail, |col, detail| col.child(div().pt(px(3.)).child(detail))),
             )
             .when_some(self.control, |row, control| row.child(control))
     }
