@@ -20,7 +20,9 @@ pub enum Protocol {
     Gemini,
 }
 
-#[derive(Debug)]
+/// Serializable so a host can stream it to other devices (`crate::remote`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Out {
     /// Reply text to append.
     Text(String),

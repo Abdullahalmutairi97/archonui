@@ -153,6 +153,10 @@ pub struct AppSettings {
     pub use_tmux: bool,
     /// Terminal text size, px.
     pub terminal_font_size: f32,
+    // Devices
+    /// Sharing chats with other devices and the cloud copy. Off by default: one machine
+    /// without Tailscale never touches any of it.
+    pub sync: crate::remote::SyncSettings,
 }
 
 impl Default for AppSettings {
@@ -211,6 +215,7 @@ impl Default for AppSettings {
             code_server_path: None,
             use_tmux: true,
             terminal_font_size: 13.,
+            sync: crate::remote::SyncSettings::default(),
         }
     }
 }
