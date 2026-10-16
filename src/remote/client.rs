@@ -187,6 +187,7 @@ fn usage() -> i32 {
     eprintln!("       archonui --remote <host>[:port] show <session>");
     eprintln!("       archonui --remote <host>[:port] ask <session> <prompt...>");
     eprintln!("       archonui --remote <host>[:port] new <agent> <folder> <prompt...>");
+    eprintln!("<folder> is on the host; quote '~' for the host's home.");
     2
 }
 
@@ -297,10 +298,17 @@ fn new_chat(client: &Client, agent: &str, folder: &str, prompt: &str) -> i32 {
 
 /// Prints a chat's events until the host says the turn finished. Returns the exit code.
 fn stream_turn(client: &Client, id: &str) -> i32 {
+    // `Final` repeats the whole reply; it's printed only when nothing was streamed.
+    let mut streamed = false;
     loop {
         match smol::block_on(client.events.recv()) {
             Ok(ClientEvent::Msg(HostMsg::Event { session, out })) if session == id => match out {
-                Out::Text(t) | Out::Final(t) => {
+                Out::Text(t) => {
+                    streamed = true;
+                    print!("{t}");
+                    let _ = io::stdout().flush();
+                }
+                Out::Final(t) if !streamed => {
                     print!("{t}");
                     let _ = io::stdout().flush();
                 }
