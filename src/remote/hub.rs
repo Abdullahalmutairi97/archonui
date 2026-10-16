@@ -35,9 +35,17 @@ struct Inner {
     sync: SyncSettings,
     /// Connection ids subscribed to each chat.
     subs: HashMap<String, Vec<u64>>,
-    /// The outgoing queue of each open connection, by connection id.
-    conns: HashMap<u64, mpsc::Sender<String>>,
+    /// Each open connection, by connection id. A connection whose entry goes ends within `POLL`.
+    conns: HashMap<u64, Conn>,
     next_conn: u64,
+    /// Set by `stop`: the listener and every connection close.
+    stopped: bool,
+}
+
+/// One open connection: its outgoing queue and the peer's address.
+struct Conn {
+    tx: mpsc::Sender<String>,
+    ip: IpAddr,
 }
 
 /// A host's connections. Cheap to clone; all clones share the same connections.
@@ -53,8 +61,17 @@ impl Hub {
     pub fn start(bind: SocketAddr, device: String, sync: SyncSettings) -> io::Result<(Hub, smol::channel::Receiver<Request>)> {
         let listener = TcpListener::bind(bind)?;
         let hub = Hub {
-            inner: Arc::new(Mutex::new(Inner { device, sync, subs: HashMap::new(), conns: HashMap::new(), next_conn: 1 })),
+            inner: Arc::new(Mutex::new(Inner {
+                device,
+                sync,
+                subs: HashMap::new(),
+                conns: HashMap::new(),
+                next_conn: 1,
+                stopped: false,
+            })),
         };
+        // Polled, so `stop` can close the listener.
+        listener.set_nonblocking(true)?;
         let (requests, rx) = smol::channel::unbounded();
         let accepting = hub.clone();
         thread::spawn(move || accept(listener, accepting, requests));
@@ -64,8 +81,8 @@ impl Hub {
     /// Queues `msg` for one connection. Nothing happens if it has closed.
     pub fn reply(&self, conn: u64, msg: &HostMsg) {
         let text = proto::encode(msg);
-        if let Some(tx) = self.lock().conns.get(&conn) {
-            let _ = tx.send(text);
+        if let Some(c) = self.lock().conns.get(&conn) {
+            let _ = c.tx.send(text);
         }
     }
 
@@ -78,7 +95,7 @@ impl Hub {
         let Some(ids) = inner.subs.get(session) else { return };
         let mut gone = Vec::new();
         for id in ids.iter().copied().filter(|id| Some(*id) != except) {
-            let sent = inner.conns.get(&id).is_some_and(|tx| tx.send(text.clone()).is_ok());
+            let sent = inner.conns.get(&id).is_some_and(|c| c.tx.send(text.clone()).is_ok());
             if !sent {
                 gone.push(id);
             }
@@ -104,9 +121,31 @@ impl Hub {
         }
     }
 
-    /// Replaces the settings the peer check uses from now on.
+    /// Replaces the settings the peer check uses from now on. Open connections the new settings
+    /// refuse (sharing turned off, the device no longer included) are closed.
     pub fn set_sync(&self, sync: SyncSettings) {
-        self.lock().sync = sync;
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        inner.conns.retain(|_, c| peer_allowed(c.ip, &sync, tailscale::is_tailscale_addr(&c.ip)));
+        inner.sync = sync;
+    }
+
+    /// Stops listening and closes every connection. The port is free within `POLL`.
+    pub fn stop(&self) {
+        let mut guard = self.lock();
+        guard.stopped = true;
+        guard.conns.clear();
+        guard.subs.clear();
+    }
+
+    /// Whether `other` is a clone of this hub.
+    pub fn same(&self, other: &Hub) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Whether connection `conn` may go on.
+    fn is_open(&self, conn: u64) -> bool {
+        self.lock().conns.contains_key(&conn)
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -114,12 +153,15 @@ impl Hub {
     }
 
     /// Records a new connection's queue and returns its id.
-    fn add_conn(&self, tx: mpsc::Sender<String>) -> u64 {
+    fn add_conn(&self, tx: mpsc::Sender<String>, ip: IpAddr) -> Option<u64> {
         let mut guard = self.lock();
+        if guard.stopped {
+            return None;
+        }
         let id = guard.next_conn;
         guard.next_conn += 1;
-        guard.conns.insert(id, tx);
-        id
+        guard.conns.insert(id, Conn { tx, ip });
+        Some(id)
     }
 
     /// Forgets a connection that has closed.
@@ -143,16 +185,28 @@ fn peer_allowed(ip: IpAddr, sync: &SyncSettings, tailscale_peer: bool) -> bool {
     sync.enabled && tailscale_peer && (sync.devices.is_empty() || sync.allows(&ip.to_string()))
 }
 
-/// Accepts connections until the listener fails, one thread each.
+/// Accepts connections until `Hub::stop`, one thread each. Dropping the listener frees the port.
 fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Request>) {
-    for stream in listener.incoming() {
-        let stream = match stream {
-            Ok(stream) => stream,
+    loop {
+        if hub.lock().stopped {
+            return;
+        }
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(POLL);
+                continue;
+            }
             Err(e) => {
                 eprintln!("archonui host: could not accept a connection: {e}");
+                thread::sleep(POLL);
                 continue;
             }
         };
+        // Some platforms hand out accepted sockets in the listener's non-blocking mode.
+        if stream.set_nonblocking(false).is_err() {
+            continue;
+        }
         let Ok(ip) = stream.peer_addr().map(|a| a.ip()) else { continue };
         let allowed = peer_allowed(ip, &hub.lock().sync, tailscale::is_tailscale_addr(&ip));
         if !allowed {
@@ -161,13 +215,13 @@ fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Reque
         }
         let hub = hub.clone();
         let requests = requests.clone();
-        thread::spawn(move || connection(stream, hub, requests));
+        thread::spawn(move || connection(stream, ip, hub, requests));
     }
 }
 
 /// Runs one client connection until it closes: the handshake, then each message in and each queued
 /// message out, in order.
-fn connection(stream: TcpStream, hub: Hub, requests: smol::channel::Sender<Request>) {
+fn connection(stream: TcpStream, ip: IpAddr, hub: Hub, requests: smol::channel::Sender<Request>) {
     if stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() {
         return;
     }
@@ -182,10 +236,14 @@ fn connection(stream: TcpStream, hub: Hub, requests: smol::channel::Sender<Reque
         return;
     }
     let (tx, rx) = mpsc::channel::<String>();
-    let conn = hub.add_conn(tx.clone());
+    let Some(conn) = hub.add_conn(tx.clone(), ip) else { return };
     let mut hello = false;
     let mut closing = false;
     'conn: loop {
+        // Closed by `stop` or by settings that no longer allow this peer.
+        if !hub.is_open(conn) {
+            break;
+        }
         while let Ok(text) = rx.try_recv() {
             if ws.send(tungstenite::Message::text(text)).is_err() {
                 break 'conn;
@@ -307,5 +365,59 @@ mod tests {
         assert!(!peer_allowed(other, &picked, true));
         let off = SyncSettings { enabled: false, ..picked };
         assert!(!peer_allowed(listed, &off, true), "sharing off: nobody from the tailnet");
+    }
+
+    /// A free loopback address for a test host.
+    fn free_addr() -> SocketAddr {
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        probe.local_addr().unwrap()
+    }
+
+    #[test]
+    fn stop_frees_the_port_and_closes_connections() {
+        let bind = free_addr();
+        let sync = SyncSettings { enabled: true, ..Default::default() };
+        let (hub, _requests) = Hub::start(bind, "host".into(), sync).unwrap();
+        let client = crate::remote::client::Client::connect("127.0.0.1", bind.port(), "pc").unwrap();
+        hub.stop();
+        let closed = smol::block_on(async {
+            loop {
+                match client.events.recv().await {
+                    Ok(crate::remote::client::ClientEvent::Closed(_)) | Err(_) => return true,
+                    Ok(_) => {}
+                }
+            }
+        });
+        assert!(closed, "the open connection ends");
+        let mut freed = false;
+        for _ in 0..40 {
+            if TcpListener::bind(bind).is_ok() {
+                freed = true;
+                break;
+            }
+            thread::sleep(POLL);
+        }
+        assert!(freed, "nothing listens after stop");
+    }
+
+    #[test]
+    fn settings_that_refuse_a_peer_close_its_connection() {
+        let (hub, _requests) = Hub::start(free_addr(), "host".into(), SyncSettings::default()).unwrap();
+        let picked = SyncSettings { enabled: true, devices: vec![device("100.100.1.3")], ..Default::default() };
+        let (tx, _rx) = mpsc::channel();
+        let conn = hub.add_conn(tx, "100.100.1.3".parse().unwrap()).unwrap();
+        hub.set_sync(picked.clone());
+        assert!(hub.is_open(conn), "still included");
+        hub.set_sync(SyncSettings { devices: Vec::new(), ..picked.clone() });
+        assert!(hub.is_open(conn), "no devices picked: any tailnet peer");
+        hub.set_sync(SyncSettings { devices: vec![device("100.9.9.9")], ..picked.clone() });
+        assert!(!hub.is_open(conn), "no longer included");
+        let (tx, _rx) = mpsc::channel();
+        let conn = hub.add_conn(tx, "100.100.1.3".parse().unwrap()).unwrap();
+        hub.set_sync(SyncSettings { enabled: false, ..picked });
+        assert!(!hub.is_open(conn), "sharing off");
+        hub.stop();
+        let (tx, _rx) = mpsc::channel();
+        assert!(hub.add_conn(tx, "127.0.0.1".parse().unwrap()).is_none(), "a stopped hub takes no connection");
     }
 }
