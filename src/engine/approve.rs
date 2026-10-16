@@ -86,6 +86,13 @@ impl Request {
     }
 }
 
+/// A request whose answer this process sends elsewhere. The receiver gets the answer, or nothing when the
+/// request is dropped unanswered.
+pub fn forwarded(session: String, tool_name: String, input: Value) -> (Request, mpsc::Receiver<Verdict>) {
+    let (answer, answered) = mpsc::channel();
+    (Request { session, tool_name, input, answer }, answered)
+}
+
 /// Tools each chat allows for the rest of its session ("Always allow"). In memory only.
 #[derive(Clone, Default)]
 pub struct Allowances(Arc<Mutex<HashMap<String, HashSet<String>>>>);

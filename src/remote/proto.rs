@@ -51,6 +51,9 @@ pub enum ClientMsg {
     GetProject { project: String, device: String },
     /// Cloud: send `device`'s stored chats.
     GetChats { device: String },
+    /// Answer to an `Approval`: allow or deny the tool use `request` in chat `session`. `always` also
+    /// allows the tool for the rest of the chat's session.
+    Answer { session: String, request: u64, allow: bool, always: bool },
 }
 
 /// A project snapshot kept on the cloud device.
@@ -112,6 +115,10 @@ pub enum HostMsg {
     ProjectData { project: String, device: String, commit: String, bundle: String },
     /// Cloud: answer to `GetChats`.
     Chats { device: String, sessions: Vec<serde_json::Value> },
+    /// A tool use in chat `session` waits for an answer. `request` is the host's id for it.
+    Approval { session: String, request: u64, tool: String, input: serde_json::Value },
+    /// Request `request` in chat `session` was answered or dropped, so clients clear its card.
+    ApprovalDone { session: String, request: u64 },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> String {
@@ -136,6 +143,7 @@ mod tests {
             ClientMsg::Cancel { session: "s1".into() },
             ClientMsg::PutProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "AAA=".into() },
             ClientMsg::GetChats { device: "n1".into() },
+            ClientMsg::Answer { session: "s1".into(), request: 3, allow: true, always: false },
         ];
         for m in msgs {
             assert_eq!(decode::<ClientMsg>(&encode(&m)).unwrap(), m);
@@ -149,6 +157,8 @@ mod tests {
             HostMsg::Event { session: "s1".into(), out: Out::ToolStart { id: "t1".into(), kind: ToolKind::Edit, target: "a.rs".into() } },
             HostMsg::Event { session: "s1".into(), out: Out::Thinking(true) },
             HostMsg::Finished { session: "s1".into(), error: None },
+            HostMsg::Approval { session: "s1".into(), request: 3, tool: "Bash".into(), input: serde_json::json!({"command": "ls"}) },
+            HostMsg::ApprovalDone { session: "s1".into(), request: 3 },
         ];
         for m in msgs {
             assert_eq!(decode::<HostMsg>(&encode(&m)).unwrap(), m);

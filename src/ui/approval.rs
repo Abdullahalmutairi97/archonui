@@ -16,21 +16,21 @@ use serde_json::Value;
 use std::{collections::VecDeque, time::Duration};
 
 /// What the agent is told when the user denies a call.
-const DENIED: &str = "The user denied this action.";
+pub(super) const DENIED: &str = "The user denied this action.";
 /// Longest input shown on the card, in characters.
 const SUMMARY_CHARS: usize = 400;
 
 /// Approval requests waiting for an answer, across chats, oldest first.
 #[derive(Default)]
 pub struct ApprovalUi {
-    queue: VecDeque<Pending>,
+    pub(super) queue: VecDeque<Pending>,
     next_id: u64,
     allowances: Allowances,
 }
 
-struct Pending {
-    id: u64,
-    request: Request,
+pub(super) struct Pending {
+    pub(super) id: u64,
+    pub(super) request: Request,
 }
 
 /// Starts answering approval requests on this process's socket. Requests reach the shell as they arrive.
@@ -52,35 +52,51 @@ pub(super) fn start(cx: &mut Context<Shell>) -> ApprovalUi {
 }
 
 impl Shell {
-    /// Queues a request for its chat. The listener denies it after `approve::TIMEOUT`; the card goes a second
-    /// later, so the listener's "Timed out" is the answer the agent gets.
+    /// A request from one of this device's own chats: queued, and shown to the devices following the chat.
     fn approval_arrived(&mut self, request: Request, cx: &mut Context<Self>) {
         if self.state.session(&request.session).is_none() {
             request.answer(Verdict::Deny("Unknown session.".into()));
             return;
         }
+        let (session, tool, input) = (request.session.clone(), request.tool_name.clone(), request.input.clone());
+        let id = self.queue_approval(request, cx);
+        self.share_approval(&session, id, &tool, &input);
+    }
+
+    /// Queues a request, whatever its chat, and returns its id. The listener denies it after `approve::TIMEOUT`;
+    /// the card goes a second later, so the listener's "Timed out" is the answer the agent gets.
+    pub(super) fn queue_approval(&mut self, request: Request, cx: &mut Context<Self>) -> u64 {
         let id = self.approvals.next_id;
         self.approvals.next_id += 1;
         self.approvals.queue.push_back(Pending { id, request });
         cx.spawn(async move |this, cx| {
             smol::Timer::after(approve::TIMEOUT + Duration::from_secs(1)).await;
             let _ = this.update(cx, |this, cx| {
-                this.approvals.queue.retain(|p| p.id != id);
+                if let Some(at) = this.approvals.queue.iter().position(|p| p.id == id) {
+                    if let Some(gone) = this.approvals.queue.remove(at) {
+                        this.share_approval_done(&gone.request.session, id);
+                    }
+                }
                 cx.notify();
             });
         })
         .detach();
         cx.notify();
+        id
     }
 
     /// Answers request `id`. With `always`, the tool is also allowed for the rest of the chat's session, and
-    /// the other waiting requests for that tool in the chat get the same answer.
+    /// the other waiting requests for that tool in the chat get the same answer. A request from another
+    /// device is not allowed here: its host applies `always`.
     pub(super) fn answer_approval(&mut self, id: u64, verdict: Verdict, always: bool, cx: &mut Context<Self>) {
         let Some(at) = self.approvals.queue.iter().position(|p| p.id == id) else { return };
         let Some(pending) = self.approvals.queue.remove(at) else { return };
         if always {
             let (session, tool) = (&pending.request.session, &pending.request.tool_name);
-            self.approvals.allowances.allow(session, tool);
+            match self.remote.forwarded.get_mut(&id) {
+                Some(forwarded) => forwarded.always = true,
+                None => self.approvals.allowances.allow(session, tool),
+            }
             let (same, rest): (Vec<Pending>, Vec<Pending>) = self
                 .approvals
                 .queue
@@ -88,9 +104,11 @@ impl Shell {
                 .partition(|p| &p.request.session == session && &p.request.tool_name == tool);
             self.approvals.queue = rest.into();
             for p in same {
+                self.share_approval_done(&p.request.session, p.id);
                 p.request.answer(Verdict::Allow);
             }
         }
+        self.share_approval_done(&pending.request.session, id);
         pending.request.answer(verdict);
         cx.notify();
     }
@@ -101,6 +119,7 @@ impl Shell {
             self.approvals.queue.drain(..).partition(|p| p.request.session == session);
         self.approvals.queue = rest.into();
         for p in ended {
+            self.share_approval_done(session, p.id);
             p.request.answer(Verdict::Deny("The chat stopped before an answer.".into()));
         }
     }
