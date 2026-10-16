@@ -8,6 +8,7 @@ use super::{
     Item, Lightbox, RowCtx, Selection, StreamHost,
 };
 use crate::{
+    app::state::{FAILED_NOTE, STOPPED_NOTE},
     engine::{attach::{human_size, Attachment, Kind}, Mode},
     store::{Role, Todo, TodoStatus, ToolCall, ToolKind, Usage},
     ui::{
@@ -33,10 +34,11 @@ pub(super) fn logo(theme: &Theme, size: f32) -> Option<AnyElement> {
 }
 
 /// One message of the stream, centred, with the 16px gap below it (chat.md §1.1).
-pub(super) fn message_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyElement {
+/// `next` is the message after it, whose note says how a reply's turn ended.
+pub(super) fn message_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item, next: Option<&Item>) -> AnyElement {
     let row = match item.role {
         Role::User => user_row(ctx, ix, item),
-        Role::Agent => agent_row(ctx, ix, item),
+        Role::Agent => agent_row(ctx, ix, item, next),
         Role::Error => error_row(ctx, ix, item),
     };
     // The conversation is a centred column, so on a wide window it reads down the middle. Auto margins
@@ -98,7 +100,7 @@ fn error_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
 }
 
 /// An agent reply: header, tool-call group, the streaming label, then its blocks (chat.md §1.4).
-fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyElement {
+fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item, next: Option<&Item>) -> AnyElement {
     let streaming = ctx.streaming == Some(ix);
     let theme = &ctx.theme;
     div()
@@ -134,7 +136,7 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
                 block_column(ctx, ix, "", &item.blocks).max_w(px(READING_WIDTH)),
             )
         })
-        .when(!streaming, |column| column.children(reply_footer(item, theme)))
+        .when(!streaming, |column| column.children(reply_footer(item, turn_end(next), theme)))
         .into_any_element()
 }
 
@@ -260,9 +262,23 @@ fn answer_divider(theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The line under a finished reply: how long it took, the tokens and cache hits, cost, and the lines
-/// its edits added and removed. `None` when none of these are known.
-fn reply_footer(item: &Item, theme: &Theme) -> Option<AnyElement> {
+/// How a reply's turn ended, as its footer labels it, from the note the turn left after it: a stopped
+/// or failed turn must not read as done.
+fn turn_end(next: Option<&Item>) -> &'static str {
+    let note = next.filter(|n| n.role == Role::Error).and_then(|n| match n.blocks.first() {
+        Some(Block::Text(text)) => Some(text.text.as_str()),
+        _ => None,
+    });
+    match note {
+        Some(STOPPED_NOTE) => "■ Stopped",
+        Some(note) if note.starts_with(FAILED_NOTE) => "✕ Failed",
+        _ => "✓ Done",
+    }
+}
+
+/// The line under a finished reply: how its turn ended, how long it took, the tokens and cache hits,
+/// cost, and the lines its edits added and removed. `None` when none of these are known.
+fn reply_footer(item: &Item, end: &'static str, theme: &Theme) -> Option<AnyElement> {
     let mut parts = Vec::new();
     if let Some(secs) = item.took_secs {
         parts.push(format!("worked {}", duration(secs)));
@@ -291,7 +307,7 @@ fn reply_footer(item: &Item, theme: &Theme) -> Option<AnyElement> {
             .border_color(theme.line.to_hsla())
             .text_size(px(11.))
             .text_color(theme.muted.to_hsla())
-            .child(div().text_color(theme.acc2.to_hsla()).child("✓ Done"))
+            .child(div().text_color(theme.acc2.to_hsla()).child(end))
             .children(parts.into_iter().map(|p| div().child(format!("· {p}"))))
             .when(added + removed > 0, |row| row.child("·").children(diff_spans(added, removed)))
             .into_any_element(),
@@ -1099,6 +1115,22 @@ mod tests {
         assert_eq!(super::tokens(999_499), "999k");
         assert_eq!(super::tokens(999_500), "1.0M");
         assert_eq!(super::tokens(999_999), "1.0M");
+    }
+
+    #[test]
+    fn a_stopped_or_failed_turn_is_not_labelled_done() {
+        use crate::app::state::{FAILED_NOTE, STOPPED_NOTE};
+        use crate::store::{Role, Session};
+        let cwd = std::path::Path::new("/tmp");
+        let mut s = Session::new("t", cwd.to_path_buf());
+        s.push(Role::Error, STOPPED_NOTE);
+        s.push(Role::Error, format!("{FAILED_NOTE}\nboom"));
+        s.push(Role::User, "next question");
+        let items: Vec<super::Item> = s.messages.iter().map(|m| super::Item::from_message(m, cwd)).collect();
+        assert_eq!(super::turn_end(Some(&items[0])), "■ Stopped");
+        assert_eq!(super::turn_end(Some(&items[1])), "✕ Failed");
+        assert_eq!(super::turn_end(Some(&items[2])), "✓ Done");
+        assert_eq!(super::turn_end(None), "✓ Done");
     }
 
     #[test]

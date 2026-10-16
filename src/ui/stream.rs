@@ -247,7 +247,10 @@ impl StreamUi {
                 .px(px(18.))
                 .pt(px(18.))
                 .pb(px(8.))
-                .child(list(list_state, move |ix, _window, _cx| message_row(&ctx, ix, &items[ix])).size_full())
+                .child(
+                    list(list_state, move |ix, _window, _cx| message_row(&ctx, ix, &items[ix], items.get(ix + 1).map(|i| &**i)))
+                        .size_full(),
+                )
                 .into_any_element()
         };
 
