@@ -66,12 +66,11 @@ new <agent> <folder> <prompt>`.
 - Being on your tailnet is the trust boundary: a connected device can run prompts, and so tools, on
   the host. Only include your own devices.
 - Ids from the network are checked before they become paths or git refs.
-- `.env` files that aren't ignored are included in the cloud copy; add them to `.gitignore` to keep
-  them out.
+- Secret-looking files (`.env`, keys, certificates, credential files) are left out of the cloud copy
+  unless Settings → Devices → "Copy secret files" is on. `.env.example` and the like are kept.
 
 ## Not done yet
 
-- Attachments in remote chats.
 - A remote side panel (the host's files, git and terminal).
 - Opening a folder copy into an existing folder (it always goes into a new one).
 

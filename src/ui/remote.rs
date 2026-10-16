@@ -639,13 +639,14 @@ impl Shell {
         }
         self.remote.backing_up = true;
         let device = me.id;
+        let secrets = self.state.settings.sync.copy_secrets;
         cx.spawn(async move |this, cx| {
             let ready = cx
                 .background_executor()
                 .spawn(async move {
                     let mut out = Vec::new();
                     for (id, name, path, pushed) in projects {
-                        let made = snapshot::take(&path, &device).map(|_| snapshot::current(&path, &device));
+                        let made = snapshot::take(&path, &device, secrets).map(|_| snapshot::current(&path, &device));
                         let commit = match made {
                             Ok(Some(commit)) => commit,
                             Ok(None) => continue,
