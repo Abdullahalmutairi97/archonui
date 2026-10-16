@@ -186,6 +186,9 @@ pub struct SettingsUi {
     pub(super) images: HashMap<String, Arc<Image>>,
     /// The action waiting for a key on the Keyboard page.
     pub(super) capture: Option<Action>,
+    /// The last rebound action and the binding it had before, so Swap can hand that binding to the
+    /// action that now shares its keys.
+    pub(super) displaced: Option<(Action, String)>,
     /// The open colour picker, if any.
     pub(super) picker: Option<colour::Picker>,
     /// Whether the Appearance page's custom colour swatches are shown.
@@ -639,7 +642,8 @@ impl Shell {
             } else if !MODIFIER_KEYS.contains(&key) {
                 match capture_spec(&ev.keystroke) {
                     Ok(spec) => {
-                        self.state.settings.keys.insert(action, spec);
+                        let old = self.state.settings.keys.insert(action, spec).unwrap_or_default();
+                        self.settings.displaced = Some((action, old));
                         self.settings.capture = None;
                         self.save(cx);
                     }
