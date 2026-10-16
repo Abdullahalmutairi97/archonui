@@ -231,6 +231,39 @@ pub fn handle(
                 hub.reply(conn, &HostMsg::Error { message: "No reply is running in that chat".into() });
             }
         }
+        msg @ (ClientMsg::PutProject { .. }
+        | ClientMsg::PutChats { .. }
+        | ClientMsg::ListCloud
+        | ClientMsg::GetProject { .. }
+        | ClientMsg::GetChats { .. }) => handle_cloud(cloud, hub, Request { conn, msg }),
+        ClientMsg::Draft { session, text } => {
+            if state.session(&session).is_none() {
+                hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
+            } else {
+                state.set_draft(&session, &text);
+                flush(state);
+                hub.broadcast(&session, &HostMsg::Draft { session: session.clone(), text }, Some(conn));
+            }
+        }
+        // An answer the owner did not match to a waiting request.
+        ClientMsg::Answer { .. } => hub.reply(conn, &HostMsg::Error { message: "Nothing is waiting for that answer".into() }),
+    }
+    turn
+}
+
+/// Whether `msg` is about the cloud copy. Those need no chats and can be slow (they run git), so a
+/// caller with a UI thread hands them to `handle_cloud` on another thread.
+pub fn is_cloud(msg: &ClientMsg) -> bool {
+    matches!(
+        msg,
+        ClientMsg::PutProject { .. } | ClientMsg::PutChats { .. } | ClientMsg::ListCloud | ClientMsg::GetProject { .. } | ClientMsg::GetChats { .. }
+    )
+}
+
+/// Answers one cloud request from `cloud`, or refuses it when this device keeps none. Blocking.
+pub fn handle_cloud(cloud: Option<&Store>, hub: &Hub, req: Request) {
+    let conn = req.conn;
+    match req.msg {
         ClientMsg::PutProject { project, name, device, commit, bundle } => {
             let reply = match cloud {
                 None => no_cloud(),
@@ -277,19 +310,8 @@ pub fn handle(
             };
             hub.reply(conn, &reply);
         }
-        ClientMsg::Draft { session, text } => {
-            if state.session(&session).is_none() {
-                hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
-            } else {
-                state.set_draft(&session, &text);
-                flush(state);
-                hub.broadcast(&session, &HostMsg::Draft { session: session.clone(), text }, Some(conn));
-            }
-        }
-        // An answer the owner did not match to a waiting request.
-        ClientMsg::Answer { .. } => hub.reply(conn, &HostMsg::Error { message: "Nothing is waiting for that answer".into() }),
+        _ => {}
     }
-    turn
 }
 
 /// The chat a message is about, if any.
@@ -661,5 +683,14 @@ mod tests {
         // No folder: the host's defaults, which include its open project.
         assert_eq!(default, (project_dir.clone(), Some(p.clone())));
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn cloud_requests_are_told_apart_from_chat_requests() {
+        assert!(is_cloud(&ClientMsg::ListCloud));
+        assert!(is_cloud(&ClientMsg::GetChats { device: "n1".into() }));
+        assert!(is_cloud(&ClientMsg::PutChats { device: "n1".into(), sessions: Vec::new() }));
+        assert!(!is_cloud(&ClientMsg::ListSessions));
+        assert!(!is_cloud(&ClientMsg::Cancel { session: "s1".into() }));
     }
 }
