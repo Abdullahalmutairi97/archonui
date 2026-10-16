@@ -482,7 +482,7 @@ impl Shell {
     }
 
     /// Starts a turn with `text` in session `id`. Returns whether it started.
-    fn send_now(&mut self, id: &str, text: &str, cx: &mut Context<Self>) -> bool {
+    pub(super) fn send_now(&mut self, id: &str, text: &str, cx: &mut Context<Self>) -> bool {
         if (text.is_empty() && self.state.pending(id).is_empty()) || self.state.busy(id) {
             return false;
         }
@@ -609,6 +609,8 @@ impl Shell {
             self.flush_sessions(cx);
             self.end_approvals(id);
             self.turn_ended(id, &applied, cx);
+            // The reply may have changed files: copy them to the cloud (no-op unless sharing is on).
+            self.backup(cx);
             let stopped = applied.ended.as_ref().is_some_and(|e| matches!(e.outcome, crate::app::notify::Outcome::Stopped));
             self.send_queued(id, stopped, cx);
         }

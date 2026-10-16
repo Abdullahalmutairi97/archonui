@@ -7,10 +7,12 @@
 //! call them from its own thread too.
 
 use super::{
+    cloud::Store,
     hub::{Hub, Request},
     proto::{ClientMsg, HostMsg, SessionSummary},
     tailscale,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use crate::{
     app::{
         persist::Paths,
@@ -114,6 +116,11 @@ fn summary(s: &Session, busy: bool) -> SessionSummary {
     }
 }
 
+/// The answer when this device keeps no cloud copy.
+fn no_cloud() -> HostMsg {
+    HostMsg::Error { message: "This device does not keep a cloud copy".into() }
+}
+
 /// Saves the chats that changed, and prints the files that could not be written.
 fn flush(state: &mut AppState) {
     for e in state.flush_sessions() {
@@ -122,8 +129,15 @@ fn flush(state: &mut AppState) {
 }
 
 /// Handles one client request. Replies and broadcasts go out through `hub`. When a prompt starts a
-/// turn, returns the chat id and the turn's events, for the caller to follow.
-pub fn handle(state: &mut AppState, agents: &[DetectedAgent], hub: &Hub, req: Request) -> Option<(String, smol::channel::Receiver<Event>)> {
+/// turn, returns the chat id and the turn's events, for the caller to follow. Cloud requests are
+/// answered from `cloud`, or refused when this device keeps none.
+pub fn handle(
+    state: &mut AppState,
+    agents: &[DetectedAgent],
+    hub: &Hub,
+    cloud: Option<&Store>,
+    req: Request,
+) -> Option<(String, smol::channel::Receiver<Event>)> {
     let conn = req.conn;
     let mut turn = None;
     // Chats shown here from another device are not this host's to share.
@@ -177,12 +191,51 @@ pub fn handle(state: &mut AppState, agents: &[DetectedAgent], hub: &Hub, req: Re
                 hub.reply(conn, &HostMsg::Error { message: "No reply is running in that chat".into() });
             }
         }
-        ClientMsg::PutProject { .. }
-        | ClientMsg::PutChats { .. }
-        | ClientMsg::ListCloud
-        | ClientMsg::GetProject { .. }
-        | ClientMsg::GetChats { .. } => {
-            hub.reply(conn, &HostMsg::Error { message: "This device does not keep a cloud copy".into() })
+        ClientMsg::PutProject { project, name, device, commit, bundle } => {
+            let reply = match cloud {
+                None => no_cloud(),
+                Some(store) => match STANDARD.decode(&bundle) {
+                    Err(e) => HostMsg::Error { message: format!("The bundle is not base64: {e}") },
+                    Ok(bytes) => match store.put_project(&project, &name, &device, &commit, &bytes) {
+                        Ok(()) => HostMsg::Stored { project, device, commit },
+                        Err(message) => HostMsg::Error { message },
+                    },
+                },
+            };
+            hub.reply(conn, &reply);
+        }
+        ClientMsg::PutChats { device, sessions } => match cloud {
+            None => hub.reply(conn, &no_cloud()),
+            Some(store) => {
+                // Nothing is sent back on success; the sender only needs to know about failures.
+                if let Err(message) = store.put_chats(&device, &sessions) {
+                    hub.reply(conn, &HostMsg::Error { message });
+                }
+            }
+        },
+        ClientMsg::ListCloud => {
+            let reply = match cloud {
+                None => no_cloud(),
+                Some(store) => HostMsg::Cloud { projects: store.projects(), chats: store.chat_devices() },
+            };
+            hub.reply(conn, &reply);
+        }
+        ClientMsg::GetProject { project, device } => {
+            let reply = match cloud {
+                None => no_cloud(),
+                Some(store) => match store.get_project(&project, &device) {
+                    Ok((commit, bundle)) => HostMsg::ProjectData { project, device, commit, bundle: STANDARD.encode(bundle) },
+                    Err(message) => HostMsg::Error { message },
+                },
+            };
+            hub.reply(conn, &reply);
+        }
+        ClientMsg::GetChats { device } => {
+            let reply = match cloud {
+                None => no_cloud(),
+                Some(store) => HostMsg::Chats { sessions: store.chats(&device), device },
+            };
+            hub.reply(conn, &reply);
         }
         ClientMsg::Draft { session, text } => {
             if state.session(&session).is_none() {
@@ -296,6 +349,8 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
     let (hub, requests) = Hub::start(bind, device, sync)?;
     let harness_settings = store::Settings { harnesses: state.settings.harnesses.clone(), ..Default::default() };
     let agents = engine::detect(&harness_settings);
+    // The headless host keeps the cloud copy: `--serve` is meant for the always-on box.
+    let cloud = Store::open_default();
     eprintln!("archonui host listening on {bind}");
     let (work_tx, work_rx) = smol::channel::unbounded::<Work>();
     let from_requests = work_tx.clone();
@@ -309,7 +364,7 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
     while let Ok(work) = smol::block_on(work_rx.recv()) {
         match work {
             Work::Req(req) => {
-                if let Some((id, turn)) = handle(&mut state, &agents, &hub, req) {
+                if let Some((id, turn)) = handle(&mut state, &agents, &hub, Some(&cloud), req) {
                     follow(id, turn, work_tx.clone());
                 }
             }

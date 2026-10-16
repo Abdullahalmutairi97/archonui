@@ -30,6 +30,13 @@ pub fn bundle(dir: &Path, device: &str, since: Option<&str>) -> Result<Vec<u8>, 
     bundle_in(dir, device, since, &snapshots_dir())
 }
 
+/// The commit of this device's latest snapshot of `dir`, if any.
+pub fn current(dir: &Path, device: &str) -> Option<String> {
+    check_device(device).ok()?;
+    let repo = Repo::open(dir, &snapshots_dir()).ok()?;
+    run(repo.git().args(["rev-parse", "--verify", "-q", wip_ref(device).as_str()])).ok()
+}
+
 /// Writes the files of `commit` (from a full bundle) into `dest`, which must not exist or be empty.
 /// The result is plain files plus a fresh repository whose branch "main" holds the snapshot.
 pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {

@@ -1,9 +1,13 @@
 //! The Devices page: share chats with other devices on the tailnet, and pick the cloud copy. Off by default.
 
-use super::controls::{button_row, caption, edit, section, toggle_row};
+use super::controls::{act, button_row, caption, edit, section, toggle_row};
 use crate::ui::{
     shell::Shell,
-    widgets::{button::ButtonStyle, section::SettingRow, toggle::Toggle},
+    widgets::{
+        button::{Button, ButtonStyle},
+        section::SettingRow,
+        toggle::Toggle,
+    },
 };
 use gpui::{AnyElement, Context, SharedString};
 
@@ -160,7 +164,46 @@ impl Shell {
             "Chats on included devices can be opened here. The cloud keeps an always-on copy of projects and chat history.",
             &theme,
         ));
+        if sync.cloud.is_some() {
+            blocks.push(self.cloud_section(&weak, cx));
+        }
         blocks
+    }
+
+    /// What the cloud holds: each project copy, with a button that opens it in a new folder here.
+    fn cloud_section(&mut self, weak: &gpui::WeakEntity<Shell>, _cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme.clone();
+        if self.remote.cloud_projects.is_none() {
+            self.refresh_cloud_list();
+        }
+        let mut rows: Vec<SettingRow> = Vec::new();
+        let names: Vec<(String, String)> = self.state.settings.sync.devices.iter().map(|d| (d.id.clone(), d.name.clone())).collect();
+        for p in self.remote.cloud_projects.clone().unwrap_or_default() {
+            let from = names.iter().find(|(id, _)| *id == p.device).map_or(p.device.clone(), |(_, n)| n.clone());
+            let (project, device) = (p.project.clone(), p.device.clone());
+            rows.push(
+                SettingRow::new(p.name.clone(), format!("From {from} · {}", crate::store::ago(p.updated)), &theme).control(
+                    Button::new(SharedString::from(format!("cloud-open-{}-{}", p.project, p.device)), "Open copy", &theme)
+                        .style(ButtonStyle::Outline)
+                        .on_click(act(weak, move |this, cx| this.open_from_cloud(&project, &device, cx))),
+                ),
+            );
+        }
+        rows.push(button_row(
+            "cloud-refresh",
+            "Cloud copy",
+            "Projects and chats are copied every few minutes and after each reply, uncommitted work included.",
+            "Refresh",
+            ButtonStyle::Outline,
+            weak,
+            &theme,
+            |this, cx| {
+                this.refresh_cloud_list();
+                this.backup(cx);
+                cx.notify();
+            },
+        ));
+        section("CLOUD COPY", rows, &theme)
     }
 
     /// Finds this device and its tailnet peers off the UI thread. `tailscale status` blocks.
