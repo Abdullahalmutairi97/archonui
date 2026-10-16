@@ -268,6 +268,7 @@ fn ask(client: &Client, id: &str, prompt: &str) -> i32 {
             mode: None,
             model: None,
             effort: None,
+            files: Vec::new(),
         })
     });
     match sent {

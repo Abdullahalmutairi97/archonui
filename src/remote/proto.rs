@@ -3,7 +3,7 @@
 //!
 //! A client says `Hello` first and the host answers `Welcome`. After that the client may list
 //! chats, subscribe to one (the host sends a `Snapshot`, then every `Event` of its turns), send
-//! prompts and stop turns. Attachments are not sent yet.
+//! prompts (with files) and stop turns.
 
 use crate::engine::{Mode, Out};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -11,6 +11,16 @@ use std::path::PathBuf;
 
 /// Bumped on any incompatible change. A host refuses a client with a different version.
 pub const VERSION: u32 = 1;
+/// Most file bytes one prompt may carry, before base64. Stays under the 64 MiB frame limit once encoded.
+pub const MAX_REMOTE_FILES_BYTES: u64 = 40 * 1024 * 1024;
+
+/// A file sent with a prompt.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RemoteFile {
+    pub name: String,
+    /// base64 of the bytes
+    pub data: String,
+}
 
 /// Client to host.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -26,6 +36,7 @@ pub enum ClientMsg {
     /// A new chat on the host. The host answers `Created`.
     NewSession { agent: String, cwd: PathBuf, project: Option<String> },
     /// Send a prompt in a chat. `model`, `effort` and `mode` replace the chat's when given.
+    /// `files` are saved in the chat on the host and sent with the prompt.
     Prompt {
         session: String,
         text: String,
@@ -35,6 +46,8 @@ pub enum ClientMsg {
         model: Option<String>,
         #[serde(default)]
         effort: Option<String>,
+        #[serde(default)]
+        files: Vec<RemoteFile>,
     },
     /// Stop the running turn in a chat (Esc).
     Cancel { session: String },
@@ -139,7 +152,7 @@ mod tests {
         let msgs = [
             ClientMsg::Hello { device: "laptop".into(), version: VERSION },
             ClientMsg::ListSessions,
-            ClientMsg::Prompt { session: "s1".into(), text: "hi".into(), mode: Some(Mode::Plan), model: None, effort: None },
+            ClientMsg::Prompt { session: "s1".into(), text: "hi".into(), mode: Some(Mode::Plan), model: None, effort: None, files: Vec::new() },
             ClientMsg::Cancel { session: "s1".into() },
             ClientMsg::PutProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "AAA=".into() },
             ClientMsg::GetChats { device: "n1".into() },
@@ -169,6 +182,6 @@ mod tests {
     fn wire_format_is_tagged() {
         assert_eq!(encode(&ClientMsg::ListSessions), r#"{"type":"list_sessions"}"#);
         let p: ClientMsg = decode(r#"{"type":"prompt","session":"s","text":"x"}"#).unwrap();
-        assert_eq!(p, ClientMsg::Prompt { session: "s".into(), text: "x".into(), mode: None, model: None, effort: None });
+        assert_eq!(p, ClientMsg::Prompt { session: "s".into(), text: "x".into(), mode: None, model: None, effort: None, files: Vec::new() });
     }
 }

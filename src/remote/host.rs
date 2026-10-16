@@ -9,7 +9,7 @@
 use super::{
     cloud::Store,
     hub::{Hub, Request},
-    proto::{ClientMsg, HostMsg, SessionSummary},
+    proto::{ClientMsg, HostMsg, RemoteFile, SessionSummary, MAX_REMOTE_FILES_BYTES},
     tailscale,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -18,7 +18,7 @@ use crate::{
         persist::Paths,
         state::{AppState, Placement},
     },
-    engine::{self, approve, DetectedAgent, Event, Mode},
+    engine::{self, approve, attach::Attachment, DetectedAgent, Event, Mode},
     store::{self, Session},
 };
 use std::{
@@ -185,8 +185,8 @@ pub fn handle(
                 }
             }
         }
-        ClientMsg::Prompt { session, text, mode, model, effort } => {
-            match start_prompt(state, agents, hub, &session, &text, mode, model, effort) {
+        ClientMsg::Prompt { session, text, mode, model, effort, files } => {
+            match start_prompt(state, agents, hub, &session, &text, mode, model, effort, files) {
                 Ok(started) => turn = started,
                 Err(message) => hub.reply(conn, &HostMsg::Error { message }),
             }
@@ -288,6 +288,7 @@ fn start_prompt(
     mode: Option<Mode>,
     model: Option<String>,
     effort: Option<String>,
+    files: Vec<RemoteFile>,
 ) -> Result<Option<(String, smol::channel::Receiver<Event>)>, String> {
     let (cur_mode, cur_model, cur_effort) = match state.session(session) {
         Some(s) => (s.mode, s.model.clone(), s.effort.clone()),
@@ -296,8 +297,12 @@ fn start_prompt(
     if state.busy(session) {
         return Err("A reply is already running".into());
     }
-    if text.trim().is_empty() {
+    if text.trim().is_empty() && files.is_empty() {
         return Err("The prompt is empty".into());
+    }
+    let attachments = save_files(session, files)?;
+    if !attachments.is_empty() {
+        state.add_pending(session, attachments);
     }
     if mode.is_some() || model.is_some() || effort.is_some() {
         state.set_options(session, model.or(cur_model), effort.or(cur_effort), mode.unwrap_or(cur_mode));
@@ -312,6 +317,25 @@ fn start_prompt(
     flush(state);
     hub.broadcast(session, &HostMsg::Started { session: session.to_string(), text: text.to_string() }, None);
     Ok(Some((session.to_string(), rx)))
+}
+
+/// Saves files sent with a prompt into the chat's attachments here. Refuses too many or too large.
+fn save_files(session: &str, files: Vec<RemoteFile>) -> Result<Vec<Attachment>, String> {
+    if files.len() > engine::attach::MAX_FILES {
+        return Err(format!("At most {} files can go with one message", engine::attach::MAX_FILES));
+    }
+    let mut total = 0u64;
+    let mut out = Vec::new();
+    for f in files {
+        let bytes = STANDARD.decode(&f.data).map_err(|e| format!("{} could not be read: {e}", f.name))?;
+        total += bytes.len() as u64;
+        if total > MAX_REMOTE_FILES_BYTES {
+            return Err("The files are too large to send to another device".into());
+        }
+        let path = store::store_bytes(session, &f.name, &bytes).map_err(|e| format!("Could not save {}: {e}", f.name))?;
+        out.push(Attachment::inspect(&path)?);
+    }
+    Ok(out)
 }
 
 /// Folds one event of chat `session`'s turn into the chat, and forwards it to the chat's subscribers.
