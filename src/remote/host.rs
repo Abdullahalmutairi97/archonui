@@ -247,6 +247,10 @@ pub fn handle(
         }
         // An answer the owner did not match to a waiting request.
         ClientMsg::Answer { .. } => hub.reply(conn, &HostMsg::Error { message: "Nothing is waiting for that answer".into() }),
+        ClientMsg::Unknown => {
+            let message = "This device's archonUI does not know that request; update it to match the other device".into();
+            hub.reply(conn, &HostMsg::Error { message });
+        }
     }
     turn
 }
@@ -333,7 +337,8 @@ fn target(msg: &ClientMsg) -> Option<&str> {
         | ClientMsg::PutChats { .. }
         | ClientMsg::ListCloud
         | ClientMsg::GetProject { .. }
-        | ClientMsg::GetChats { .. } => None,
+        | ClientMsg::GetChats { .. }
+        | ClientMsg::Unknown => None,
     }
 }
 
@@ -447,7 +452,7 @@ fn save_files(session: &str, files: Vec<RemoteFile>) -> Result<Vec<Attachment>, 
 pub fn forward(state: &mut AppState, hub: &Hub, session: &str, ev: Event) {
     match ev {
         Event::Out(out) => {
-            let msg = HostMsg::Event { session: session.to_string(), out: out.clone() };
+            let msg = HostMsg::Event { session: session.to_string(), out: Some(out.clone()) };
             state.apply(session, Event::Out(out));
             hub.broadcast(session, &msg, None);
         }
@@ -724,6 +729,25 @@ mod tests {
         assert_eq!(lines(&follower, &id), lines(&host, &id));
         assert_eq!(lines(&host, &id)[0], (Role::User, "hello".to_string()));
         assert!(!follower.busy(&id));
+    }
+
+    #[test]
+    fn a_request_from_a_newer_client_gets_an_error() {
+        use crate::remote::client::{Client, ClientEvent};
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let (hub, requests) = Hub::start(SocketAddr::from(([127, 0, 0, 1], port)), "host".into(), Default::default()).unwrap();
+        let client = Client::connect("127.0.0.1", port, "newer").unwrap();
+        // The frame a newer client would send, as this version reads it.
+        let req: ClientMsg = crate::remote::proto::decode(r#"{"type":"something_new","session":"s1"}"#).unwrap();
+        client.send(&req).unwrap();
+        let req = smol::block_on(requests.recv()).unwrap();
+        assert_eq!(req.msg, ClientMsg::Unknown);
+        handle(&mut state(), &[], &hub, None, req);
+        match smol::block_on(client.events.recv()).unwrap() {
+            ClientEvent::Msg(HostMsg::Error { message }) => assert!(message.contains("does not know"), "{message}"),
+            ClientEvent::Msg(other) => panic!("unexpected {other:?}"),
+            ClientEvent::Closed(reason) => panic!("closed: {reason:?}"),
+        }
     }
 
     fn file(name: &str, data: &str) -> RemoteFile {

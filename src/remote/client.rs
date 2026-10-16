@@ -302,7 +302,7 @@ fn stream_turn(client: &Client, id: &str) -> i32 {
     let mut streamed = false;
     loop {
         match smol::block_on(client.events.recv()) {
-            Ok(ClientEvent::Msg(HostMsg::Event { session, out })) if session == id => match out {
+            Ok(ClientEvent::Msg(HostMsg::Event { session, out: Some(out) })) if session == id => match out {
                 Out::Text(t) => {
                     streamed = true;
                     print!("{t}");
