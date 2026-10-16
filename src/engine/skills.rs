@@ -105,7 +105,7 @@ fn user_roots(home: &Path) -> Vec<Root> {
         Root::new(home.join(".config/opencode/skill"), "OpenCode", &["opencode"], Depth::One),
     ]);
     roots.extend(
-        extension_skill_dirs(&home.join(".gemini/extensions"))
+        extension_skill_dirs(home)
             .into_iter()
             .map(|(path, name)| Root::new(path, &name, &["gemini"], Depth::One)),
     );
@@ -326,17 +326,66 @@ fn plugin_name(dir: &Path) -> String {
     manifest_name(dir, ".claude-plugin/plugin.json")
 }
 
-/// `skills` folders inside installed Gemini extensions, each with its extension's name.
-fn extension_skill_dirs(dir: &Path) -> Vec<(PathBuf, String)> {
-    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
-    let mut out: Vec<(PathBuf, String)> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.join("skills").is_dir())
-        .map(|p| (p.join("skills"), manifest_name(&p, "gemini-extension.json")))
+/// `skills` folders inside the Gemini extensions installed in `home` and turned on there, each
+/// with its extension's name. Gemini loads no skills from an extension that is off.
+fn extension_skill_dirs(home: &Path) -> Vec<(PathBuf, String)> {
+    let mut out: Vec<(PathBuf, String)> = gemini_extensions(home)
+        .into_iter()
+        .filter(|(dir, _, on)| *on && dir.join("skills").is_dir())
+        .map(|(dir, name, _)| (dir.join("skills"), name))
         .collect();
     out.sort();
     out
+}
+
+/// The Gemini extensions installed in `home`: each folder, its extension's name, and whether it
+/// is on in the user scope, that is for the home folder, as `gemini extensions list` run there
+/// reports it.
+fn gemini_extensions(home: &Path) -> Vec<(PathBuf, String, bool)> {
+    let dir = home.join(".gemini/extensions");
+    let Ok(entries) = fs::read_dir(&dir) else { return Vec::new() };
+    let rules: serde_json::Value = fs::read_to_string(dir.join("extension-enablement.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let mut out: Vec<(PathBuf, String, bool)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .map(|p| {
+            let name = manifest_name(&p, "gemini-extension.json");
+            let on = gemini_enabled(&rules[name.as_str()]["overrides"], home);
+            (p, name, on)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Gemini's rule for an extension's `overrides` in `extension-enablement.json`: each is a folder,
+/// `!` in front to turn the extension off there, `*` after it to cover the folders below too. The
+/// last rule that matches `dir` decides; with none the extension is on.
+fn gemini_enabled(overrides: &serde_json::Value, dir: &Path) -> bool {
+    let mut path = dir.to_string_lossy().replace('\\', "/");
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
+    if !path.ends_with('/') {
+        path.push('/');
+    }
+    let mut on = true;
+    for rule in overrides.as_array().into_iter().flatten().filter_map(|r| r.as_str()) {
+        let (off, rule) = rule.strip_prefix('!').map_or((false, rule), |r| (true, r));
+        let matches = match rule.strip_suffix('*') {
+            // `/a/b/*` covers `/a/b/` and everything below it.
+            Some(base) => path.starts_with(base),
+            None => path == rule,
+        };
+        if matches {
+            on = !off;
+        }
+    }
+    on
 }
 
 /// The `name` in the JSON manifest at `dir/manifest`, else the folder name of `dir`.
@@ -365,6 +414,14 @@ fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
     let mut report = SyncReport::default();
     prune(home, &hub, &mut report.pruned)?;
     prune(home, &claude, &mut report.pruned)?;
+    // Skills of a Gemini extension that is off are loaded by no one, so links to them go too.
+    let off_extensions: Vec<PathBuf> =
+        gemini_extensions(home).into_iter().filter(|(_, _, on)| !on).filter_map(|(dir, _, _)| fs::canonicalize(dir).ok()).collect();
+    if !off_extensions.is_empty() {
+        // Claude's links may lead through the hub's, so they go first, while they still resolve.
+        unlink_into(home, &claude, &off_extensions, &mut report.pruned)?;
+        unlink_into(home, &hub, &off_extensions, &mut report.pruned)?;
+    }
 
     let found = scan(&user_roots(home));
     // Skills turned off in settings, by resolved folder.
@@ -557,6 +614,25 @@ fn prune(home: &Path, dir: &Path, pruned: &mut Vec<String>) -> io::Result<()> {
         match fs::remove_file(&path) {
             Ok(()) => pruned.push(tilde(home, &path)),
             // Removed meanwhile by another sync.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Removes the symlinks in `dir` that lead into one of the folders `into` (resolved paths).
+fn unlink_into(home: &Path, dir: &Path, into: &[PathBuf], pruned: &mut Vec<String>) -> io::Result<()> {
+    let mut links: Vec<PathBuf> = fs::read_dir(dir)?
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_symlink()))
+        .map(|e| e.path())
+        .filter(|p| fs::canonicalize(p).is_ok_and(|c| into.iter().any(|d| c.starts_with(d))))
+        .collect();
+    links.sort();
+    for path in links {
+        match fs::remove_file(&path) {
+            Ok(()) => pruned.push(tilde(home, &path)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
@@ -855,6 +931,40 @@ mod tests {
         assert_eq!(named(&skills, "blank").agents, ["codex", "gemini", "opencode"]);
         assert_eq!(named(&skills, "full").agents, ["codex", "gemini", "opencode", "pi"]);
         assert!(named(&skills, "pi-bare").agents.is_empty());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn gemini_enablement_rules_follow_the_last_match() {
+        let home = Path::new("/home/u");
+        let rules = |r: &[&str]| serde_json::json!(r);
+        assert!(gemini_enabled(&serde_json::Value::Null, home));
+        assert!(!gemini_enabled(&rules(&["!/home/u/*"]), home));
+        assert!(gemini_enabled(&rules(&["!/home/u/*", "/home/u/"]), home));
+        assert!(!gemini_enabled(&rules(&["!/*"]), home), "off everywhere");
+        assert!(gemini_enabled(&rules(&["!/home/u/proj/*"]), home), "off only in a project");
+        assert!(gemini_enabled(&rules(&["!/home/u/*", "/home/*"]), home));
+    }
+
+    #[test]
+    fn a_gemini_extension_turned_off_has_its_skills_unlisted_and_unlinked() {
+        let home = scratch("gemini-off");
+        let ext = home.join(".gemini/extensions");
+        skill_md(&ext.join("on-ext/skills/kept"), "---\nname: kept\ndescription: d\n---\n");
+        skill_md(&ext.join("off-ext/skills/dropped"), "---\nname: dropped\ndescription: d\n---\n");
+        fs::write(ext.join("off-ext/gemini-extension.json"), r#"{"name": "off"}"#).unwrap();
+        // A link an earlier sync made while the extension was on.
+        ln(&ext.join("off-ext/skills/dropped"), &home.join(".agents/skills/dropped"));
+        ln(&home.join(".agents/skills/dropped"), &home.join(".claude/skills/dropped"));
+        let rules = format!(r#"{{"off": {{"overrides": ["!{}/*"]}}}}"#, home.display());
+        fs::write(ext.join("extension-enablement.json"), rules).unwrap();
+
+        let report = sync_in(&home, &[]).unwrap();
+        assert_eq!(report.pruned, ["~/.claude/skills/dropped", "~/.agents/skills/dropped"], "{report:?}");
+        assert!(ext.join("off-ext/skills/dropped/SKILL.md").is_file(), "the extension is untouched");
+        let skills = discover_in(&home, &home.join("repo"));
+        assert!(skills.iter().all(|s| s.name != "dropped"), "{skills:?}");
+        assert_eq!(named(&skills, "kept").agents, AGENTS);
         let _ = fs::remove_dir_all(&home);
     }
 
