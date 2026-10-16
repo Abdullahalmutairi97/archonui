@@ -64,7 +64,7 @@ Stop at the first failure, fix it, push, and go on. Keep notes of what you saw.
 ./target/release/archonui --serve --bind "$(tailscale ip -4):7420"
 # ashpc (over SSH is fine)
 ./target/release/archonui --remote minipc list
-./target/release/archonui --remote minipc new claude ~ "Reply with one short line"
+./target/release/archonui --remote minipc new claude "~" "Reply with one short line"
 ./target/release/archonui --remote minipc list          # the new chat is listed
 ./target/release/archonui --remote minipc ask <chat-id> "And another line"
 ```
