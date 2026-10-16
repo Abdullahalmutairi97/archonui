@@ -24,7 +24,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     sync::mpsc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// How often the chat lists of connected devices are asked for again, to pick up new chats.
@@ -43,6 +43,10 @@ pub struct RemoteUi {
     starting: bool,
     /// This device, from Tailscale.
     me: Option<Device>,
+    /// When finding this device last failed.
+    failed_at: Option<Instant>,
+    /// When starting the host last failed.
+    listen_failed_at: Option<Instant>,
     /// Connected devices, by `Device::id`.
     clients: HashMap<String, Client>,
     /// Devices being connected to.
@@ -120,7 +124,7 @@ impl Shell {
             self.remote.cloud = None;
             self.remote.cloud_jobs = None;
         }
-        if self.remote.hub.is_none() {
+        if self.remote.hub.is_none() && !self.remote.listen_failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
             self.start_hub(&me, cx);
         }
         // Devices no longer included are dropped, with their chats (live or from the cloud).
@@ -170,9 +174,10 @@ impl Shell {
     }
 
     /// Asks Tailscale for this device off the UI thread: it gives the address to listen on and the
-    /// name devices see.
+    /// name devices see. After a failure it waits `RETRY_AFTER` before asking again, since
+    /// `refresh_remote` runs on every save.
     fn find_this_device(&mut self, cx: &mut Context<Self>) {
-        if self.remote.starting {
+        if self.remote.starting || self.remote.failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
             return;
         }
         self.remote.starting = true;
@@ -182,10 +187,14 @@ impl Shell {
                 this.remote.starting = false;
                 match found {
                     Ok(net) => {
+                        this.remote.failed_at = None;
                         this.remote.me = Some(net.me);
                         this.refresh_remote(cx);
                     }
-                    Err(e) => this.toast(format!("Sharing: {e}"), cx),
+                    Err(e) => {
+                        this.remote.failed_at = Some(Instant::now());
+                        this.toast(format!("Sharing: {e}"), cx);
+                    }
                 }
             });
         })
@@ -226,6 +235,7 @@ impl Shell {
         let bind = SocketAddr::new(ip, self.state.settings.sync.port);
         match Hub::start(bind, me.name.clone(), self.state.settings.sync.clone()) {
             Ok((hub, requests)) => {
+                self.remote.listen_failed_at = None;
                 self.remote.hub = Some(hub.clone());
                 cx.spawn(async move |this, cx| {
                     while let Ok(req) = requests.recv().await {
@@ -244,8 +254,11 @@ impl Shell {
                 })
                 .detach();
             }
-            // Most often `archonui --serve` already runs on this device.
-            Err(e) => self.toast(format!("Sharing: could not listen on {bind}: {e}"), cx),
+            // Most often `archonui --serve` already runs on this device. Tried again after `RETRY_AFTER`.
+            Err(e) => {
+                self.remote.listen_failed_at = Some(Instant::now());
+                self.toast(format!("Sharing: could not listen on {bind}: {e}"), cx);
+            }
         }
     }
 
