@@ -473,6 +473,82 @@ enum Work {
     Turn(String, Event),
     Approval(approve::Request),
     Expired(u64),
+    /// Ctrl-C, `kill` or a closed terminal: stop the running turns, save the chats and end.
+    Stop,
+}
+
+/// Signals that end `--serve`.
+const STOP_SIGNALS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
+
+/// How long a stopping host waits for its agents to exit. A turn's cancel sends SIGKILL after 3 s.
+const STOP_WAIT: Duration = Duration::from_secs(4);
+
+/// Turns the stop signals into `Work::Stop`, so the host can end its agents and save its chats first.
+/// Their agents run in process groups of their own, so they would not get a Ctrl-C and would outlive
+/// the host. Call it before starting any thread: the signals are blocked in this thread and the ones
+/// it starts, and waited for on one thread. Agents start with no signals blocked, as `Command` clears
+/// the mask. A signal that was ignored when the host started (`nohup`, `&` in a script) stays ignored.
+fn catch_stop_signals(work: smol::channel::Sender<Work>) {
+    // SAFETY: plain libc calls on a zeroed, then initialised, local signal set.
+    let set = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for sig in STOP_SIGNALS {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            let ignored = libc::sigaction(sig, std::ptr::null(), &mut old) == 0 && old.sa_sigaction == libc::SIG_IGN;
+            if !ignored {
+                libc::sigaddset(&mut set, sig);
+            }
+        }
+        if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
+            return;
+        }
+        set
+    };
+    thread::spawn(move || loop {
+        let mut sig = 0;
+        // SAFETY: `set` is an initialised signal set owned by this thread.
+        if unsafe { libc::sigwait(&set, &mut sig) } == 0 && work.send_blocking(Work::Stop).is_err() {
+            return;
+        }
+    });
+}
+
+/// Ends the running turns as Stop does, keeping their partial replies, saves the chats, tells the
+/// subscribers, and waits up to `STOP_WAIT` for the agents to exit. A second signal ends the wait.
+fn stop(state: &mut AppState, hub: &Hub, approvals: &mut Approvals, work: &smol::channel::Receiver<Work>) {
+    let mut running: Vec<String> = state.sessions().iter().filter(|s| state.busy(&s.id)).map(|s| s.id.clone()).collect();
+    if running.is_empty() {
+        eprintln!("archonui host: stopped");
+        return;
+    }
+    eprintln!("archonui host: stopping {} running repl{}", running.len(), if running.len() == 1 { "y" } else { "ies" });
+    for id in &running {
+        approvals.end(id, hub);
+    }
+    state.shutdown();
+    for id in &running {
+        hub.broadcast(id, &HostMsg::Finished { session: id.clone(), error: None, stopped: true }, None);
+    }
+    let deadline = std::time::Instant::now() + STOP_WAIT;
+    while !running.is_empty() {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let next = smol::block_on(smol::future::or(async { work.recv().await.ok() }, async {
+            smol::Timer::after(left).await;
+            None
+        }));
+        match next {
+            Some(Work::Turn(id, Event::Finished(_))) => running.retain(|r| *r != id),
+            Some(Work::Stop) | None => break,
+            Some(_) => {}
+        }
+    }
+    if !running.is_empty() {
+        eprintln!("archonui host: {} agent(s) had not exited yet", running.len());
+    }
+    // Lets the connections send the last `Finished` before the process ends.
+    thread::sleep(Duration::from_millis(200));
+    eprintln!("archonui host: stopped");
 }
 
 /// The approval requests of this headless host's chats that wait for an answer, by the id clients see.
@@ -570,13 +646,15 @@ fn follow(id: String, turn: smol::channel::Receiver<Event>, work: smol::channel:
 fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<()> {
     // Running `--serve` is the user turning sharing on for this process, even with `--bind`.
     let sync = super::SyncSettings { enabled: true, ..state.settings.sync.clone() };
+    let (work_tx, work_rx) = smol::channel::unbounded::<Work>();
+    // Before any thread starts, so every thread has the signals blocked.
+    catch_stop_signals(work_tx.clone());
     let (hub, requests) = Hub::start(bind, device, sync)?;
     let harness_settings = store::Settings { harnesses: state.settings.harnesses.clone(), ..Default::default() };
     let agents = engine::detect(&harness_settings);
     // The headless host keeps the cloud copy: `--serve` is meant for the always-on box.
     let cloud = Store::open_default();
     eprintln!("archonui host listening on {}", hub.local_addr());
-    let (work_tx, work_rx) = smol::channel::unbounded::<Work>();
     let from_requests = work_tx.clone();
     thread::spawn(move || {
         while let Ok(req) = smol::block_on(requests.recv()) {
@@ -634,6 +712,10 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
                 }
             }
             Work::Expired(id) => approvals.settle(id, approve::Verdict::Deny("Timed out".into()), &hub),
+            Work::Stop => {
+                stop(&mut state, &hub, &mut approvals, &work_rx);
+                break;
+            }
         }
     }
     Ok(())
