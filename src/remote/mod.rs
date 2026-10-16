@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 pub mod client;
+pub mod cloud;
 pub mod hub;
 pub mod host;
 pub mod proto;
