@@ -2,6 +2,12 @@
 
 Status: proposal, branch `feature/session-sync`.
 
+## Optional by default
+
+Everything here is off until the user turns it on (`SyncSettings::enabled`, Settings → Devices). One
+machine without Tailscale and without a cloud copy works exactly as before: no listener, no
+`tailscale` calls, no background copies.
+
 ## Goals
 
 Three machines: **PC**, **laptop**, **VPS**.
@@ -38,8 +44,15 @@ MagicDNS name (`pc`, `laptop`, `vps`) through NAT, with WireGuard encryption. Th
 - No TLS or public ports: hosts listen only on their Tailscale address (100.x / `tailscale0`), never
   on `0.0.0.0`.
 - The VPS's job shrinks to the always-on mirror (projects + chat history).
-- A per-machine pairing token stays as a second layer, so another device on the tailnet can't drive
-  agents just by being there.
+- Any device on the tailnet may connect: being on the user's Tailscale network is the trust boundary.
+  When the user has picked devices (below), only those may connect.
+
+### Devices settings
+
+Settings → Devices lists what `tailscale status --json` reports (`remote::tailscale`): this device and
+its peers, online first. The user ticks which devices join the workspace and marks one as the
+**cloud** (the always-on copy); any number of devices works, three is just the example. The choice
+is saved as `SyncSettings { enabled, port, devices, cloud }`.
 
 Without Tailscale, the fallback is every machine connecting outbound to the VPS as a relay.
 
@@ -103,8 +116,9 @@ Machines have different home folders. Projects are matched by project id plus a 
 
 ### 6. Security
 
-- Each machine gets its own key; the VPS keeps an allow-list. Pairing is a one-time code shown on the host.
-- A remote prompt can run any tool the agent can, so remote access is off by default and per-machine.
+- Hosts listen only on their Tailscale address and refuse addresses outside the tailnet, and outside
+  the picked devices when the user has picked some.
+- A remote prompt can run any tool the agent can, so sharing is off by default.
 - Secrets (`.env`) are excluded from the mirror unless the user opts in.
 
 ## Phases
