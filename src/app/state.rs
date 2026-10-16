@@ -104,6 +104,8 @@ pub struct AppState {
     dirty: BTreeSet<String>,
     /// Sessions deleted since the last `flush_sessions`; their files go on the next flush.
     removed: Vec<String>,
+    /// Remote chats with a turn running on their device.
+    remote_busy: BTreeSet<String>,
 }
 
 impl AppState {
@@ -128,6 +130,7 @@ impl AppState {
             live: HashMap::new(),
             dirty: BTreeSet::new(),
             removed: Vec::new(),
+            remote_busy: BTreeSet::new(),
         };
         let mut taken = Vec::new();
         for s in &mut state.sessions {
@@ -152,7 +155,8 @@ impl AppState {
     pub fn flush_sessions(&mut self) -> Vec<String> {
         let mut failed = Vec::new();
         for id in std::mem::take(&mut self.dirty) {
-            if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
+            // Remote chats are live copies of another device's files, so they are never saved here.
+            if let Some(s) = self.sessions.iter().find(|s| s.id == id).filter(|s| s.origin.is_none()) {
                 if let Err(e) = store::save(s) {
                     eprintln!("could not save session {id}: {e}");
                     failed.push(format!("Couldn't save the chat: {e}"));
@@ -268,11 +272,98 @@ impl AppState {
 
     /// Removes a chat, its live turn (which stops the agent) and its tile.
     pub fn delete_session(&mut self, id: &str) {
+        let remote = self.is_remote(id).is_some();
         self.live.remove(id);
         self.sessions.retain(|s| s.id != id);
         self.workspace.layout.close(id);
         self.dirty.remove(id);
-        self.removed.push(id.to_string());
+        self.remote_busy.remove(id);
+        // A remote chat has no file here to delete.
+        if !remote {
+            self.removed.push(id.to_string());
+        }
+    }
+
+    // Remote chats: chats that live on another device, shown here as a live copy. Never saved here.
+
+    /// Shows a chat from `origin` (a device id), replacing any chat with the same id. `busy` says a turn runs there now.
+    pub fn put_remote(&mut self, mut session: Session, origin: &str, busy: bool) {
+        let id = session.id.clone();
+        session.origin = Some(origin.into());
+        match self.sessions.iter_mut().find(|s| s.id == id) {
+            Some(slot) => *slot = session,
+            None => self.sessions.push(session),
+        }
+        if busy {
+            self.remote_busy.insert(id);
+        } else {
+            self.remote_busy.remove(&id);
+        }
+    }
+
+    /// Drops every chat from `origin`, with its tile, live state and busy mark. Nothing is deleted on disk.
+    pub fn remove_remote(&mut self, origin: &str) {
+        let gone: Vec<String> = self.sessions.iter().filter(|s| s.origin.as_deref() == Some(origin)).map(|s| s.id.clone()).collect();
+        for id in &gone {
+            self.live.remove(id);
+            self.remote_busy.remove(id);
+            self.dirty.remove(id);
+        }
+        self.sessions.retain(|s| s.origin.as_deref() != Some(origin));
+        let layout = &mut self.workspace.layout;
+        layout.tiles.retain(|t| !gone.contains(t));
+        if layout.focus.as_ref().is_some_and(|f| gone.contains(f)) {
+            layout.focus = None;
+        }
+    }
+
+    /// The device a chat lives on, for a chat shown from another device. `None` for this device's own chats.
+    pub fn is_remote(&self, id: &str) -> Option<&str> {
+        self.session(id)?.origin.as_deref()
+    }
+
+    /// Mirrors a prompt sent from another device into chat `id`: the user's message and an empty reply.
+    /// Runs nothing. Events of the turn follow through `remote_event`.
+    pub fn remote_started(&mut self, id: &str, text: &str) {
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return };
+        // Same titling as `send`: the first message names the chat unless the user named it.
+        if s.messages.is_empty() && (s.title.is_empty() || s.title_auto) {
+            s.title = store::title_from(text);
+            s.title_auto = true;
+        }
+        s.push(Role::User, text);
+        s.draft.clear();
+        s.push(Role::Agent, "");
+        let live = self.live.entry(id.to_string()).or_default();
+        live.status = None;
+        live.cancelled = false;
+        live.started = Some(Instant::now());
+        live.activity.clear();
+        live.tools.clear();
+        live.thought = None;
+        live.thinking_since = None;
+        live.after_tool = false;
+        live.final_start = None;
+        live.usage = None;
+        self.remote_busy.insert(id.to_string());
+    }
+
+    /// Folds one event of a remote turn into chat `id`. Returns what the caller should do next.
+    pub fn remote_event(&mut self, id: &str, out: Out) -> Applied {
+        self.apply(id, Event::Out(out))
+    }
+
+    /// Ends a remote turn in chat `id`. `error` is set when the agent failed on its device.
+    /// The preview is not opened: a remote chat's files are on another device.
+    pub fn remote_finished(&mut self, id: &str, error: Option<String>) -> Applied {
+        self.remote_busy.remove(id);
+        let result = match error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        };
+        let mut applied = self.apply(id, Event::Finished(result));
+        applied.preview = None;
+        applied
     }
 
     /// Sets the chat's title. Returns false if there is no such chat.
@@ -406,9 +497,9 @@ impl AppState {
         }
     }
 
-    /// Whether a turn is running in `id`.
+    /// Whether a turn is running in `id`, here or on the chat's device.
     pub fn busy(&self, id: &str) -> bool {
-        self.live.get(id).is_some_and(|l| l.turn.is_some())
+        self.live.get(id).is_some_and(|l| l.turn.is_some()) || self.remote_busy.contains(id)
     }
 
     /// The agent's latest status line for `id`, while it runs.
@@ -674,7 +765,11 @@ impl AppState {
     }
 
     /// Stops the turn in `id`, if one runs. The turn's `Finished` event follows.
+    /// Returns false for a remote chat: the caller sends the cancel to its device.
     pub fn stop(&mut self, id: &str) -> bool {
+        if self.is_remote(id).is_some() {
+            return false;
+        }
         let Some(live) = self.live.get_mut(id) else { return false };
         let Some(turn) = &live.turn else { return false };
         live.cancelled = true;
@@ -1456,5 +1551,77 @@ mod tests {
         assert_eq!(saved.messages[2].text, "Stopped.");
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_remote_turn_streams_into_its_chat() {
+        let mut app = state();
+        let chat = Session::new("pi", "/home/host".into());
+        let id = chat.id.clone();
+        app.put_remote(chat, "laptop", false);
+        assert_eq!(app.is_remote(&id), Some("laptop"));
+        assert!(!app.busy(&id));
+
+        app.remote_started(&id, "say hello");
+        assert!(app.busy(&id));
+        app.remote_event(&id, Out::Text("Hel".into()));
+        app.remote_event(&id, Out::Text("lo".into()));
+        assert!(app.busy(&id), "busy until the turn ends");
+        let applied = app.remote_finished(&id, None);
+        assert!(applied.finished);
+        assert!(!app.busy(&id));
+
+        let s = app.session(&id).unwrap();
+        assert_eq!(s.title, "say hello");
+        let reply = s.messages.iter().rev().find(|m| m.role == Role::Agent).unwrap();
+        assert_eq!(reply.text, "Hello");
+
+        // Stopping a remote chat is the caller's job, sent to its device.
+        assert!(!app.stop(&id));
+        // Deleting a remote chat drops it from memory without a file delete here.
+        app.delete_session(&id);
+        assert!(app.session(&id).is_none());
+        assert!(app.removed.is_empty());
+    }
+
+    #[test]
+    fn remote_chats_are_never_saved_here() {
+        let _env = lock_env();
+        let dir = std::env::temp_dir().join(format!("archonui-remote-test-{}", store::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data_env = std::env::var_os("ARCHONUI_DATA_DIR");
+        std::env::set_var("ARCHONUI_DATA_DIR", &dir);
+        let _guard = EnvGuard { data_env, cfg_env: None };
+
+        let mut app = state();
+        let chat = Session::new("pi", "/home/host".into());
+        let id = chat.id.clone();
+        app.put_remote(chat, "laptop", false);
+        app.remote_started(&id, "hi");
+        app.remote_event(&id, Out::Text("there".into()));
+        app.remote_finished(&id, Some("exit 2".into()));
+        assert!(app.flush_sessions().is_empty());
+        assert!(app.dirty.is_empty());
+        assert!(!dir.join(format!("{id}.json")).exists(), "no file for a remote chat");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn removing_a_device_drops_its_chats_and_tiles() {
+        let mut app = state();
+        let local = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let remote = Session::new("pi", "/home/host".into());
+        let remote_id = remote.id.clone();
+        app.put_remote(remote, "laptop", true);
+        app.workspace.layout = Layout { tiles: vec![local.clone(), remote_id.clone()], focus: Some(remote_id.clone()), ..Layout::default() };
+
+        app.remove_remote("laptop");
+        assert!(app.session(&remote_id).is_none());
+        assert!(!app.busy(&remote_id));
+        assert_eq!(app.workspace.layout.tiles, [local.as_str()]);
+        assert!(app.workspace.layout.focus.is_none(), "focus left the removed tile");
+        assert!(app.session(&local).is_some(), "this device's chats stay");
+        assert!(app.removed.is_empty(), "nothing to delete on disk");
     }
 }
