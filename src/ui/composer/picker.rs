@@ -172,6 +172,10 @@ impl Shell {
             self.close_popover(id, cx);
             return;
         }
+        if let Some(device) = self.chat_device(id) {
+            self.toast(format!("This chat runs on {device}, with the agent it has there."), cx);
+            return;
+        }
         if self.state.busy(id) {
             self.toast("Stop the running reply before switching agents.", cx);
             return;

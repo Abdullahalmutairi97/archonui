@@ -47,6 +47,8 @@ pub struct RemoteUi {
     clients: HashMap<String, Client>,
     /// Devices being connected to.
     connecting: HashSet<String>,
+    /// Chats subscribed to over each device's current connection, by `Device::id`.
+    subscribed: HashMap<String, HashSet<String>>,
     /// The periodic list refresh and backup run.
     ticking: bool,
     /// Bumped each time sharing stops, so the timers started before end.
@@ -109,6 +111,7 @@ impl Shell {
         let shown = self.state.sessions().iter().filter_map(|s| s.origin.clone());
         for id in dropped_devices(&sync, self.remote.clients.keys().cloned().chain(shown)) {
             self.remote.clients.remove(&id);
+            self.remote.subscribed.remove(&id);
             self.state.remove_remote(&id);
             self.drop_device_approvals(&id);
         }
@@ -186,6 +189,7 @@ impl Shell {
         self.drop_forwarded(|_| true);
         let r = &mut self.remote;
         r.clients.clear();
+        r.subscribed.clear();
         r.cloud = None;
         r.pushed.clear();
         r.cloud_projects = None;
@@ -379,6 +383,7 @@ impl Shell {
                             }
                             let events = client.events.clone();
                             this.remote.clients.insert(device.id.clone(), client);
+                            this.remote.subscribed.remove(&device.id);
                             if is_cloud {
                                 this.ask_cloud_for_away_devices();
                                 this.backup(cx);
@@ -430,6 +435,7 @@ impl Shell {
             ClientEvent::Msg(msg) => msg,
             ClientEvent::Closed(_) => {
                 self.remote.clients.remove(device);
+                self.remote.subscribed.remove(device);
                 self.state.remove_remote(device);
                 self.drop_device_approvals(device);
                 self.ask_cloud_for_chats(device);
@@ -440,9 +446,13 @@ impl Shell {
         };
         match msg {
             HostMsg::Sessions { sessions } => {
+                let subscribed = self.remote.subscribed.entry(device.to_string()).or_default();
+                let wanted = to_subscribe(&self.state, device, sessions.iter().map(|s| s.id.as_str()), subscribed);
                 if let Some(client) = self.remote.clients.get(device) {
-                    for s in sessions.iter().filter(|s| self.state.is_remote(&s.id).is_none()) {
-                        let _ = client.send(&ClientMsg::Subscribe { session: s.id.clone() });
+                    for id in wanted {
+                        if client.send(&ClientMsg::Subscribe { session: id.clone() }).is_ok() {
+                            subscribed.insert(id);
+                        }
                     }
                 }
             }
@@ -467,9 +477,18 @@ impl Shell {
                     self.remote.open_new = Some((asked, Some(session.id.clone())));
                 }
                 if let Some(client) = self.remote.clients.get(device) {
-                    let _ = client.send(&ClientMsg::Subscribe { session: session.id });
+                    if client.send(&ClientMsg::Subscribe { session: session.id.clone() }).is_ok() {
+                        self.remote.subscribed.entry(device.to_string()).or_default().insert(session.id);
+                    }
                 }
             }
+            // A turn's messages only reach chats shown from the device that sent them: never a chat of
+            // this device (one adopted here keeps the id) or one from another device.
+            HostMsg::Started { session, .. }
+            | HostMsg::Event { session, .. }
+            | HostMsg::Finished { session, .. }
+            | HostMsg::Draft { session, .. }
+                if self.state.is_remote(&session) != Some(device) => {}
             HostMsg::Started { session, text } => self.state.remote_started(&session, &text),
             HostMsg::Event { session, out } => {
                 self.state.remote_event(&session, out);
@@ -529,8 +548,22 @@ impl Shell {
         let Some(device) = self.state.is_remote(id).map(str::to_string) else { return false };
         if !self.remote.clients.contains_key(&device) {
             // The device is away (this copy came from the cloud): continue the chat here instead.
+            // Its agent may not be installed here: the default one takes over, with the chat so far.
+            let agent = self.state.session(id).map(|s| s.agent.clone()).unwrap_or_default();
+            let installed = self.agents.iter().any(|a| a.harness.id() == agent);
+            let takeover = match super::shell::pick_harness(self.state.settings.default_harness.as_deref(), &self.agents) {
+                _ if installed => None,
+                Some(other) => Some(other),
+                None => {
+                    self.toast("No agent is enabled", cx);
+                    return false;
+                }
+            };
             let cwd = self.default_folder();
             if self.state.adopt_remote(id, cwd) {
+                if let Some(other) = takeover {
+                    self.switch_agent(id, other, cx);
+                }
                 let name = self.chat_device_name(&device);
                 self.toast(format!("{name} is away, so this chat continues here"), cx);
                 self.flush_sessions(cx);
@@ -820,6 +853,21 @@ fn next_step(sync: &crate::remote::SyncSettings, me: Option<&Device>) -> Step {
     }
 }
 
+/// The chats listed by `device` to subscribe to: new ones, and ones shown from the cloud while it was
+/// away, but none already subscribed and never one that is this device's own (adopted here) or another device's.
+fn to_subscribe<'a>(
+    state: &crate::app::state::AppState,
+    device: &str,
+    listed: impl Iterator<Item = &'a str>,
+    subscribed: &HashSet<String>,
+) -> Vec<String> {
+    listed
+        .filter(|id| !subscribed.contains(*id))
+        .filter(|id| state.session(id).is_none_or(|s| s.origin.as_deref() == Some(device)))
+        .map(str::to_string)
+        .collect()
+}
+
 /// The devices whose connection or chats must go: every one of `known` the settings no longer include.
 fn dropped_devices(sync: &crate::remote::SyncSettings, known: impl Iterator<Item = String>) -> Vec<String> {
     let mut out: Vec<String> = known.filter(|id| !sync.devices.iter().any(|d| &d.id == id)).collect();
@@ -855,6 +903,28 @@ mod tests {
         let ui = RemoteUi::default();
         assert!(ui.hub.is_none() && ui.clients.is_empty() && ui.cloud.is_none() && !ui.ticking);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn listed_chats_are_subscribed_once_and_never_over_a_local_one() {
+        use crate::app::{settings::AppSettings, state::AppState, workspace::Workspace};
+        let local = Session::new("claude", "/home/me".into());
+        let adopted = Session::new("claude", "/home/me".into());
+        let (local_id, adopted_id) = (local.id.clone(), adopted.id.clone());
+        let mut state = AppState::new(vec![local, adopted], Vec::new(), Workspace::default(), AppSettings::default());
+        let from_cloud = Session::new("claude", "/home/pc".into());
+        let from_cloud_id = from_cloud.id.clone();
+        state.put_remote(from_cloud, "pc", false);
+        let other = Session::new("claude", "/home/vps".into());
+        let other_id = other.id.clone();
+        state.put_remote(other, "vps", false);
+        let live = Session::new("claude", "/home/pc".into());
+        let live_id = live.id.clone();
+        state.put_remote(live, "pc", false);
+        let subscribed: HashSet<String> = [live_id.clone()].into();
+        let listed = ["new-chat", local_id.as_str(), adopted_id.as_str(), from_cloud_id.as_str(), other_id.as_str(), live_id.as_str()];
+        let wanted = to_subscribe(&state, "pc", listed.into_iter(), &subscribed);
+        assert_eq!(wanted, vec!["new-chat".to_string(), from_cloud_id], "new chats and cloud copies of pc's chats only");
     }
 
     #[test]
