@@ -58,7 +58,8 @@ fn context_colour(share: f32, theme: &Theme) -> crate::ui::theme::Rgba {
 fn tokens(n: u64) -> String {
     match n {
         0..=999 => n.to_string(),
-        1_000..=999_999 => format!("{}k", (n as f64 / 1e3).round()),
+        // From 999_500 the rounded thousands reach 1000, which reads as 1.0M rather than 1000k.
+        1_000..=999_499 => format!("{}k", (n as f64 / 1e3).round()),
         _ => format!("{:.1}M", n as f64 / 1e6),
     }
 }
@@ -800,6 +801,16 @@ mod tests {
 
     fn ids(rows: &[ModelInfo]) -> Vec<(&str, &str)> {
         rows.iter().map(|m| (m.id.as_str(), m.label.as_str())).collect()
+    }
+
+    #[test]
+    fn token_counts_round_to_thousands_or_millions() {
+        assert_eq!(tokens(950), "950");
+        assert_eq!(tokens(12_000), "12k");
+        assert_eq!(tokens(999_499), "999k");
+        assert_eq!(tokens(999_500), "1.0M", "rounds to 1000k, so it is millions");
+        assert_eq!(tokens(999_600), "1.0M");
+        assert_eq!(tokens(1_200_000), "1.2M");
     }
 
     #[test]

@@ -353,7 +353,8 @@ fn tokens(n: u64) -> String {
     match n {
         0..=999 => n.to_string(),
         1_000..=9_999 => format!("{:.1}k", n as f64 / 1e3),
-        10_000..=999_999 => format!("{}k", (n as f64 / 1e3).round()),
+        // Up to 999.5k, which would round to "1000k".
+        10_000..=999_499 => format!("{}k", (n as f64 / 1e3).round()),
         _ => format!("{:.1}M", n as f64 / 1e6),
     }
 }
@@ -1088,6 +1089,13 @@ fn file_name(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn token_counts_near_a_million_show_as_millions() {
+        assert_eq!(super::tokens(999_499), "999k");
+        assert_eq!(super::tokens(999_500), "1.0M");
+        assert_eq!(super::tokens(999_999), "1.0M");
+    }
+
 
     #[test]
     fn diff_details_parse_into_counts() {
