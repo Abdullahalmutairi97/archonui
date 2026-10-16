@@ -295,7 +295,7 @@ impl Shell {
         let m = ev.keystroke.modifiers;
         if ev.keystroke.key == "escape" && !(m.shift || m.alt || m.control || m.platform) {
             if let Some(id) = self.state.workspace.layout.focus.clone().filter(|id| self.state.busy(id)) {
-                self.state.stop(&id);
+                self.stop_chat(&id);
                 cx.notify();
                 return;
             }

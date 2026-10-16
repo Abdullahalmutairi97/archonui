@@ -76,6 +76,8 @@ pub struct Shell {
     pub(super) settings: SettingsUi,
     pub(super) share: ShareUi,
     pub(super) switcher: SwitcherUi,
+    /// Sharing chats with other devices; idle unless turned on in Settings → Devices.
+    pub(super) remote: super::remote::RemoteUi,
     /// Animated widths of the left sidebar and the tools panel.
     pub(super) left_w: Animator<f32>,
     pub(super) right_w: Animator<f32>,
@@ -134,6 +136,7 @@ impl Shell {
             settings: SettingsUi::default(),
             share: ShareUi::default(),
             switcher: SwitcherUi::default(),
+            remote: super::remote::RemoteUi::default(),
             left_w: Animator::new(0., anim::SIDEBAR_COLLAPSE),
             right_w: Animator::new(0., anim::PANEL_COLLAPSE),
         };
@@ -142,6 +145,7 @@ impl Shell {
         this.right_w = Animator::new(r, anim::PANEL_COLLAPSE);
         this.rescan(cx);
         this.dev_open(cx);
+        this.refresh_remote(cx);
         this
     }
 
@@ -221,6 +225,7 @@ impl Shell {
     /// Saves settings, workspace and projects (coalesced) and redraws.
     pub(super) fn save(&mut self, cx: &mut Context<Self>) {
         self.state.save_config(&self.saver, &self.paths);
+        self.refresh_remote(cx);
         cx.notify();
     }
 

@@ -449,7 +449,7 @@ impl Shell {
     /// draft, else sends the draft.
     fn composer_action(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.state.busy(id) && self.draft(id, cx).trim().is_empty() {
-            self.state.stop(id);
+            self.stop_chat(id);
             cx.notify();
             return;
         }
@@ -486,6 +486,10 @@ impl Shell {
         if (text.is_empty() && self.state.pending(id).is_empty()) || self.state.busy(id) {
             return false;
         }
+        // A chat on another device runs there; its agent need not be installed here.
+        if self.state.is_remote(id).is_some() {
+            return self.send_remote(id, text, cx);
+        }
         let Some(agent) = self.state.session(id).map(|s| s.agent.clone()) else { return false };
         if !self.agents.iter().any(|a| a.harness.id() == agent) {
             self.toast("The agent for this chat isn't installed", cx);
@@ -501,6 +505,7 @@ impl Shell {
             }
         }
         let Some(events) = self.state.send(id, text, &self.agents) else { return false };
+        self.share_started(id, text);
         self.follow_turn(id, events, cx);
         cx.notify();
         true
@@ -515,7 +520,7 @@ impl Shell {
                 e.queued.insert(0, text);
                 e.steer = true;
             }
-            self.state.stop(id);
+            self.stop_chat(id);
         } else {
             self.send_now(id, &text, cx);
         }
@@ -524,7 +529,7 @@ impl Shell {
 
     /// After a turn ends, sends the first queued message, unless the user stopped the turn without
     /// Steer now: then the queue waits for Steer now or Send.
-    fn send_queued(&mut self, id: &str, stopped: bool, cx: &mut Context<Self>) {
+    pub(super) fn send_queued(&mut self, id: &str, stopped: bool, cx: &mut Context<Self>) {
         let steer = self.composers.entries.get_mut(id).map_or(false, |e| std::mem::take(&mut e.steer));
         if stopped && !steer {
             return;
@@ -585,7 +590,7 @@ impl Shell {
     }
 
     /// Applies a turn's events to session `id` as they arrive, until the turn's stream closes.
-    fn follow_turn(&mut self, id: &str, events: smol::channel::Receiver<Event>, cx: &mut Context<Self>) {
+    pub(super) fn follow_turn(&mut self, id: &str, events: smol::channel::Receiver<Event>, cx: &mut Context<Self>) {
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
             while let Ok(ev) = events.recv().await {
@@ -598,6 +603,7 @@ impl Shell {
     }
 
     fn apply_turn_event(&mut self, id: &str, ev: Event, cx: &mut Context<Self>) {
+        self.share_event(id, &ev);
         let applied = self.state.apply(id, ev);
         if applied.finished {
             self.flush_sessions(cx);
@@ -634,7 +640,7 @@ impl Shell {
                 return true;
             }
             if self.state.busy(&id) {
-                self.state.stop(&id);
+                self.stop_chat(&id);
                 cx.notify();
                 return true;
             }
