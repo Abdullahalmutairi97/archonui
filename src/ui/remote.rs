@@ -13,7 +13,7 @@ use crate::{
         cloud::Store,
         host,
         hub::{Hub, Request},
-        proto::{ClientMsg, CloudProject, HostMsg},
+        proto::{ClientMsg, CloudProject, HostMsg, RemoteFile, MAX_REMOTE_FILES_BYTES},
         snapshot, tailscale, Device,
     },
     store::Session,
@@ -467,10 +467,13 @@ impl Shell {
             }
             return false;
         }
-        if !self.state.pending(id).is_empty() {
-            self.toast("Files can't be sent to a chat on another device yet", cx);
-            return false;
-        }
+        let files = match self.pending_as_remote_files(id) {
+            Ok(files) => files,
+            Err(e) => {
+                self.toast(e, cx);
+                return false;
+            }
+        };
         let Some(s) = self.state.session(id) else { return false };
         let msg = ClientMsg::Prompt {
             session: id.to_string(),
@@ -478,14 +481,39 @@ impl Shell {
             mode: Some(s.mode),
             model: s.model.clone(),
             effort: s.effort.clone(),
+            files,
         };
         match self.remote.clients.get(&device).map(|c| c.send(&msg)) {
-            Some(Ok(())) => true,
+            Some(Ok(())) => {
+                // Sent with the prompt; the host keeps its own copies.
+                while !self.state.pending(id).is_empty() {
+                    self.state.remove_pending(id, 0);
+                }
+                true
+            }
             _ => {
                 self.toast("That device is not connected", cx);
                 false
             }
         }
+    }
+
+    /// The files waiting to go with the next message in chat `id`, read and encoded for its device.
+    fn pending_as_remote_files(&self, id: &str) -> Result<Vec<RemoteFile>, String> {
+        let pending = self.state.pending(id);
+        if pending.len() > crate::engine::attach::MAX_FILES {
+            return Err(format!("At most {} files can go with one message", crate::engine::attach::MAX_FILES));
+        }
+        if pending.iter().map(|a| a.size).sum::<u64>() > MAX_REMOTE_FILES_BYTES {
+            return Err("The files are too large to send to another device".into());
+        }
+        pending
+            .iter()
+            .map(|a| {
+                let bytes = std::fs::read(&a.path).map_err(|e| format!("Could not read {}: {e}", a.name))?;
+                Ok(RemoteFile { name: a.name.clone(), data: STANDARD.encode(bytes) })
+            })
+            .collect()
     }
 
     /// Stops the reply in chat `id`: here for this device's chats, on its device for a remote one.
