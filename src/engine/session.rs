@@ -7,15 +7,15 @@ use super::{
 use smol::channel::{unbounded, Receiver};
 use std::{
     collections::VecDeque,
-    fs::{OpenOptions, Permissions},
+    fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, Write},
-    os::unix::{
-        fs::{OpenOptionsExt, PermissionsExt},
-        process::CommandExt,
-    },
+    os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::Path,
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -195,14 +195,24 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
 }
 
 /// Writes `text` to `path`, creating its folder, readable by this user only.
+/// The text goes to a new file that is renamed over `path`, so a reader never sees a partial file.
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         crate::store::create_private_dir(dir)?;
     }
-    let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-    // `mode` applies only when the file is created; an existing file keeps its old permissions.
-    file.set_permissions(Permissions::from_mode(0o600))?;
-    file.write_all(text.as_bytes())
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!("{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let written = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut file| file.write_all(text.as_bytes()));
+    let result = written.and_then(|()| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -300,6 +310,23 @@ mod tests {
         write_private(&path, "{}").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reader_keeps_the_old_text_when_the_file_is_replaced() {
+        use std::io::Read;
+        let dir = std::env::temp_dir().join(format!("archonui-session-replace-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("mcp/claude.json");
+        write_private(&path, "{\"old\": true}").unwrap();
+        let mut reader = fs::File::open(&path).unwrap();
+        write_private(&path, "{}").unwrap();
+        let mut old = String::new();
+        reader.read_to_string(&mut old).unwrap();
+        assert_eq!(old, "{\"old\": true}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1, "no temp file is left behind");
         let _ = fs::remove_dir_all(&dir);
     }
 }
