@@ -171,6 +171,30 @@ pub fn handle(
         }
         ClientMsg::Unsubscribe { session } => hub.unsubscribe(conn, &session),
         ClientMsg::NewSession { agent, cwd, project } => {
+            // An empty agent or folder means this host's defaults: the asking device can't know them.
+            let agent = if agent.is_empty() {
+                let enabled = |id: &str| agents.iter().any(|a| a.enabled && a.harness.id() == id);
+                state
+                    .settings
+                    .default_harness
+                    .clone()
+                    .filter(|h| enabled(h))
+                    .or_else(|| agents.iter().find(|a| a.enabled).map(|a| a.harness.id().to_string()))
+                    .unwrap_or_default()
+            } else {
+                agent
+            };
+            let cwd = if cwd.as_os_str().is_empty() {
+                state
+                    .settings
+                    .default_folder
+                    .clone()
+                    .filter(|p| p.is_dir())
+                    .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+                    .unwrap_or_else(|| std::path::PathBuf::from("/"))
+            } else {
+                cwd
+            };
             if !agents.iter().any(|a| a.enabled && a.harness.id() == agent.as_str()) {
                 let message = format!("{} is not set up on this device", engine::agent_name(&agent));
                 hub.reply(conn, &HostMsg::Error { message });

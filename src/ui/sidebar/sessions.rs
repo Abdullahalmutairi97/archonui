@@ -96,6 +96,7 @@ impl Shell {
             .flex_col()
             .gap(px(10.))
             .child(self.new_session_button(cx))
+            .children(self.new_remote_buttons(cx))
             .when_some(search, |col, input| col.child(search_box(&input, &theme)))
             .child(list)
             .into_any_element()
@@ -169,6 +170,33 @@ impl Shell {
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_session(window, cx)))
             .child("New session")
             .when_some(hint, |d, hint| d.child(div().text_size(px(10.)).opacity(0.75).child(hint)))
+    }
+
+    /// "New on <device>" for each connected device, under the New session button. Nothing while
+    /// sharing is off or no device is connected.
+    fn new_remote_buttons(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let devices = self.connected_devices();
+        if devices.is_empty() {
+            return None;
+        }
+        let theme = &self.theme;
+        let line2 = theme.line2.to_hsla();
+        let buttons = devices.into_iter().map(|(id, name)| {
+            div()
+                .id(ElementId::Name(format!("new-on-{id}").into()))
+                .px(px(10.))
+                .py(px(5.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(line2)
+                .text_size(px(12.))
+                .text_color(theme.muted.to_hsla())
+                .cursor_pointer()
+                .hover(move |s| s.bg(line2))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.new_remote_chat(&id, cx)))
+                .child(format!("+ New on {name}"))
+        });
+        Some(div().flex().flex_wrap().gap(px(6.)).children(buttons).into_any_element())
     }
 
     fn session_row(&self, entry: &Entry, rename: Option<&Entity<TextInput>>, cx: &mut Context<Self>) -> AnyElement {
