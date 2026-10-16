@@ -115,7 +115,7 @@ fn agent_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyEleme
                     .text_size(px(13.))
                     .text_color(theme.muted.to_hsla())
                     .italic()
-                    .child(format!("Working · {} tool calls · Esc to stop", item.tools.len())),
+                    .child(working_line(item.tools.len())),
             )
         })
         // Notes the agent wrote between tool calls: dimmed, then a divider before the final answer.
@@ -1087,6 +1087,11 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// The line under a reply while it streams: `Working · 1 tool call · Esc to stop`.
+fn working_line(tools: usize) -> String {
+    format!("Working · {tools} tool call{} · Esc to stop", if tools == 1 { "" } else { "s" })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1094,6 +1099,13 @@ mod tests {
         assert_eq!(super::tokens(999_499), "999k");
         assert_eq!(super::tokens(999_500), "1.0M");
         assert_eq!(super::tokens(999_999), "1.0M");
+    }
+
+    #[test]
+    fn working_line_counts_tool_calls() {
+        assert_eq!(super::working_line(0), "Working · 0 tool calls · Esc to stop");
+        assert_eq!(super::working_line(1), "Working · 1 tool call · Esc to stop");
+        assert_eq!(super::working_line(3), "Working · 3 tool calls · Esc to stop");
     }
 
 
