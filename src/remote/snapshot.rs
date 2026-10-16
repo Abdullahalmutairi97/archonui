@@ -79,7 +79,7 @@ fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<O
     let r = wip_ref(device);
     let has_head = succeeds(repo.git().args(["rev-parse", "--verify", "-q", "HEAD"]));
     let seed = repo.index_path()?;
-    let seeded = match fs::copy(&seed, index) {
+    let seeded = match copy_index(&seed, index) {
         Ok(_) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => return Err(format!("copy {}: {e}", seed.display())),
@@ -237,8 +237,18 @@ fn indexed(repo: &Repo, index: &Path) -> Command {
 /// Copies the temporary index to `to` through a temp file beside it, so a reader never sees half.
 fn save_index(index: &Path, to: &Path) -> std::io::Result<()> {
     let tmp = to.with_extension("archonui-tmp");
-    fs::copy(index, &tmp)?;
+    copy_index(index, &tmp)?;
     fs::rename(&tmp, to)
+}
+
+/// Copies an index file and keeps its modified time. Git compares each entry's file time with the
+/// index file's own time to spot files changed in the same instant the index was written; a copy
+/// with a fresh time would hide those changes.
+fn copy_index(from: &Path, to: &Path) -> std::io::Result<()> {
+    // Read first: an index replaced meanwhile then only looks older, which makes git check more.
+    let modified = fs::metadata(from)?.modified()?;
+    fs::copy(from, to)?;
+    fs::OpenOptions::new().write(true).open(to)?.set_modified(modified)
 }
 
 /// Removes secret-looking paths from the temporary index only. The project's files and real index
@@ -539,6 +549,37 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// A file changed in the same instant the index was written, keeping its size and time, is
+    /// still seen as changed: the copied index keeps the real one's time, so git checks it.
+    #[test]
+    fn same_instant_changes_are_not_missed() {
+        if !git_available() {
+            return;
+        }
+        let base = root("racy");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        // A rewrite in the same instant also keeps the change time; tests cannot set that, so git
+        // is told to ignore it.
+        git(&proj, &["config", "core.trustctime", "false"]);
+        let file = proj.join("tracked.txt");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        git(&proj, &["update-index", "-q", "--really-refresh"]);
+        let when = fs::metadata(&file).unwrap().modified().unwrap();
+        let set_time = |p: &Path| fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(when).unwrap();
+        set_time(&proj.join(".git/index"));
+        take_in(&proj, "n1", &snaps, false).unwrap().expect("first snapshot");
+
+        fs::write(&file, "two\n").unwrap();
+        set_time(&file);
+        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("the change is seen");
+        let spec = format!("{c}:tracked.txt");
+        assert_eq!(git(&proj, &["cat-file", "-p", spec.as_str()]), "two");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn plain_folders_skip_unchanged_files_too() {
         if !git_available() {
@@ -551,6 +592,8 @@ mod tests {
         for i in 0..20 {
             fs::write(folder.join(format!("f{i}.txt")), format!("{i}\n")).unwrap();
         }
+        // Past the racy-git window, so the saved index's stats are trusted.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
         take_in(&folder, "n1", &snaps, false).unwrap().expect("first snapshot");
         let private = fs::read_dir(&snaps).unwrap().flatten().next().unwrap().path();
         let log = base.join("clean.log");
