@@ -486,15 +486,54 @@ fn link_named(
     Ok(())
 }
 
-/// Removes the symlinks in `dir` whose target is gone. Anything else, and Claude.ai's `synced`
-/// folder, is left alone.
+/// The folders `sync` links skills from. A link into one of them whose target is gone is a link
+/// `sync` made (or one like it) to a skill that was removed or moved.
+fn link_sources(home: &Path) -> Vec<PathBuf> {
+    [
+        ".agents/skills",
+        ".claude/skills",
+        ".claude/plugins",
+        ".gemini/skills",
+        ".gemini/extensions",
+        ".pi/agent/skills",
+        ".codex/skills",
+        ".config/opencode/skills",
+        ".config/opencode/skill",
+    ]
+    .iter()
+    .map(|p| resolve(&home.join(p)))
+    .collect()
+}
+
+/// `path` with its longest existing leading part resolved, so a path that is gone compares with
+/// the resolved paths `sync` links to.
+fn resolve(path: &Path) -> PathBuf {
+    for base in path.ancestors() {
+        if let Ok(real) = fs::canonicalize(base) {
+            return path.strip_prefix(base).map_or(real.clone(), |rest| real.join(rest));
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Removes the symlinks in `dir` whose target is gone, when that target was in one of the skill
+/// folders `sync` links from. Anything else (a link the user made to another place, such as a
+/// drive that is not mounted, or a link that cannot be read), and Claude.ai's `synced` folder,
+/// is left alone.
 fn prune(home: &Path, dir: &Path, pruned: &mut Vec<String>) -> io::Result<()> {
+    let sources = link_sources(home);
+    let ours = |link: &Path| {
+        let Ok(target) = fs::read_link(link) else { return false };
+        let target = resolve(&link.parent().map_or(target.clone(), |parent| parent.join(&target)));
+        sources.iter().any(|s| target.starts_with(s))
+    };
     let mut dead: Vec<PathBuf> = fs::read_dir(dir)?
         .flatten()
         .filter(|e| e.file_name() != "synced")
         .filter(|e| e.file_type().is_ok_and(|t| t.is_symlink()))
         .map(|e| e.path())
-        .filter(|p| fs::metadata(p).is_err())
+        .filter(|p| fs::metadata(p).is_err_and(|e| e.kind() == io::ErrorKind::NotFound))
+        .filter(|p| ours(p))
         .collect();
     dead.sort();
     for path in dead {
@@ -1027,17 +1066,39 @@ mod tests {
         let claude = home.join(".claude/skills");
         skill_md(&hub.join("fmt"), "---\nname: fmt\n---\n");
         fs::create_dir_all(hub.join("no-skill")).unwrap();
-        ln(&home.join("gone"), &hub.join("dead"));
-        ln(&home.join("gone"), &claude.join("dead"));
+        ln(&claude.join("synced/b/gone"), &hub.join("dead"));
+        ln(&hub.join("gone"), &claude.join("dead"));
+        ln(Path::new("../../.agents/skills/gone-too"), &claude.join("relative"));
+        ln(&home.join(".claude/plugins/cache/p/1/skills/gone"), &hub.join("old-plugin"));
         ln(&hub.join("fmt"), &claude.join("fmt"));
         ln(&home.join("gone"), &claude.join("synced/b/dead"));
 
         let report = sync_in(&home, &[]).unwrap();
-        assert_eq!(report.pruned, ["~/.agents/skills/dead", "~/.claude/skills/dead"]);
+        assert_eq!(
+            report.pruned,
+            ["~/.agents/skills/dead", "~/.agents/skills/old-plugin", "~/.claude/skills/dead", "~/.claude/skills/relative"]
+        );
         assert!(report.linked.is_empty() && report.skipped.is_empty(), "{report:?}");
         assert!(hub.join("no-skill").is_dir() && hub.join("fmt/SKILL.md").is_file());
         assert!(fs::symlink_metadata(claude.join("fmt")).is_ok());
         assert!(fs::symlink_metadata(claude.join("synced/b/dead")).is_ok(), "synced is never touched");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_keeps_a_dead_link_the_user_made_to_another_place() {
+        let home = scratch("prune-own");
+        let hub = home.join(".agents/skills");
+        let claude = home.join(".claude/skills");
+        // Links to a drive that is not mounted, or to a project that moved, are the user's own.
+        ln(Path::new("/nonexistent-archonui-drive/skills/notes"), &hub.join("notes"));
+        ln(&home.join("projects/gone/skill"), &claude.join("project-skill"));
+        ln(&claude.join("loop"), &claude.join("loop"));
+        let report = sync_in(&home, &[]).unwrap();
+        assert_eq!(report, SyncReport::default());
+        for link in [hub.join("notes"), claude.join("project-skill"), claude.join("loop")] {
+            assert!(fs::symlink_metadata(&link).is_ok(), "{link:?} was removed");
+        }
         let _ = fs::remove_dir_all(&home);
     }
 
