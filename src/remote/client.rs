@@ -348,4 +348,45 @@ mod tests {
         assert_eq!(parse_target("100.1.2.3:81"), ("100.1.2.3".to_string(), 81));
         assert_eq!(parse_target("pc:x"), ("pc:x".to_string(), DEFAULT_PORT));
     }
+
+    /// A project copy bigger than tungstenite's default 16 MiB frame gets through both ways.
+    #[test]
+    fn large_project_copies_get_through() {
+        use super::super::{hub::Hub, SyncSettings};
+        // A free port can be taken by another test before the hub binds it, so try a few.
+        let (port, (hub, requests)) = (0..20)
+            .find_map(|_| {
+                let port = std::net::TcpListener::bind("127.0.0.1:0").ok()?.local_addr().ok()?.port();
+                let bind = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+                Hub::start(bind, "host".into(), SyncSettings::default()).ok().map(|h| (port, h))
+            })
+            .expect("a free port");
+        let client = Client::connect("127.0.0.1", port, "me").unwrap();
+        let big = "A".repeat(20 << 20);
+
+        let msg = ClientMsg::PutProject { project: "p".into(), name: "p".into(), device: "n1".into(), commit: "abcd".into(), bundle: big.clone() };
+        client.send(&msg).unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(requests.recv_blocking());
+        });
+        let req = rx.recv_timeout(Duration::from_secs(20)).expect("the host got the copy").unwrap();
+        match req.msg {
+            ClientMsg::PutProject { bundle, .. } => assert_eq!(bundle.len(), big.len()),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let reply = HostMsg::ProjectData { project: "p".into(), device: "n1".into(), commit: "abcd".into(), bundle: big.clone() };
+        hub.reply(req.conn, &reply);
+        let events = client.events.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(events.recv_blocking());
+        });
+        match rx.recv_timeout(Duration::from_secs(20)).expect("the client got the copy").unwrap() {
+            ClientEvent::Msg(HostMsg::ProjectData { bundle, .. }) => assert_eq!(bundle.len(), big.len()),
+            ClientEvent::Msg(other) => panic!("unexpected {other:?}"),
+            ClientEvent::Closed(e) => panic!("closed: {e:?}"),
+        }
+    }
 }

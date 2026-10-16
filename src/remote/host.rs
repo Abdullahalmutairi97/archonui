@@ -9,7 +9,7 @@
 use super::{
     cloud::Store,
     hub::{Hub, Request},
-    proto::{ClientMsg, HostMsg, RemoteFile, SessionSummary, MAX_REMOTE_FILES_BYTES},
+    proto::{self, ClientMsg, HostMsg, RemoteFile, SessionSummary, MAX_REMOTE_FILES_BYTES},
     tailscale,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -297,6 +297,9 @@ pub fn handle_cloud(cloud: Option<&Store>, hub: &Hub, req: Request) {
             let reply = match cloud {
                 None => no_cloud(),
                 Some(store) => match store.get_project(&project, &device) {
+                    Ok((_, bundle)) if !proto::fits(bundle.len().div_ceil(3) * 4) => {
+                        HostMsg::Error { message: format!("That copy is too big to send ({} MB)", bundle.len() >> 20) }
+                    }
                     Ok((commit, bundle)) => HostMsg::ProjectData { project, device, commit, bundle: STANDARD.encode(bundle) },
                     Err(message) => HostMsg::Error { message },
                 },
