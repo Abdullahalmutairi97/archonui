@@ -11,14 +11,19 @@ use std::path::PathBuf;
 
 /// Bumped on any incompatible change. A host refuses a client with a different version.
 pub const VERSION: u32 = 1;
-/// Most file bytes one prompt may carry, before base64. Stays under the 64 MiB frame limit once encoded.
+/// Most file bytes one prompt may carry, before base64. Stays under `MAX_MESSAGE_BYTES` once encoded.
 pub const MAX_REMOTE_FILES_BYTES: u64 = 40 * 1024 * 1024;
-/// Largest message, and so frame, either side reads. tungstenite sends each message as one frame, so
-/// the frame limit (16 MiB by default) must be as large as the message limit, or a prompt with files
-/// well under `MAX_REMOTE_FILES_BYTES` drops the connection.
-pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+/// Largest message either end accepts. A project copy travels as one message (one frame), so
+/// tungstenite's 16 MiB default frame limit would drop the connection for any real repository.
+pub const MAX_MESSAGE_BYTES: usize = 512 * 1024 * 1024;
 
-/// The WebSocket limits both a host and a client use.
+/// Whether a message carrying `payload` bytes (already base64) stays under `MAX_MESSAGE_BYTES`,
+/// with room for the rest of the message.
+pub fn fits(payload: usize) -> bool {
+    payload.saturating_add(64 * 1024) <= MAX_MESSAGE_BYTES
+}
+
+/// The WebSocket limits hosts and clients both use.
 pub fn ws_config() -> tungstenite::protocol::WebSocketConfig {
     tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(MAX_MESSAGE_BYTES))

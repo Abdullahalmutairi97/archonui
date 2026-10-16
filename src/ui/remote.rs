@@ -13,7 +13,7 @@ use crate::{
         cloud::Store,
         host,
         hub::{Hub, Request},
-        proto::{ClientMsg, CloudProject, HostMsg, RemoteFile, MAX_REMOTE_FILES_BYTES},
+        proto::{self, ClientMsg, CloudProject, HostMsg, RemoteFile, MAX_REMOTE_FILES_BYTES},
         snapshot, tailscale, Device,
     },
     store::Session,
@@ -820,6 +820,10 @@ impl Shell {
                             continue;
                         }
                         match snapshot::bundle(&path, &device, pushed.as_deref()) {
+                            // Sent anyway, it would only drop the connection to the cloud.
+                            Ok(bytes) if !proto::fits(bytes.len().div_ceil(3) * 4) => {
+                                eprintln!("archonui: {name} is too big for the cloud copy ({} MB)", bytes.len() >> 20);
+                            }
                             Ok(bytes) => out.push(ClientMsg::PutProject {
                                 project: id,
                                 name,
