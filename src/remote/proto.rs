@@ -40,6 +40,30 @@ pub enum ClientMsg {
     Cancel { session: String },
     /// Keep the composer draft in step across devices.
     Draft { session: String, text: String },
+    /// Cloud: store a snapshot of a project. `bundle` is a base64 git bundle holding
+    /// `refs/archon/wip/<device>` at `commit` (incremental: only what the cloud lacks).
+    PutProject { project: String, name: String, device: String, commit: String, bundle: String },
+    /// Cloud: replace the stored copy of `device`'s chats (each a `store::Session` as JSON).
+    PutChats { device: String, sessions: Vec<serde_json::Value> },
+    /// Cloud: list stored projects and which devices have chats stored.
+    ListCloud,
+    /// Cloud: send the latest snapshot of `project` from `device` as a full bundle.
+    GetProject { project: String, device: String },
+    /// Cloud: send `device`'s stored chats.
+    GetChats { device: String },
+}
+
+/// A project snapshot kept on the cloud device.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CloudProject {
+    /// The project's id on the device that sent it.
+    pub project: String,
+    pub name: String,
+    /// Device id that sent the snapshot.
+    pub device: String,
+    pub commit: String,
+    /// When it was stored, seconds since the epoch.
+    pub updated: u64,
 }
 
 /// One chat in the host's list.
@@ -80,6 +104,14 @@ pub enum HostMsg {
     Draft { session: String, text: String },
     /// Something the client asked for failed, e.g. an unknown session id.
     Error { message: String },
+    /// Cloud: a `PutProject` was stored.
+    Stored { project: String, device: String, commit: String },
+    /// Cloud: answer to `ListCloud`. `chats` lists device ids with chats stored.
+    Cloud { projects: Vec<CloudProject>, chats: Vec<String> },
+    /// Cloud: answer to `GetProject`; a full base64 git bundle of `refs/archon/wip/<device>`.
+    ProjectData { project: String, device: String, commit: String, bundle: String },
+    /// Cloud: answer to `GetChats`.
+    Chats { device: String, sessions: Vec<serde_json::Value> },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> String {
@@ -102,6 +134,8 @@ mod tests {
             ClientMsg::ListSessions,
             ClientMsg::Prompt { session: "s1".into(), text: "hi".into(), mode: Some(Mode::Plan), model: None, effort: None },
             ClientMsg::Cancel { session: "s1".into() },
+            ClientMsg::PutProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "AAA=".into() },
+            ClientMsg::GetChats { device: "n1".into() },
         ];
         for m in msgs {
             assert_eq!(decode::<ClientMsg>(&encode(&m)).unwrap(), m);

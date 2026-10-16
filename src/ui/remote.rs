@@ -256,6 +256,7 @@ impl Shell {
             HostMsg::Draft { session, text } => self.state.set_draft(&session, &text),
             HostMsg::Error { message } => self.toast(message, cx),
             HostMsg::Welcome { .. } => {}
+            HostMsg::Stored { .. } | HostMsg::Cloud { .. } | HostMsg::ProjectData { .. } | HostMsg::Chats { .. } => {}
         }
         cx.notify();
     }
