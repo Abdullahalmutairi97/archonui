@@ -1,7 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.2.6
 
+- Skills, extensions and tools are marked with their agents. Every skill card shows which agents load it,
+  each extension shows its agent, and each MCP server and built-in tool row on the Tools page shows which
+  agents it reaches. An agent that ignores a setting is struck through, and its tooltip says why. Headers
+  count each agent's skills, servers and tools.
+- New Skills › Sync to all agents links skills so every agent that is on loads the same set. It only makes
+  and prunes its own symlinks, never moves or deletes a skill folder, keeps a skill you turned off where it
+  is, and keeps your own copy when an agent already has a skill of that name. A second Sync changes nothing.
+- Skill discovery finds the claude.ai-synced skills and every agent's own skills folder.
+- Gemini CLI extensions can be listed, installed, removed and switched on or off.
+- Pi gets ArchonUI's MCP servers. Gemini, Codex and OpenCode honour tools switched Off and skills switched off.
+- The Claude default model and default effort come from your Claude settings, not the plan's recommendation.
+- An effort the model doesn't take is no longer sent; `--ask --effort` rejects an unknown one.
+- The preview browser follows titles a page sets from script.
+- A local slash command or an empty Pi reply no longer resets the context meter.
+- `--ask` exits 1 when the turn fails. Pi's "No project session found" warning no longer heads its errors.
+- Many small layout and wording fixes across Settings, the Files tab, the attach popover and replies.
 - Appearance is compact. Themes are small thumbnails six to a row. Background has a Style segmented control
   (Canvas, Glass, Solid, Gaps, Tinted, Ambient), a row of 64×40 image tiles, and dim, panel blur and window
   opacity sliders. Fonts are a pairing control, an Apply to Titles or Text control, and a wrap of font chips
