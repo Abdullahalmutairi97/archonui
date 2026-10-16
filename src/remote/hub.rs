@@ -52,6 +52,8 @@ struct Conn {
 #[derive(Clone)]
 pub struct Hub {
     inner: Arc<Mutex<Inner>>,
+    /// The address actually bound: differs from the one asked for when that had port 0.
+    local: SocketAddr,
 }
 
 impl Hub {
@@ -69,6 +71,7 @@ impl Hub {
                 next_conn: 1,
                 stopped: false,
             })),
+            local: listener.local_addr()?,
         };
         // Polled, so `stop` can close the listener.
         listener.set_nonblocking(true)?;
@@ -76,6 +79,11 @@ impl Hub {
         let accepting = hub.clone();
         thread::spawn(move || accept(listener, accepting, requests));
         Ok((hub, rx))
+    }
+
+    /// The address the host listens on, with the real port when it was started on port 0.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local
     }
 
     /// Queues `msg` for one connection. Nothing happens if it has closed.
@@ -352,6 +360,27 @@ mod tests {
         let none = SyncSettings::default();
         let ip: IpAddr = "192.168.1.5".parse().unwrap();
         assert!(!peer_allowed(ip, &none, false));
+        // Sharing on, with or without picked devices, still only the tailnet.
+        let open = SyncSettings { enabled: true, ..Default::default() };
+        let picked = SyncSettings { enabled: true, devices: vec![device("192.168.1.5")], ..Default::default() };
+        for addr in ["192.168.1.5", "8.8.8.8", "10.0.0.2", "100.128.0.1", "2001:db8::1"] {
+            let ip: IpAddr = addr.parse().unwrap();
+            let tailnet = tailscale::is_tailscale_addr(&ip);
+            assert!(!tailnet, "{addr} is outside Tailscale's ranges");
+            assert!(!peer_allowed(ip, &open, tailnet), "{addr}");
+            assert!(!peer_allowed(ip, &picked, tailnet), "{addr}: a picked device must still be on the tailnet");
+        }
+    }
+
+    /// A real listener on loopback answers a client that says hello, whatever the settings.
+    #[test]
+    fn a_loopback_hub_reports_its_port_and_welcomes_a_client() {
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "box".into(), SyncSettings::default()).unwrap();
+        let addr = hub.local_addr();
+        assert!(addr.ip().is_loopback());
+        assert_ne!(addr.port(), 0);
+        let client = crate::remote::client::Client::connect("127.0.0.1", addr.port(), "laptop").unwrap();
+        assert_eq!(client.host, "box");
     }
 
     #[test]
