@@ -7,6 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The harnesses that read skill folders, in the order `Skill::agents` lists them.
+pub const AGENTS: [&str; 5] = ["claude", "codex", "gemini", "opencode", "pi"];
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Skill {
     /// Stable id: the folder path.
@@ -15,54 +18,205 @@ pub struct Skill {
     pub description: String,
     /// Slash command that runs it, e.g. `/review`.
     pub command: String,
-    /// Where it came from: "Personal", "Project", a plugin name, a harness.
+    /// Where it came from: "Personal", "Project", "Claude.ai", a plugin name, a harness.
     pub source: String,
     pub path: PathBuf,
+    /// The harnesses (from `AGENTS`) that load this folder, in `AGENTS` order.
+    pub agents: Vec<&'static str>,
 }
 
-/// Every skill visible from `cwd`: personal, project, harness and installed plugin skill folders.
-/// Folders are read in place; a folder without a readable SKILL.md is skipped.
+/// What `sync` did, one line per change.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SyncReport {
+    /// `name → link` for each symlink made.
+    pub linked: Vec<String>,
+    /// `name: reason` for each skill left unlinked.
+    pub skipped: Vec<String>,
+    /// Each dead symlink removed.
+    pub pruned: Vec<String>,
+}
+
+/// How far under a root a harness looks for SKILL.md folders.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Depth {
+    /// Only the folders directly under the root.
+    One,
+    /// Any folder below the root; a folder with a SKILL.md is not searched further.
+    Any,
+}
+
+/// A folder that harnesses read skills from.
+struct Root {
+    path: PathBuf,
+    source: String,
+    agents: &'static [&'static str],
+    depth: Depth,
+    /// Roots sharing a group list each folder name once, from the first of them.
+    group: Option<String>,
+}
+
+impl Root {
+    fn new(path: PathBuf, source: &str, agents: &'static [&'static str], depth: Depth) -> Self {
+        Self { path, source: source.into(), agents, depth, group: None }
+    }
+}
+
+/// A skill folder found from the roots, with its fully resolved path.
+struct Found {
+    skill: Skill,
+    canonical: PathBuf,
+}
+
+/// Every skill visible from `cwd`: personal, project, harness, Claude.ai and installed plugin
+/// skill folders, each with the harnesses that load it. Folders are read in place; a folder
+/// without a readable SKILL.md is skipped.
 pub fn discover(cwd: &Path) -> Vec<Skill> {
     home().map_or_else(Vec::new, |home| discover_in(&home, cwd))
 }
 
 /// `discover` with the home directory given.
 fn discover_in(home: &Path, cwd: &Path) -> Vec<Skill> {
-    let mut roots: Vec<(PathBuf, String)> = [
-        (home.join(".agents/skills"), "Personal"),
-        (home.join(".claude/skills"), "Claude Code"),
-        (home.join(".pi/agent/skills"), "Pi"),
-        (home.join(".config/opencode/skills"), "OpenCode"),
-        (home.join(".config/opencode/skill"), "OpenCode"),
-        (cwd.join(".claude/skills"), "Project"),
-        (cwd.join(".agents/skills"), "Project"),
-    ]
-    .into_iter()
-    .map(|(path, source)| (path, source.to_string()))
-    .collect();
-    roots.extend(plugin_skill_dirs(&home.join(".claude/plugins"), 0));
-    let mut seen = HashSet::new();
-    let mut out: Vec<Skill> = roots
-        .iter()
-        .flat_map(|(root, source)| skills_in(root, source))
-        // A symlinked skill (e.g. ~/.claude/skills/x -> ~/.agents/skills/x) is listed once, from
-        // the first root that reaches it.
-        .filter(|s| seen.insert(fs::canonicalize(&s.path).unwrap_or_else(|_| s.path.clone())))
+    let mut roots = user_roots(home);
+    roots.extend(project_roots(cwd));
+    scan(&roots).into_iter().map(|f| f.skill).collect()
+}
+
+/// The skill roots in the home folder, in source-label order: the first root to reach a folder
+/// names its source.
+fn user_roots(home: &Path) -> Vec<Root> {
+    let hub = home.join(".agents/skills");
+    let mut roots = vec![
+        Root::new(hub.clone(), "Personal", &["codex", "gemini", "opencode"], Depth::One),
+        Root::new(hub, "Personal", &["pi"], Depth::Any),
+        Root::new(home.join(".claude/skills"), "Claude Code", &["claude", "opencode"], Depth::One),
+    ];
+    roots.extend(synced_buckets(&home.join(".claude/skills/synced")).into_iter().map(|bucket| Root {
+        group: Some("claude.ai".into()),
+        ..Root::new(bucket, "Claude.ai", &["claude"], Depth::One)
+    }));
+    roots.extend([
+        Root::new(home.join(".gemini/skills"), "Gemini", &["gemini"], Depth::One),
+        Root::new(home.join(".pi/agent/skills"), "Pi", &["pi"], Depth::Any),
+        Root::new(home.join(".codex/skills"), "Codex", &["codex"], Depth::One),
+        Root::new(home.join(".config/opencode/skills"), "OpenCode", &["opencode"], Depth::One),
+        Root::new(home.join(".config/opencode/skill"), "OpenCode", &["opencode"], Depth::One),
+    ]);
+    roots.extend(
+        extension_skill_dirs(&home.join(".gemini/extensions"))
+            .into_iter()
+            .map(|(path, name)| Root::new(path, &name, &["gemini"], Depth::One)),
+    );
+    // Several copies of a plugin (versions, accounts) list each skill once, from the newest.
+    let mut plugins = plugin_skill_dirs(&home.join(".claude/plugins"), 0);
+    plugins.sort_by_cached_key(|(path, _)| (std::cmp::Reverse(modified(path.parent().unwrap_or(path))), path.clone()));
+    roots.extend(plugins.into_iter().map(|(path, name)| Root {
+        group: Some(format!("plugin:{name}")),
+        ..Root::new(path, &name, &["claude"], Depth::One)
+    }));
+    roots
+}
+
+/// The skill roots in the project at `cwd`. Pi also reads `.agents/skills` in each folder above
+/// `cwd`, up to the git root, or to `/` outside a repo.
+fn project_roots(cwd: &Path) -> Vec<Root> {
+    let mut roots = vec![
+        Root::new(cwd.join(".claude/skills"), "Project", &["claude", "opencode"], Depth::One),
+        Root::new(cwd.join(".agents/skills"), "Project", &["codex", "gemini", "opencode"], Depth::One),
+        Root::new(cwd.join(".gemini/skills"), "Project", &["gemini"], Depth::One),
+        Root::new(cwd.join(".pi/skills"), "Project", &["pi"], Depth::Any),
+        Root::new(cwd.join(".opencode/skills"), "Project", &["opencode"], Depth::One),
+        Root::new(cwd.join(".opencode/skill"), "Project", &["opencode"], Depth::One),
+    ];
+    for dir in cwd.ancestors() {
+        roots.push(Root::new(dir.join(".agents/skills"), "Project", &["pi"], Depth::Any));
+        if dir.join(".git").exists() {
+            break;
+        }
+    }
+    roots
+}
+
+/// The claude.ai sync buckets under `synced`, newest first. Dot-named entries are markers.
+fn synced_buckets(synced: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(synced) else { return Vec::new() };
+    let mut buckets: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
         .collect();
-    out.sort_by(|a, b| (&a.source, &a.name).cmp(&(&b.source, &b.name)));
+    buckets.sort_by_cached_key(|p| (std::cmp::Reverse(modified(p)), p.clone()));
+    buckets
+}
+
+/// The skill folders the roots reach, once per resolved path, sorted by source, name and path.
+/// A folder reached from several roots is listed from the first and loaded by all of their harnesses.
+fn scan(roots: &[Root]) -> Vec<Found> {
+    let mut out: Vec<Found> = Vec::new();
+    let mut index: HashMap<PathBuf, usize> = HashMap::new();
+    let mut agents: Vec<HashSet<&'static str>> = Vec::new();
+    let mut grouped = HashSet::new();
+    for root in roots {
+        for dir in walk(&root.path, root.depth) {
+            let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if root.group.as_ref().is_some_and(|g| !grouped.insert((g.clone(), folder))) {
+                continue;
+            }
+            let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            let i = match index.get(&canonical) {
+                Some(&i) => i,
+                None => {
+                    let Some(skill) = parse_skill(&dir, &root.source) else { continue };
+                    index.insert(canonical.clone(), out.len());
+                    out.push(Found { skill, canonical });
+                    agents.push(HashSet::new());
+                    out.len() - 1
+                }
+            };
+            agents[i].extend(root.agents);
+        }
+    }
+    for (found, agents) in out.iter_mut().zip(&agents) {
+        found.skill.agents = AGENTS.into_iter().filter(|a| agents.contains(a)).collect();
+    }
+    out.sort_by(|a, b| (&a.skill.source, &a.skill.name, &a.skill.path).cmp(&(&b.skill.source, &b.skill.name, &b.skill.path)));
     out
 }
 
-/// The skill folders directly under `root`, in name order.
-fn skills_in(root: &Path, source: &str) -> Vec<Skill> {
-    let Ok(entries) = fs::read_dir(root) else { return Vec::new() };
-    let mut dirs: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.join("SKILL.md").is_file())
-        .collect();
+/// The folders under `root` that hold a SKILL.md, in path order. Symlinked folders are followed;
+/// a folder already searched (a link loop) is not searched again.
+fn walk(root: &Path, depth: Depth) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    walk_into(root, depth, 0, &mut HashSet::new(), &mut out);
+    out
+}
+
+fn walk_into(dir: &Path, depth: Depth, level: usize, seen: &mut HashSet<PathBuf>, out: &mut Vec<PathBuf>) {
+    const MAX_LEVEL: usize = 8;
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     dirs.sort();
-    dirs.iter().filter_map(|dir| parse_skill(dir, source)).collect()
+    for dir in dirs {
+        if dir.join("SKILL.md").is_file() {
+            out.push(dir);
+        } else if depth == Depth::Any
+            && level < MAX_LEVEL
+            && !skipped_dir(&dir)
+            && fs::canonicalize(&dir).is_ok_and(|c| seen.insert(c))
+        {
+            walk_into(&dir, depth, level + 1, seen, out);
+        }
+    }
+}
+
+/// Folders a recursive search does not enter: hidden ones and dependency checkouts.
+fn skipped_dir(dir: &Path) -> bool {
+    dir.file_name().is_none_or(|n| n.to_string_lossy().starts_with('.') || n == "node_modules")
+}
+
+/// When `path` was last modified, if it can be read.
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 fn parse_skill(dir: &Path, source: &str) -> Option<Skill> {
@@ -77,6 +231,7 @@ fn parse_skill(dir: &Path, source: &str) -> Option<Skill> {
         description: front.get("description").cloned().unwrap_or_default(),
         source: source.into(),
         path: dir.to_path_buf(),
+        agents: Vec::new(),
     })
 }
 
@@ -145,15 +300,152 @@ fn plugin_skill_dirs(dir: &Path, depth: usize) -> Vec<(PathBuf, String)> {
 
 /// The `name` in a plugin's manifest, else its folder name. `dir` is the folder holding `skills`.
 fn plugin_name(dir: &Path) -> String {
-    let manifest = fs::read_to_string(dir.join(".claude-plugin/plugin.json")).ok();
+    manifest_name(dir, ".claude-plugin/plugin.json")
+}
+
+/// `skills` folders inside installed Gemini extensions, each with its extension's name.
+fn extension_skill_dirs(dir: &Path) -> Vec<(PathBuf, String)> {
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<(PathBuf, String)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("skills").is_dir())
+        .map(|p| (p.join("skills"), manifest_name(&p, "gemini-extension.json")))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The `name` in the JSON manifest at `dir/manifest`, else the folder name of `dir`.
+fn manifest_name(dir: &Path, manifest: &str) -> String {
+    let manifest = fs::read_to_string(dir.join(manifest)).ok();
     let name = manifest
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         .and_then(|v| v["name"].as_str().map(String::from));
     name.unwrap_or_else(|| dir.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()))
 }
 
-/// Makes `~/.agents/skills/<slug>/SKILL.md` from a template and returns the new folder. Fails if
-/// the folder already exists.
+/// Links every user-level skill into the folders each harness reads, so all of them load the
+/// same skills: `~/.agents/skills` (Codex, Gemini, OpenCode, Pi) and `~/.claude/skills` (Claude
+/// Code). Only symlinks are made or removed; skill folders are never moved, copied or deleted.
+pub fn sync() -> io::Result<SyncReport> {
+    sync_in(&home_or_err()?)
+}
+
+/// `sync` with the home directory given.
+fn sync_in(home: &Path) -> io::Result<SyncReport> {
+    let hub = home.join(".agents/skills");
+    let claude = home.join(".claude/skills");
+    fs::create_dir_all(&hub)?;
+    fs::create_dir_all(&claude)?;
+    let mut report = SyncReport::default();
+    prune(home, &hub, &mut report.pruned)?;
+    prune(home, &claude, &mut report.pruned)?;
+
+    let found = scan(&user_roots(home));
+    // Into the hub: every skill its readers do not reach yet.
+    let mut in_hub: HashSet<PathBuf> = walk(&hub, Depth::One).iter().filter_map(|d| fs::canonicalize(d).ok()).collect();
+    for f in &found {
+        // A personal skill below the hub's top level is Pi's alone; linking it would list it twice.
+        if f.skill.source == "Personal" || in_hub.contains(&f.canonical) {
+            continue;
+        }
+        link(home, &hub, &f.canonical, &f.skill.source, &[], &mut report)?;
+        in_hub.insert(f.canonical.clone());
+    }
+    // Into Claude Code's folder: every hub skill it does not load yet.
+    let sources: HashMap<&Path, &str> = found.iter().map(|f| (f.canonical.as_path(), f.skill.source.as_str())).collect();
+    let mut in_claude: HashSet<PathBuf> =
+        found.iter().filter(|f| f.skill.agents.contains(&"claude")).map(|f| f.canonical.clone()).collect();
+    for entry in walk(&hub, Depth::One) {
+        let Ok(canonical) = fs::canonicalize(&entry) else { continue };
+        if in_claude.contains(&canonical) {
+            continue;
+        }
+        let source = sources.get(canonical.as_path()).copied().unwrap_or("Personal");
+        let name = entry.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        link_named(home, &claude, &canonical, &name, source, &["synced"], &mut report)?;
+        in_claude.insert(canonical);
+    }
+    Ok(report)
+}
+
+/// Links `dir/<folder name>` to `target`, the resolved skill folder.
+fn link(home: &Path, dir: &Path, target: &Path, source: &str, reserved: &[&str], report: &mut SyncReport) -> io::Result<()> {
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    link_named(home, dir, target, &name, source, reserved, report)
+}
+
+/// Links `dir/<name>` to `target`, or `dir/<source slug>-<name>` when `name` is taken by
+/// anything else or reserved. Records a skip when both are taken.
+fn link_named(
+    home: &Path,
+    dir: &Path,
+    target: &Path,
+    name: &str,
+    source: &str,
+    reserved: &[&str],
+    report: &mut SyncReport,
+) -> io::Result<()> {
+    let mut names = vec![name.to_string()];
+    names.extend(slug(source).map(|s| format!("{s}-{name}")));
+    for candidate in &names {
+        let path = dir.join(candidate);
+        if reserved.contains(&candidate.as_str()) || fs::symlink_metadata(&path).is_ok() {
+            // Already linked to the same folder: nothing to do.
+            if fs::canonicalize(&path).is_ok_and(|c| c == target) {
+                return Ok(());
+            }
+            continue;
+        }
+        // A link must point at a real folder outside itself, never at itself or a chain.
+        if target.starts_with(&path) {
+            break;
+        }
+        symlink_dir(target, &path)?;
+        report.linked.push(format!("{name} → {}", tilde(home, &path)));
+        return Ok(());
+    }
+    let taken: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+    report.skipped.push(format!("{name}: {} already has {}", tilde(home, dir), taken.join(" and ")));
+    Ok(())
+}
+
+/// Removes the symlinks in `dir` whose target is gone. Anything else, and Claude.ai's `synced`
+/// folder, is left alone.
+fn prune(home: &Path, dir: &Path, pruned: &mut Vec<String>) -> io::Result<()> {
+    let mut dead: Vec<PathBuf> = fs::read_dir(dir)?
+        .flatten()
+        .filter(|e| e.file_name() != "synced")
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_symlink()))
+        .map(|e| e.path())
+        .filter(|p| fs::metadata(p).is_err())
+        .collect();
+    dead.sort();
+    for path in dead {
+        fs::remove_file(&path)?;
+        pruned.push(tilde(home, &path));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn symlink_dir(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(unix))]
+fn symlink_dir(_target: &Path, _link: &Path) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "skill links need a Unix system"))
+}
+
+/// `path` with the home folder shown as `~`.
+fn tilde(home: &Path, path: &Path) -> String {
+    path.strip_prefix(home).map_or_else(|_| path.display().to_string(), |rest| format!("~/{}", rest.display()))
+}
+
+/// Makes `~/.agents/skills/<slug>/SKILL.md` from a template and returns the new folder. When
+/// that folder exists, the next free one is used: `<slug>-2`, `<slug>-3`, and so on.
 pub fn create(name: &str) -> io::Result<PathBuf> {
     create_in(&home_or_err()?, name)
 }
@@ -162,11 +454,20 @@ fn create_in(home: &Path, name: &str) -> io::Result<PathBuf> {
     let slug = slug(name).ok_or_else(invalid_name)?;
     let root = home.join(".agents/skills");
     fs::create_dir_all(&root)?;
-    let dir = root.join(&slug);
-    // `create_dir` (not `_all`) fails when the folder exists, so nothing is overwritten.
-    fs::create_dir(&dir)?;
-    fs::write(dir.join("SKILL.md"), template(&slug))?;
-    Ok(dir)
+    for n in 1.. {
+        let folder = if n == 1 { slug.clone() } else { format!("{slug}-{n}") };
+        let dir = root.join(&folder);
+        // `create_dir` (not `_all`) fails when the folder exists, so nothing is overwritten.
+        match fs::create_dir(&dir) {
+            Ok(()) => {
+                fs::write(dir.join("SKILL.md"), template(&folder))?;
+                return Ok(dir);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("an unbounded range ends only by returning")
 }
 
 /// Copies a folder that holds a SKILL.md into `~/.agents/skills`, named after the folder, and
@@ -360,12 +661,12 @@ mod tests {
     }
 
     #[test]
-    fn create_and_import_refuse_to_overwrite() {
+    fn create_and_import_never_overwrite() {
         let home = scratch("write");
         let made = create_in(&home, "Code Review!").unwrap();
         assert_eq!(made, home.join(".agents/skills/code-review"));
         assert!(fs::read_to_string(made.join("SKILL.md")).unwrap().contains("name: code-review"));
-        assert_eq!(create_in(&home, "code review").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(create_in(&home, "code review").unwrap(), home.join(".agents/skills/code-review-2"));
         assert_eq!(create_in(&home, "!!!").unwrap_err().kind(), io::ErrorKind::InvalidInput);
 
         let src = home.join("src-skill");
@@ -379,6 +680,242 @@ mod tests {
         assert!(!imported.join(".git").exists());
         assert_eq!(import_in(&home, &src).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(import_in(&home, &home).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// `link` → `target`, making the link's parent folder.
+    fn ln(target: &Path, link: &Path) {
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// The skill named `name`, which must be listed once.
+    fn named<'a>(skills: &'a [Skill], name: &str) -> &'a Skill {
+        let hits: Vec<&Skill> = skills.iter().filter(|s| s.name == name).collect();
+        assert_eq!(hits.len(), 1, "{name}: {skills:?}");
+        hits[0]
+    }
+
+    /// A Claude plugin manifest naming the plugin in `dir`.
+    fn plugin_json(dir: &Path, name: &str) {
+        fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
+        fs::write(dir.join(".claude-plugin/plugin.json"), format!(r#"{{"name": "{name}"}}"#)).unwrap();
+    }
+
+    /// Sets a folder's modified time, `secs` after the epoch.
+    fn touch(dir: &Path, secs: u64) {
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        fs::File::open(dir).unwrap().set_modified(time).unwrap();
+    }
+
+    #[test]
+    fn synced_buckets_list_a_name_once_from_the_newest_bucket() {
+        let home = scratch("synced");
+        let synced = home.join(".claude/skills/synced");
+        skill_md(&synced.join("old-bucket/pdf"), "---\nname: pdf\ndescription: old\n---\n");
+        skill_md(&synced.join("old-bucket/docx"), "---\nname: docx\n---\n");
+        skill_md(&synced.join("new-bucket/pdf"), "---\nname: pdf\ndescription: new\n---\n");
+        skill_md(&synced.join(".bucket-hidden/secret"), "---\nname: secret\n---\n");
+        fs::write(synced.join("old-bucket/manifest.json"), "{}").unwrap();
+        touch(&synced.join("old-bucket"), 1_000);
+        touch(&synced.join("new-bucket"), 2_000);
+
+        let skills = discover_in(&home, &home.join("repo"));
+        let pdf = named(&skills, "pdf");
+        assert_eq!((pdf.source.as_str(), pdf.description.as_str()), ("Claude.ai", "new"));
+        assert_eq!(pdf.agents, ["claude"]);
+        assert_eq!(named(&skills, "docx").source, "Claude.ai");
+        assert!(skills.iter().all(|s| s.name != "secret"), "{skills:?}");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn plugin_copies_list_each_skill_once() {
+        let home = scratch("plugins");
+        let cache = home.join(".claude/plugins/cache/runpod/runpod");
+        skill_md(&cache.join("1.0/skills/discovery"), "---\nname: discovery\ndescription: old\n---\n");
+        skill_md(&cache.join("2.0/skills/discovery"), "---\nname: discovery\ndescription: new\n---\n");
+        plugin_json(&cache.join("1.0"), "runpod");
+        plugin_json(&cache.join("2.0"), "runpod");
+        touch(&cache.join("1.0"), 1_000);
+        touch(&cache.join("2.0"), 2_000);
+        let skills = discover_in(&home, &home.join("repo"));
+        let discovery = named(&skills, "discovery");
+        assert_eq!((discovery.source.as_str(), discovery.description.as_str()), ("runpod", "new"));
+        assert_eq!(discovery.agents, ["claude"]);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn harness_folders_have_their_sources_and_agents() {
+        let home = scratch("harnesses");
+        let cwd = home.join("repo");
+        fs::create_dir_all(cwd.join(".git")).unwrap();
+        skill_md(&home.join(".agents/skills/hub"), "---\nname: hub\n---\n");
+        skill_md(&home.join(".agents/skills/group/deep"), "---\nname: deep\n---\n");
+        skill_md(&home.join(".claude/skills/cc"), "---\nname: cc\n---\n");
+        skill_md(&home.join(".gemini/skills/gem"), "---\nname: gem\n---\n");
+        skill_md(&home.join(".gemini/extensions/ext/skills/extskill"), "---\nname: extskill\n---\n");
+        fs::write(home.join(".gemini/extensions/ext/gemini-extension.json"), r#"{"name": "conductor"}"#).unwrap();
+        skill_md(&home.join(".pi/agent/skills/a/b/pideep"), "---\nname: pideep\n---\n");
+        skill_md(&home.join(".codex/skills/cx"), "---\nname: cx\n---\n");
+        skill_md(&home.join(".config/opencode/skills/oc"), "---\nname: oc\n---\n");
+        skill_md(&cwd.join(".gemini/skills/pg"), "---\nname: pg\n---\n");
+        skill_md(&cwd.join(".pi/skills/pp"), "---\nname: pp\n---\n");
+        skill_md(&cwd.join(".opencode/skill/po"), "---\nname: po\n---\n");
+        skill_md(&cwd.join("sub/.agents/skills/above"), "---\nname: above\n---\n");
+
+        let skills = discover_in(&home, &cwd.join("sub"));
+        let row = |name: &str| {
+            let s = named(&skills, name);
+            (s.source.clone(), s.agents.clone())
+        };
+        assert_eq!(row("hub"), ("Personal".into(), vec!["codex", "gemini", "opencode", "pi"]));
+        assert_eq!(row("deep"), ("Personal".into(), vec!["pi"]));
+        assert_eq!(row("cc"), ("Claude Code".into(), vec!["claude", "opencode"]));
+        assert_eq!(row("gem"), ("Gemini".into(), vec!["gemini"]));
+        assert_eq!(row("extskill"), ("conductor".into(), vec!["gemini"]));
+        assert_eq!(row("pideep"), ("Pi".into(), vec!["pi"]));
+        assert_eq!(row("cx"), ("Codex".into(), vec!["codex"]));
+        assert_eq!(row("oc"), ("OpenCode".into(), vec!["opencode"]));
+        // Project folders are read from the session folder, `sub`; Pi also reads up to the git root.
+        assert!(skills.iter().all(|s| !["pg", "pp", "po"].contains(&s.name.as_str())), "{skills:?}");
+        assert_eq!(row("above"), ("Project".into(), vec!["codex", "gemini", "opencode", "pi"]));
+        let in_repo = discover_in(&home, &cwd);
+        assert_eq!(named(&in_repo, "pg").agents, ["gemini"]);
+        assert_eq!(named(&in_repo, "pp").agents, ["pi"]);
+        assert_eq!(named(&in_repo, "po").agents, ["opencode"]);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_skill_linked_into_several_folders_is_loaded_by_each_reader() {
+        let home = scratch("agents");
+        let real = home.join("elsewhere/review");
+        skill_md(&real, "---\nname: review\n---\n");
+        ln(&real, &home.join(".agents/skills/review"));
+        ln(&real, &home.join(".claude/skills/review"));
+        skill_md(&home.join(".claude/skills/solo"), "---\nname: solo\n---\n");
+        let skills = discover_in(&home, &home.join("repo"));
+        assert_eq!(named(&skills, "review").agents, AGENTS);
+        assert_eq!(named(&skills, "review").source, "Personal");
+        assert_eq!(named(&skills, "solo").agents, ["claude", "opencode"]);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The link at `path` and its target.
+    fn target(path: &Path) -> PathBuf {
+        assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink(), "{path:?} is a link");
+        fs::read_link(path).unwrap()
+    }
+
+    #[test]
+    fn sync_links_both_ways_and_then_does_nothing() {
+        let home = scratch("sync");
+        let hub = home.join(".agents/skills");
+        let claude = home.join(".claude/skills");
+        skill_md(&hub.join("fmt"), "---\nname: fmt\n---\n");
+        skill_md(&claude.join("cc-only"), "---\nname: cc-only\n---\n");
+        skill_md(&claude.join("synced/bucket/pdf"), "---\nname: pdf\n---\n");
+        skill_md(&home.join(".gemini/skills/gem"), "---\nname: gem\n---\n");
+        skill_md(&home.join(".claude/plugins/cache/p/runpod/1/skills/discovery"), "---\nname: discovery\n---\n");
+        skill_md(&home.join("repo/.agents/skills/local"), "---\nname: local\n---\n");
+        let canon = |p: PathBuf| fs::canonicalize(p).unwrap();
+
+        let report = sync_in(&home).unwrap();
+        assert!(report.skipped.is_empty() && report.pruned.is_empty(), "{report:?}");
+        assert_eq!(target(&hub.join("cc-only")), canon(claude.join("cc-only")));
+        assert_eq!(target(&hub.join("pdf")), canon(claude.join("synced/bucket/pdf")));
+        assert_eq!(target(&hub.join("gem")), canon(home.join(".gemini/skills/gem")));
+        assert_eq!(target(&hub.join("discovery")), canon(home.join(".claude/plugins/cache/p/runpod/1/skills/discovery")));
+        assert_eq!(target(&claude.join("fmt")), canon(hub.join("fmt")));
+        assert_eq!(target(&claude.join("gem")), canon(home.join(".gemini/skills/gem")));
+        assert!(fs::symlink_metadata(claude.join("pdf")).is_err(), "Claude loads synced skills already");
+        assert!(fs::symlink_metadata(claude.join("discovery")).is_err(), "Claude loads plugin skills already");
+        assert!(fs::symlink_metadata(hub.join("local")).is_err(), "project skills stay in the project");
+        assert_eq!(report.linked.len(), 6, "{report:?}");
+        assert!(report.linked.contains(&"fmt → ~/.claude/skills/fmt".to_string()), "{report:?}");
+
+        // Every agent now loads every user-level skill.
+        for s in discover_in(&home, &home.join("elsewhere")) {
+            assert_eq!(s.agents, AGENTS, "{s:?}");
+        }
+        // Real folders are untouched.
+        assert!(!fs::symlink_metadata(hub.join("fmt")).unwrap().file_type().is_symlink());
+        assert!(!fs::symlink_metadata(claude.join("cc-only")).unwrap().file_type().is_symlink());
+        assert_eq!(sync_in(&home).unwrap(), SyncReport::default());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_prefixes_a_taken_name_and_skips_when_both_are_taken() {
+        let home = scratch("collide");
+        let hub = home.join(".agents/skills");
+        skill_md(&hub.join("discovery"), "---\nname: discovery\n---\n");
+        skill_md(&hub.join("pdf"), "---\nname: pdf\n---\n");
+        skill_md(&hub.join("claude-ai-pdf"), "---\nname: claude-ai-pdf\n---\n");
+        let plugin = home.join(".claude/plugins/cache/p/runpod/1/skills/discovery");
+        skill_md(&plugin, "---\nname: discovery\n---\n");
+        plugin_json(&home.join(".claude/plugins/cache/p/runpod/1"), "runpod");
+        skill_md(&home.join(".claude/skills/synced/b/pdf"), "---\nname: pdf\n---\n");
+
+        let report = sync_in(&home).unwrap();
+        assert_eq!(target(&hub.join("runpod-discovery")), fs::canonicalize(&plugin).unwrap());
+        assert!(report.linked.contains(&"discovery → ~/.agents/skills/runpod-discovery".to_string()), "{report:?}");
+        assert_eq!(report.skipped, ["pdf: ~/.agents/skills already has `pdf` and `claude-ai-pdf`"]);
+        // Hub skills reach Claude under their own names; the plugin link is already Claude's.
+        assert!(fs::symlink_metadata(home.join(".claude/skills/discovery")).is_ok());
+        assert!(fs::symlink_metadata(home.join(".claude/skills/runpod-discovery")).is_err());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_does_not_take_the_synced_name_in_claudes_folder() {
+        let home = scratch("reserved");
+        skill_md(&home.join(".agents/skills/synced"), "---\nname: synced\n---\n");
+        let report = sync_in(&home).unwrap();
+        assert_eq!(report.linked, ["synced → ~/.claude/skills/personal-synced"]);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_prunes_only_dead_links() {
+        let home = scratch("prune");
+        let hub = home.join(".agents/skills");
+        let claude = home.join(".claude/skills");
+        skill_md(&hub.join("fmt"), "---\nname: fmt\n---\n");
+        fs::create_dir_all(hub.join("no-skill")).unwrap();
+        ln(&home.join("gone"), &hub.join("dead"));
+        ln(&home.join("gone"), &claude.join("dead"));
+        ln(&hub.join("fmt"), &claude.join("fmt"));
+        ln(&home.join("gone"), &claude.join("synced/b/dead"));
+
+        let report = sync_in(&home).unwrap();
+        assert_eq!(report.pruned, ["~/.agents/skills/dead", "~/.claude/skills/dead"]);
+        assert!(report.linked.is_empty() && report.skipped.is_empty(), "{report:?}");
+        assert!(hub.join("no-skill").is_dir() && hub.join("fmt/SKILL.md").is_file());
+        assert!(fs::symlink_metadata(claude.join("fmt")).is_ok());
+        assert!(fs::symlink_metadata(claude.join("synced/b/dead")).is_ok(), "synced is never touched");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_makes_missing_folders() {
+        let home = scratch("empty-home");
+        assert_eq!(sync_in(&home).unwrap(), SyncReport::default());
+        assert!(home.join(".agents/skills").is_dir() && home.join(".claude/skills").is_dir());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn create_picks_the_next_free_folder() {
+        let home = scratch("create-next");
+        let root = home.join(".agents/skills");
+        assert_eq!(create_in(&home, "new-skill").unwrap(), root.join("new-skill"));
+        assert_eq!(create_in(&home, "new-skill").unwrap(), root.join("new-skill-2"));
+        let third = create_in(&home, "New Skill").unwrap();
+        assert_eq!(third, root.join("new-skill-3"));
+        assert!(fs::read_to_string(third.join("SKILL.md")).unwrap().contains("name: new-skill-3"));
         let _ = fs::remove_dir_all(&home);
     }
 }

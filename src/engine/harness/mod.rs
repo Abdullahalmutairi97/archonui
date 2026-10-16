@@ -496,6 +496,7 @@ mod tests {
             command: format!("/{name}"),
             source: "Personal".into(),
             path: PathBuf::from(id),
+            agents: Vec::new(),
         }
     }
 
