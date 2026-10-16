@@ -138,9 +138,12 @@ impl Shell {
     }
 
     /// Links every skill into each agent's skills folder, toasts what changed, then rediscovers skills.
+    /// Skills turned off here are left out.
     fn sync_skills(&mut self, cx: &mut Context<Self>) {
+        let disabled: Vec<String> =
+            self.state.settings.skills_enabled.iter().filter(|(_, on)| !**on).map(|(id, _)| id.clone()).collect();
         cx.spawn(async move |this, cx| {
-            let synced = cx.background_executor().spawn(async move { engine::skills::sync() }).await;
+            let synced = cx.background_executor().spawn(async move { engine::skills::sync(&disabled) }).await;
             let _ = this.update(cx, |this, cx| {
                 match synced {
                     Ok(report) => this.toast(sync_summary(&report), cx),

@@ -244,20 +244,23 @@ fn gemini_extensions(path: &Path, home: &Path) -> Vec<Extension> {
 }
 
 /// The extensions in Gemini's JSON listing, which starts on the first line that opens an array
-/// (other lines, like warnings, may come before it). The listing has no description or author, so
-/// those come from each extension's `gemini-extension.json`.
+/// and parses as one (other lines, like warnings, may come before it, and some of those start with
+/// `[` too, e.g. `[WARN]`). The listing has no description or author, so those come from each
+/// extension's `gemini-extension.json`.
 ///
 /// `isActive` is the state for the directory the listing ran in, which `gemini_run` makes the home:
 /// that is the user scope. A workspace override for some other folder does not show here, and
 /// one for the home itself counts, as Gemini would count it there.
 fn gemini_installed(text: &str) -> Vec<Extension> {
-    let Some(start) = text.lines().position(|line| line.trim_start().starts_with('[')) else {
-        return Vec::new();
-    };
-    let json: String = text.lines().skip(start).collect::<Vec<_>>().join("\n");
-    let Some(Ok(Value::Array(list))) = serde_json::Deserializer::from_str(&json).into_iter::<Value>().next() else {
-        return Vec::new();
-    };
+    let lines: Vec<&str> = text.lines().collect();
+    let list = (0..lines.len()).filter(|&i| lines[i].trim_start().starts_with('[')).find_map(|i| {
+        let json = lines[i..].join("\n");
+        match serde_json::Deserializer::from_str(&json).into_iter::<Value>().next() {
+            Some(Ok(Value::Array(list))) => Some(list),
+            _ => None,
+        }
+    });
+    let Some(list) = list else { return Vec::new() };
     list.iter()
         .filter_map(|e| {
             let name = e["name"].as_str().filter(|n| !n.is_empty())?;
@@ -474,6 +477,13 @@ mod tests {
         assert!(gemini_installed("[]\n").is_empty());
         assert!(gemini_installed("No extensions installed.\n").is_empty());
         assert!(gemini_installed("[ not json").is_empty());
+    }
+
+    #[test]
+    fn gemini_listing_skips_log_lines_that_start_with_a_bracket() {
+        let text = "[WARN] Skipping extension in /x: missing gemini-extension.json\n[\n  {\"name\": \"conductor\", \"version\": \"0.4.0\", \"isActive\": true}\n]\n";
+        let ids: Vec<String> = gemini_installed(text).into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, ["gemini:conductor"]);
     }
 
     #[test]
