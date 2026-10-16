@@ -185,8 +185,10 @@ impl Hub {
 }
 
 /// Whether a peer at `ip` may connect. Loopback always may, for local testing. Anyone else needs
-/// sharing on, a Tailscale address, and when the user picked devices, one of them.
+/// sharing on, a Tailscale address, and when the user picked devices, one of them. An IPv4 peer seen
+/// on an IPv6 socket (`::ffff:a.b.c.d`) is checked as the IPv4 address it is.
 fn peer_allowed(ip: IpAddr, sync: &SyncSettings, tailscale_peer: bool) -> bool {
+    let ip = ip.to_canonical();
     if ip.is_loopback() {
         return true;
     }
@@ -448,5 +450,17 @@ mod tests {
         hub.stop();
         let (tx, _rx) = mpsc::channel();
         assert!(hub.add_conn(tx, "127.0.0.1".parse().unwrap()).is_none(), "a stopped hub takes no connection");
+    }
+
+    #[test]
+    fn ipv4_mapped_peers_are_checked_as_ipv4() {
+        let picked = SyncSettings { enabled: true, devices: vec![device("100.101.2.3")], ..Default::default() };
+        let mapped: IpAddr = "::ffff:100.101.2.3".parse().unwrap();
+        assert!(tailscale::is_tailscale_addr(&mapped));
+        assert!(peer_allowed(mapped, &picked, tailscale::is_tailscale_addr(&mapped)));
+        let lo: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(peer_allowed(lo, &SyncSettings::default(), false));
+        let other: IpAddr = "::ffff:100.101.9.9".parse().unwrap();
+        assert!(!peer_allowed(other, &picked, true));
     }
 }

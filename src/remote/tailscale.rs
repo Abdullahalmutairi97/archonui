@@ -88,9 +88,10 @@ pub fn parse(json: &str) -> Result<Tailnet, String> {
 }
 
 /// Whether `ip` is in Tailscale's address ranges: IPv4 100.64.0.0/10 or IPv6 fd7a:115c:a1e0::/48.
-/// The host uses this to refuse connections from outside the tailnet.
+/// The host uses this to refuse connections from outside the tailnet. An IPv4-mapped IPv6 address
+/// counts as its IPv4 address.
 pub fn is_tailscale_addr(ip: &IpAddr) -> bool {
-    match ip {
+    match ip.to_canonical() {
         IpAddr::V4(v4) => {
             let o = v4.octets();
             o[0] == 100 && (64..=127).contains(&o[1])
@@ -251,5 +252,8 @@ mod tests {
         assert!(!is_tailscale_addr(&ip("100.128.0.1")));
         assert!(!is_tailscale_addr(&ip("192.168.1.5")));
         assert!(is_tailscale_addr(&ip("fd7a:115c:a1e0::5")));
+        assert!(!is_tailscale_addr(&ip("fd7a:115c:a1e1::5")));
+        assert!(is_tailscale_addr(&ip("::ffff:100.64.0.1")));
+        assert!(!is_tailscale_addr(&ip("::ffff:192.168.1.5")));
     }
 }
