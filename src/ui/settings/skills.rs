@@ -185,14 +185,18 @@ impl Shell {
         .detach();
     }
 
-    /// Searches for skills again off the UI thread.
-    fn reload_skills(&mut self, cx: &mut Context<Self>) {
+    /// Searches for skills again off the UI thread. Only the latest search's result is kept.
+    pub(super) fn reload_skills(&mut self, cx: &mut Context<Self>) {
         let cwd = self.default_folder();
+        self.settings.skills_search += 1;
+        let search = self.settings.skills_search;
         cx.spawn(async move |this, cx| {
             let skills = cx.background_executor().spawn(async move { engine::skills::discover(&cwd) }).await;
             let _ = this.update(cx, |this, cx| {
-                this.settings.skills = Some(skills);
-                cx.notify();
+                if this.settings.skills_search == search {
+                    this.settings.skills = Some(skills);
+                    cx.notify();
+                }
             });
         })
         .detach();

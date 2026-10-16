@@ -198,6 +198,9 @@ pub struct SettingsUi {
     pub(super) font_slot: FontSlot,
     /// Discovered skills; `None` until the first search finishes.
     pub(super) skills: Option<Vec<Skill>>,
+    /// The latest skills search. An older one finishing late (say, one started before a sync) is dropped
+    /// rather than drawn over the newer result.
+    pub(super) skills_search: u64,
     /// Installed and available extensions; `None` until the first search finishes.
     pub(super) plugins: Option<(Vec<Extension>, Vec<Extension>)>,
     /// MCP server checks by server id. `None` while a check runs.
@@ -224,17 +227,15 @@ impl Shell {
     }
 
     /// Searches for skills and extensions off the UI thread. Both are blocking reads of the disk and the CLIs.
+    /// They run apart, so skills (a quick disk scan) don't wait on the extension catalogues the CLIs list.
     fn load_catalogues(&mut self, cx: &mut Context<Self>) {
-        let cwd = self.default_folder();
+        self.reload_skills(cx);
         cx.spawn(async move |this, cx| {
-            let (skills, installed, available) = cx
+            let (installed, available) = cx
                 .background_executor()
-                .spawn(async move {
-                    (engine::skills::discover(&cwd), engine::plugins::installed(), engine::plugins::available())
-                })
+                .spawn(async move { (engine::plugins::installed(), engine::plugins::available()) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.settings.skills = Some(skills);
                 this.settings.plugins = Some((installed, available));
                 cx.notify();
             });
