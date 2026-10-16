@@ -161,7 +161,8 @@ fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-fn read_jsonc(path: &Path) -> Option<Value> {
+/// `path` as JSON with comments and trailing commas allowed, as Gemini and OpenCode write it.
+pub(crate) fn read_jsonc(path: &Path) -> Option<Value> {
     serde_json::from_str(&strip_jsonc(&fs::read_to_string(path).ok()?)).ok()
 }
 
