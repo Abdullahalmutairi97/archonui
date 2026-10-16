@@ -25,16 +25,23 @@ Three machines: **PC**, **laptop**, **VPS**.
 ## Architecture
 
 ```
-          laptop (UI)                PC (UI + host)
-              │  ws / ssh                │
-              └──────────►  VPS  ◄───────┘
-                      relay + mirror
-                (always on, public address)
+      laptop (UI) ◄──── tailnet (ws) ────► PC (UI + host)
+              │                                 │
+              └────────►  VPS (mirror)  ◄───────┘
+                      always on, snapshots + chat history
 ```
 
-Every machine connects **outbound** to the VPS. Nothing has to be reachable from the internet except
-the VPS, so home NAT and laptop Wi-Fi don't matter. On a private network (Tailscale/WireGuard) machines
-can also talk directly.
+**Network: Tailscale.** All three machines are on one tailnet, so they reach each other directly by
+MagicDNS name (`pc`, `laptop`, `vps`) through NAT, with WireGuard encryption. That means:
+
+- No relay is needed for remote control; the laptop connects straight to the PC.
+- No TLS or public ports: hosts listen only on their Tailscale address (100.x / `tailscale0`), never
+  on `0.0.0.0`.
+- The VPS's job shrinks to the always-on mirror (projects + chat history).
+- A per-machine pairing token stays as a second layer, so another device on the tailnet can't drive
+  agents just by being there.
+
+Without Tailscale, the fallback is every machine connecting outbound to the VPS as a relay.
 
 ### 1. Host mode: `archonui serve`
 
@@ -44,8 +51,8 @@ also a host.
 
 ### 2. Protocol
 
-JSON messages over a WebSocket (or over `ssh host archonui serve --stdio`, which reuses SSH keys and
-needs no TLS or open port). Client → host:
+JSON messages over a WebSocket on the host's Tailscale address (e.g. `ws://pc:7420`). `ssh host archonui
+serve --stdio` also works and is handy for testing. Client → host:
 
 | message | meaning |
 |---|---|
@@ -102,9 +109,9 @@ Machines have different home folders. Projects are matched by project id plus a 
 
 ## Phases
 
-1. Serializable `Out`, `archonui serve`, SSH/stdio transport, remote chats in the sidebar (prompt, stream,
+1. Serializable `Out`, `archonui serve` listening on the Tailscale address, remote chats in the sidebar (prompt, stream,
    cancel). **Delivers PC ↔ laptop control.**
 2. Approvals and drafts over the wire; host online/offline state; "Continue here".
-3. VPS relay (WebSocket + TLS) so machines don't need direct access to each other.
+3. Host discovery on the tailnet (`tailscale status --json`), so other machines appear without typing addresses.
 4. WIP snapshots to the VPS and "Open from cloud".
 5. Remote side panel: files, git and terminal of the host (terminal over the same socket via `portable-pty`).
