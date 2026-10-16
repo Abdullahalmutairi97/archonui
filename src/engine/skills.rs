@@ -342,12 +342,13 @@ fn manifest_name(dir: &Path, manifest: &str) -> String {
 /// Links every user-level skill into the folders each harness reads, so all of them load the
 /// same skills: `~/.agents/skills` (Codex, Gemini, OpenCode, Pi) and `~/.claude/skills` (Claude
 /// Code). Only symlinks are made or removed; skill folders are never moved, copied or deleted.
-pub fn sync() -> io::Result<SyncReport> {
-    sync_in(&home_or_err()?)
+/// Skills whose ids are in `disabled` (turned off in settings) are not linked anywhere new.
+pub fn sync(disabled: &[String]) -> io::Result<SyncReport> {
+    sync_in(&home_or_err()?, disabled)
 }
 
 /// `sync` with the home directory given.
-fn sync_in(home: &Path) -> io::Result<SyncReport> {
+fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
     let hub = home.join(".agents/skills");
     let claude = home.join(".claude/skills");
     fs::create_dir_all(&hub)?;
@@ -357,6 +358,15 @@ fn sync_in(home: &Path) -> io::Result<SyncReport> {
     prune(home, &claude, &mut report.pruned)?;
 
     let found = scan(&user_roots(home));
+    // Skills turned off in settings, by resolved folder.
+    let off: HashMap<&Path, &Skill> =
+        found.iter().filter(|f| disabled.contains(&f.skill.id)).map(|f| (f.canonical.as_path(), &f.skill)).collect();
+    let skip_off = |skill: &Skill, skipped: &mut Vec<String>| {
+        let line = format!("{} ({}): turned off in settings", skill.name, skill.source);
+        if !skipped.contains(&line) {
+            skipped.push(line);
+        }
+    };
     // Into the hub: every skill its readers do not reach yet.
     let mut in_hub: HashSet<PathBuf> = walk(&hub, Depth::One).iter().filter_map(|d| fs::canonicalize(d).ok()).collect();
     let names: HashMap<&Path, &str> = found.iter().map(|f| (f.canonical.as_path(), f.skill.name.as_str())).collect();
@@ -366,6 +376,10 @@ fn sync_in(home: &Path) -> io::Result<SyncReport> {
     for f in &found {
         // A personal skill below the hub's top level is Pi's alone; linking it would list it twice.
         if f.skill.source == "Personal" || in_hub.contains(&f.canonical) {
+            continue;
+        }
+        if off.contains_key(f.canonical.as_path()) {
+            skip_off(&f.skill, &mut report.skipped);
             continue;
         }
         if hub_names.contains(&f.skill.name) {
@@ -390,6 +404,10 @@ fn sync_in(home: &Path) -> io::Result<SyncReport> {
     for entry in walk(&hub, Depth::One) {
         let Ok(canonical) = fs::canonicalize(&entry) else { continue };
         if in_claude.contains(&canonical) {
+            continue;
+        }
+        if let Some(skill) = off.get(canonical.as_path()) {
+            skip_off(skill, &mut report.skipped);
             continue;
         }
         if let Some(name) = names.get(canonical.as_path()).filter(|n| claude_names.contains(**n)) {
@@ -859,7 +877,7 @@ mod tests {
         skill_md(&home.join("repo/.agents/skills/local"), "---\nname: local\n---\n");
         let canon = |p: PathBuf| fs::canonicalize(p).unwrap();
 
-        let report = sync_in(&home).unwrap();
+        let report = sync_in(&home, &[]).unwrap();
         assert!(report.skipped.is_empty() && report.pruned.is_empty(), "{report:?}");
         assert_eq!(target(&hub.join("cc-only")), canon(claude.join("cc-only")));
         assert_eq!(target(&hub.join("pdf")), canon(claude.join("synced/bucket/pdf")));
@@ -880,7 +898,7 @@ mod tests {
         // Real folders are untouched.
         assert!(!fs::symlink_metadata(hub.join("fmt")).unwrap().file_type().is_symlink());
         assert!(!fs::symlink_metadata(claude.join("cc-only")).unwrap().file_type().is_symlink());
-        assert_eq!(sync_in(&home).unwrap(), SyncReport::default());
+        assert_eq!(sync_in(&home, &[]).unwrap(), SyncReport::default());
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -894,10 +912,26 @@ mod tests {
             skills.into_iter().map(|s| (s.name, s.id, s.source)).collect()
         };
         let before = rows(discover_in(&home, &home.join("repo")));
-        let report = sync_in(&home).unwrap();
+        let report = sync_in(&home, &[]).unwrap();
         assert_eq!(report.linked.len(), 4, "{report:?}");
         // The ids key the on/off settings: a skill turned off must stay off after a sync.
         assert_eq!(rows(discover_in(&home, &home.join("repo"))), before);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_leaves_a_skill_turned_off_where_it_is() {
+        let home = scratch("disabled");
+        let hub = home.join(".agents/skills");
+        let claude = home.join(".claude/skills");
+        skill_md(&hub.join("fmt"), "---\nname: fmt\n---\n");
+        skill_md(&hub.join("on"), "---\nname: on\n---\n");
+        skill_md(&claude.join("cc-only"), "---\nname: cc-only\n---\n");
+        let off = [hub.join("fmt").display().to_string(), claude.join("cc-only").display().to_string()];
+        let report = sync_in(&home, &off).unwrap();
+        assert_eq!(report.linked, ["on → ~/.claude/skills/on"]);
+        assert_eq!(report.skipped, ["cc-only (Claude Code): turned off in settings", "fmt (Personal): turned off in settings"]);
+        assert!(fs::symlink_metadata(claude.join("fmt")).is_err() && fs::symlink_metadata(hub.join("cc-only")).is_err());
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -918,7 +952,7 @@ mod tests {
         skill_md(&home.join(".claude/skills/synced/b/pdf"), "---\nname: pdf\n---\n");
         skill_md(&home.join(".claude/skills/synced/b/fmt"), "---\nname: fmt\n---\n");
 
-        let report = sync_in(&home).unwrap();
+        let report = sync_in(&home, &[]).unwrap();
         assert_eq!(target(&hub.join("runpod-discovery")), fs::canonicalize(&plugin).unwrap());
         assert!(report.linked.contains(&"discovery → ~/.agents/skills/runpod-discovery".to_string()), "{report:?}");
         assert!(report.skipped.contains(&"pdf (Claude.ai): ~/.agents/skills already has a skill with this name".to_string()), "{report:?}");
@@ -935,7 +969,7 @@ mod tests {
         let home = scratch("claude-name");
         skill_md(&home.join(".agents/skills/review"), "---\nname: review\n---\n");
         skill_md(&home.join(".claude/skills/review-mine"), "---\nname: review\n---\n");
-        let report = sync_in(&home).unwrap();
+        let report = sync_in(&home, &[]).unwrap();
         assert!(fs::symlink_metadata(home.join(".claude/skills/review")).is_err());
         assert!(report.skipped.contains(&"review: Claude Code already has a skill with this name".to_string()), "{report:?}");
         let _ = fs::remove_dir_all(&home);
@@ -945,7 +979,7 @@ mod tests {
     fn sync_does_not_take_the_synced_name_in_claudes_folder() {
         let home = scratch("reserved");
         skill_md(&home.join(".agents/skills/synced"), "---\nname: synced\n---\n");
-        let report = sync_in(&home).unwrap();
+        let report = sync_in(&home, &[]).unwrap();
         assert_eq!(report.linked, ["synced → ~/.claude/skills/personal-synced"]);
         let _ = fs::remove_dir_all(&home);
     }
@@ -962,7 +996,7 @@ mod tests {
         ln(&hub.join("fmt"), &claude.join("fmt"));
         ln(&home.join("gone"), &claude.join("synced/b/dead"));
 
-        let report = sync_in(&home).unwrap();
+        let report = sync_in(&home, &[]).unwrap();
         assert_eq!(report.pruned, ["~/.agents/skills/dead", "~/.claude/skills/dead"]);
         assert!(report.linked.is_empty() && report.skipped.is_empty(), "{report:?}");
         assert!(hub.join("no-skill").is_dir() && hub.join("fmt/SKILL.md").is_file());
@@ -974,7 +1008,7 @@ mod tests {
     #[test]
     fn sync_makes_missing_folders() {
         let home = scratch("empty-home");
-        assert_eq!(sync_in(&home).unwrap(), SyncReport::default());
+        assert_eq!(sync_in(&home, &[]).unwrap(), SyncReport::default());
         assert!(home.join(".agents/skills").is_dir() && home.join(".claude/skills").is_dir());
         let _ = fs::remove_dir_all(&home);
     }
