@@ -373,15 +373,27 @@ fn start_prompt(
         state.set_options(session, model.or(cur_model), effort.or(cur_effort), mode.unwrap_or(cur_mode));
     }
     let Some(rx) = state.send(session, text, agents) else {
-        // `send` has put the reason in the chat; clients get the same words.
-        let error = Some(start_error(state, session, before));
         flush(state);
-        hub.broadcast(session, &HostMsg::Finished { session: session.to_string(), error, stopped: false }, None);
+        for msg in start_failed(state, session, before) {
+            hub.broadcast(session, &msg, None);
+        }
         return Ok(None);
     };
     flush(state);
     hub.broadcast(session, &HostMsg::Started { session: session.to_string(), text: text.to_string() }, None);
     Ok(Some((session.to_string(), rx)))
+}
+
+/// What a chat's subscribers are sent when a prompt in `session` could not start: `Finished` with the
+/// reason `send` put in the chat (it ends `--remote ask` and sends queued prompts), then the chat as it
+/// is now, which holds the prompt and the error that no `Started` announced.
+fn start_failed(state: &AppState, session: &str, before: usize) -> Vec<HostMsg> {
+    let error = Some(start_error(state, session, before));
+    let mut msgs = vec![HostMsg::Finished { session: session.to_string(), error, stopped: false }];
+    if let Some(Ok(value)) = state.session(session).map(serde_json::to_value) {
+        msgs.push(HostMsg::Snapshot { session: value, busy: false });
+    }
+    msgs
 }
 
 /// Why `send` did not start a turn in `session`: the last error it added after message `before`.
@@ -681,6 +693,37 @@ mod tests {
         assert!(app.send(&id, "hello", &agents).is_none());
         let error = start_error(&app, &id, 0);
         assert!(error.starts_with("Could not start Pi:"), "{error}");
+    }
+
+    /// Roles and texts of chat `id`, to compare two devices' copies.
+    fn lines(app: &AppState, id: &str) -> Vec<(Role, String)> {
+        app.session(id).unwrap().messages.iter().map(|m| (m.role, m.text.clone())).collect()
+    }
+
+    #[test]
+    fn a_turn_that_cannot_start_leaves_followers_with_the_hosts_chat() {
+        let mut host = state();
+        let id = host.new_session("pi", std::env::temp_dir(), Placement::Focused);
+        // A device following the chat, with its copy from before the prompt.
+        let mut follower = state();
+        let copy = serde_json::from_value(serde_json::to_value(host.session(&id).unwrap()).unwrap()).unwrap();
+        follower.put_remote(copy, "host", false);
+
+        let agents = [pi_at("/nonexistent/archonui-test-pi")];
+        assert!(host.send(&id, "hello", &agents).is_none());
+        let msgs = start_failed(&host, &id, 0);
+        assert!(matches!(&msgs[0], HostMsg::Finished { error: Some(e), stopped: false, .. } if e.starts_with("Could not start Pi:")));
+        // As the window applies them (`ui::remote`).
+        for msg in msgs {
+            match msg {
+                HostMsg::Finished { session, error, stopped } => drop(follower.remote_finished(&session, error, stopped)),
+                HostMsg::Snapshot { session, busy } => follower.put_remote(serde_json::from_value(session).unwrap(), "host", busy),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(lines(&follower, &id), lines(&host, &id));
+        assert_eq!(lines(&host, &id)[0], (Role::User, "hello".to_string()));
+        assert!(!follower.busy(&id));
     }
 
     fn file(name: &str, data: &str) -> RemoteFile {
