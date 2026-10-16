@@ -7,6 +7,7 @@ pub mod approval;
 pub mod composer;
 pub mod fonts;
 pub mod glass;
+pub mod remote;
 pub mod rpanel;
 pub mod scale;
 pub mod shell;

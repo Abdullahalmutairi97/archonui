@@ -134,13 +134,13 @@ impl Hub {
     }
 }
 
-/// Whether a peer at `ip` may connect. Loopback always may, for local testing. Anyone else must be
-/// a Tailscale address, and when the user picked devices, one of them.
+/// Whether a peer at `ip` may connect. Loopback always may, for local testing. Anyone else needs
+/// sharing on, a Tailscale address, and when the user picked devices, one of them.
 fn peer_allowed(ip: IpAddr, sync: &SyncSettings, tailscale_peer: bool) -> bool {
     if ip.is_loopback() {
         return true;
     }
-    tailscale_peer && (sync.devices.is_empty() || sync.allows(&ip.to_string()))
+    sync.enabled && tailscale_peer && (sync.devices.is_empty() || sync.allows(&ip.to_string()))
 }
 
 /// Accepts connections until the listener fails, one thread each.
@@ -298,12 +298,14 @@ mod tests {
 
     #[test]
     fn tailscale_peers_are_allowed_only_when_picked() {
-        let open = SyncSettings::default();
+        let open = SyncSettings { enabled: true, ..Default::default() };
         let picked = SyncSettings { enabled: true, devices: vec![device("100.1.2.3")], ..Default::default() };
         let listed: IpAddr = "100.1.2.3".parse().unwrap();
         let other: IpAddr = "100.9.9.9".parse().unwrap();
         assert!(peer_allowed(other, &open, true), "no devices picked: any tailnet peer may connect");
         assert!(peer_allowed(listed, &picked, true));
         assert!(!peer_allowed(other, &picked, true));
+        let off = SyncSettings { enabled: false, ..picked };
+        assert!(!peer_allowed(listed, &off, true), "sharing off: nobody from the tailnet");
     }
 }

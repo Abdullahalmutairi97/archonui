@@ -39,6 +39,8 @@ pub(super) struct Entry {
     pub open: bool,
     /// The focused tile shows this session.
     pub focused: bool,
+    /// The device a remote chat lives on; `None` for this device's own.
+    pub device: Option<String>,
 }
 
 /// The harness badge's two letters (layout.md §2.1). Unknown ids show `?`.
@@ -126,6 +128,7 @@ impl Shell {
                         state: self.session_state(s),
                         open: self.state.workspace.layout.contains(&s.id),
                         focused: focus == Some(s.id.as_str()),
+                        device: self.chat_device(&s.id),
                     })
                     .collect();
                 (!entries.is_empty()).then_some((section, entries))
@@ -226,6 +229,9 @@ impl Shell {
                     .child(div().absolute().right(px(-2.)).bottom(px(-2.)).child(dot(theme, entry.state, theme.tile.to_hsla()))),
             )
             .child(title)
+            .when_some(entry.device.clone(), |d, name| {
+                d.child(div().flex_none().text_size(px(11.)).text_color(muted).child(name))
+            })
             // Badge and time in fixed 18 + 30 px columns, so they line up on every row.
             .child(
                 div()

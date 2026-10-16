@@ -245,7 +245,7 @@ impl Shell {
         match name {
             "new" => self.new_session_split(cx),
             "stop" => {
-                self.state.stop(id);
+                self.stop_chat(id);
             }
             "rescan" => self.rescan(cx),
             // `/agent <name>` takes an agent's id or name, ignoring case.

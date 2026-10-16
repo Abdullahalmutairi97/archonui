@@ -277,7 +277,9 @@ fn follow(id: String, turn: smol::channel::Receiver<Event>, work: smol::channel:
 /// Serves `state`'s chats on `bind`. One thread owns the chats and the agents: it takes requests
 /// and turn events in turn, so nothing needs a lock.
 fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<()> {
-    let (hub, requests) = Hub::start(bind, device, state.settings.sync.clone())?;
+    // Running `--serve` is the user turning sharing on for this process, even with `--bind`.
+    let sync = super::SyncSettings { enabled: true, ..state.settings.sync.clone() };
+    let (hub, requests) = Hub::start(bind, device, sync)?;
     let harness_settings = store::Settings { harnesses: state.settings.harnesses.clone(), ..Default::default() };
     let agents = engine::detect(&harness_settings);
     eprintln!("archonui host listening on {bind}");
