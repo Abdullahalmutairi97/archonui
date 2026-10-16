@@ -401,7 +401,7 @@ impl Shell {
             return;
         }
         let msg = match ev {
-            Event::Out(out) => HostMsg::Event { session: id.to_string(), out: out.clone() },
+            Event::Out(out) => HostMsg::Event { session: id.to_string(), out: Some(out.clone()) },
             Event::Finished(result) => HostMsg::Finished {
                 session: id.to_string(),
                 error: result.as_ref().err().cloned(),
@@ -549,7 +549,10 @@ impl Shell {
                 if self.state.is_remote(&session) != Some(device) => {}
             HostMsg::Started { session, text } => self.state.remote_started(&session, &text),
             HostMsg::Event { session, out } => {
-                self.state.remote_event(&session, out);
+                // An event this version does not know is skipped.
+                if let Some(out) = out {
+                    self.state.remote_event(&session, out);
+                }
             }
             HostMsg::Finished { session, error, stopped } => {
                 let applied = self.state.remote_finished(&session, error, stopped);
@@ -576,7 +579,7 @@ impl Shell {
                 self.remote.pushed.clear();
             }
             HostMsg::Error { message } => self.toast(message, cx),
-            HostMsg::Welcome { .. } => {}
+            HostMsg::Welcome { .. } | HostMsg::Unknown => {}
             HostMsg::Stored { project, commit, .. } => {
                 self.remote.pushed.insert(project, commit);
             }

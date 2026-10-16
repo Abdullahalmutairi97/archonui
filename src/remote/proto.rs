@@ -6,7 +6,7 @@
 //! prompts (with files) and stop turns.
 
 use crate::engine::{Mode, Out};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use std::path::PathBuf;
 
 /// Bumped on any incompatible change. A host refuses a client with a different version.
@@ -83,6 +83,9 @@ pub enum ClientMsg {
     /// Answer to an `Approval`: allow or deny the tool use `request` in chat `session`. `always` also
     /// allows the tool for the rest of the chat's session.
     Answer { session: String, request: u64, allow: bool, always: bool },
+    /// A message from a newer client that this version does not know. The host answers `Error`. Never sent.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A project snapshot kept on the cloud device.
@@ -128,8 +131,13 @@ pub enum HostMsg {
     Created { session: SessionSummary },
     /// A prompt was accepted and a turn started (also sent for prompts from other devices).
     Started { session: String, text: String },
-    /// One event of a running turn.
-    Event { session: String, out: Out },
+    /// One event of a running turn. `None` when it is a kind of event this version does not know,
+    /// from a newer host; skip it. Always `Some` when sent.
+    Event {
+        session: String,
+        #[serde(deserialize_with = "known_out")]
+        out: Option<Out>,
+    },
     /// The turn ended. `error` is set when the agent failed or could not start. `stopped`: someone
     /// stopped it, so `error` is only the signal that ended the agent.
     Finished {
@@ -154,6 +162,15 @@ pub enum HostMsg {
     Approval { session: String, request: u64, tool: String, input: serde_json::Value },
     /// Request `request` in chat `session` was answered or dropped, so clients clear its card.
     ApprovalDone { session: String, request: u64 },
+    /// A message from a newer host that this version does not know; skip it. Never sent.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Reads an event of a turn, or `None` when it is one this version does not know.
+fn known_out<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Out>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(Out::deserialize(value).ok())
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> String {
@@ -188,9 +205,9 @@ mod tests {
     #[test]
     fn host_events_round_trip() {
         let msgs = [
-            HostMsg::Event { session: "s1".into(), out: Out::Text("Hel".into()) },
-            HostMsg::Event { session: "s1".into(), out: Out::ToolStart { id: "t1".into(), kind: ToolKind::Edit, target: "a.rs".into() } },
-            HostMsg::Event { session: "s1".into(), out: Out::Thinking(true) },
+            HostMsg::Event { session: "s1".into(), out: Some(Out::Text("Hel".into())) },
+            HostMsg::Event { session: "s1".into(), out: Some(Out::ToolStart { id: "t1".into(), kind: ToolKind::Edit, target: "a.rs".into() }) },
+            HostMsg::Event { session: "s1".into(), out: Some(Out::Thinking(true)) },
             HostMsg::Finished { session: "s1".into(), error: None, stopped: false },
             HostMsg::Finished { session: "s1".into(), error: Some("signal: 15".into()), stopped: true },
             HostMsg::Approval { session: "s1".into(), request: 3, tool: "Bash".into(), input: serde_json::json!({"command": "ls"}) },
@@ -199,6 +216,34 @@ mod tests {
         for m in msgs {
             assert_eq!(decode::<HostMsg>(&encode(&m)).unwrap(), m);
         }
+    }
+
+    #[test]
+    fn known_messages_keep_their_wire_format() {
+        let event = HostMsg::Event { session: "s1".into(), out: Some(Out::Text("Hel".into())) };
+        assert_eq!(encode(&event), r#"{"type":"event","session":"s1","out":{"type":"text","data":"Hel"}}"#);
+        let event: HostMsg = decode(r#"{"type":"event","session":"s1","out":{"type":"thinking","data":true}}"#).unwrap();
+        assert_eq!(event, HostMsg::Event { session: "s1".into(), out: Some(Out::Thinking(true)) });
+    }
+
+    #[test]
+    fn messages_from_a_newer_peer_are_read_as_unknown() {
+        let host: HostMsg = decode(r#"{"type":"something_new","session":"s1","n":3}"#).unwrap();
+        assert_eq!(host, HostMsg::Unknown);
+        let client: ClientMsg = decode(r#"{"type":"something_new","x":{"y":1}}"#).unwrap();
+        assert_eq!(client, ClientMsg::Unknown);
+        // A new kind of event, or a known one with data this version can't read, loses only that event.
+        let event: HostMsg = decode(r#"{"type":"event","session":"s1","out":{"type":"image","data":"AAA="}}"#).unwrap();
+        assert_eq!(event, HostMsg::Event { session: "s1".into(), out: None });
+        let usage = r#"{"type":"event","session":"s1","out":{"type":"context_used","data":"lots"}}"#;
+        assert_eq!(decode::<HostMsg>(usage).unwrap(), HostMsg::Event { session: "s1".into(), out: None });
+        // A new tool kind already reads as `Other`.
+        let tool = r#"{"type":"event","session":"s1","out":{"type":"tool_start","data":{"id":"t","kind":"teleport","target":"x"}}}"#;
+        let other = Out::ToolStart { id: "t".into(), kind: ToolKind::Other, target: "x".into() };
+        assert_eq!(decode::<HostMsg>(tool).unwrap(), HostMsg::Event { session: "s1".into(), out: Some(other) });
+        // A known message that is broken is still an error.
+        assert!(decode::<HostMsg>(r#"{"type":"event","out":{"type":"text","data":"x"}}"#).is_err());
+        assert!(decode::<ClientMsg>(r#"{"type":"prompt","session":"s"}"#).is_err());
     }
 
     #[test]
