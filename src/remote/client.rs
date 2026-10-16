@@ -316,9 +316,10 @@ fn stream_turn(client: &Client, id: &str) -> i32 {
                 Out::Error(e) => eprintln!("error: {e}"),
                 _ => {}
             },
-            Ok(ClientEvent::Msg(HostMsg::Finished { session, error })) if session == id => {
+            Ok(ClientEvent::Msg(HostMsg::Finished { session, error, stopped })) if session == id => {
                 println!();
                 return match error {
+                    _ if stopped => fail("stopped".into()),
                     Some(e) => fail(e),
                     None => 0,
                 };

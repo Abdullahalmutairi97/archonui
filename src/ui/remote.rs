@@ -298,7 +298,11 @@ impl Shell {
         }
         let msg = match ev {
             Event::Out(out) => HostMsg::Event { session: id.to_string(), out: out.clone() },
-            Event::Finished(result) => HostMsg::Finished { session: id.to_string(), error: result.as_ref().err().cloned() },
+            Event::Finished(result) => HostMsg::Finished {
+                session: id.to_string(),
+                error: result.as_ref().err().cloned(),
+                stopped: self.state.stopping(id),
+            },
         };
         hub.broadcast(id, &msg, None);
     }
@@ -416,8 +420,8 @@ impl Shell {
             HostMsg::Event { session, out } => {
                 self.state.remote_event(&session, out);
             }
-            HostMsg::Finished { session, error } => {
-                let applied = self.state.remote_finished(&session, error);
+            HostMsg::Finished { session, error, stopped } => {
+                let applied = self.state.remote_finished(&session, error, stopped);
                 let stopped = applied.ended.as_ref().is_some_and(|e| matches!(e.outcome, crate::app::notify::Outcome::Stopped));
                 self.send_queued(&session, stopped, cx);
             }

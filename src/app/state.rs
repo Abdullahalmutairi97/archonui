@@ -370,8 +370,10 @@ impl AppState {
 
     /// Ends a remote turn in chat `id`. `error` is set when the agent failed on its device.
     /// The preview is not opened: a remote chat's files are on another device.
-    pub fn remote_finished(&mut self, id: &str, error: Option<String>) -> Applied {
+    pub fn remote_finished(&mut self, id: &str, error: Option<String>, stopped: bool) -> Applied {
         self.remote_busy.remove(id);
+        // Stopped on any device shows as stopped here too, not as the agent failing.
+        self.live.entry(id.to_string()).or_default().cancelled = stopped;
         let result = match error {
             Some(e) => Err(e),
             None => Ok(()),
@@ -777,6 +779,11 @@ impl AppState {
             }
         }
         applied
+    }
+
+    /// Whether the running turn in `id` was told to stop, so its end is a stop rather than a failure.
+    pub fn stopping(&self, id: &str) -> bool {
+        self.live.get(id).is_some_and(|l| l.cancelled)
     }
 
     /// Stops the turn in `id`, if one runs. The turn's `Finished` event follows.
@@ -1582,7 +1589,7 @@ mod tests {
         app.remote_event(&id, Out::Text("Hel".into()));
         app.remote_event(&id, Out::Text("lo".into()));
         assert!(app.busy(&id), "busy until the turn ends");
-        let applied = app.remote_finished(&id, None);
+        let applied = app.remote_finished(&id, None, false);
         assert!(applied.finished);
         assert!(!app.busy(&id));
 
@@ -1614,12 +1621,25 @@ mod tests {
         app.put_remote(chat, "laptop", false);
         app.remote_started(&id, "hi");
         app.remote_event(&id, Out::Text("there".into()));
-        app.remote_finished(&id, Some("exit 2".into()));
+        app.remote_finished(&id, Some("exit 2".into()), false);
         assert!(app.flush_sessions().is_empty());
         assert!(app.dirty.is_empty());
         assert!(!dir.join(format!("{id}.json")).exists(), "no file for a remote chat");
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_remote_turn_stopped_on_its_device_shows_as_stopped() {
+        let mut app = state();
+        let chat = Session::new("pi", "/home/host".into());
+        let id = chat.id.clone();
+        app.put_remote(chat, "pc", false);
+        app.remote_started(&id, "hi");
+        app.remote_event(&id, Out::Text("par".into()));
+        let applied = app.remote_finished(&id, Some("signal: 15 (SIGTERM)".into()), true);
+        assert!(matches!(applied.ended.unwrap().outcome, Outcome::Stopped));
+        assert_eq!(app.session(&id).unwrap().messages.last().unwrap().text, STOPPED_NOTE);
     }
 
     #[test]
