@@ -48,7 +48,7 @@ fn headless(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => println!("archonui {}", env!("CARGO_PKG_VERSION")),
         Some("--help" | "-h") => println!(
-            "archonui {}\n\nUsage: archonui [FILE]\n       archonui --detect | --discover | --version | --help\n       archonui --ask [--model ID] [--effort LEVEL] [--mode MODE] [--file PATH]... AGENT PROMPT...",
+            "archonui {}\n\nUsage: archonui [FILE]\n       archonui --detect | --discover | --version | --help\n       archonui --ask [--model ID] [--effort LEVEL] [--mode MODE] [--file PATH]... AGENT PROMPT...\n       archonui --serve [--bind ADDR:PORT]\n       archonui --remote DEVICE list | show ID | ask ID PROMPT... | new AGENT FOLDER PROMPT...",
             env!("CARGO_PKG_VERSION")
         ),
         Some("--detect") => {
@@ -75,6 +75,10 @@ fn headless(args: &[String]) -> bool {
                 std::process::exit(1);
             }
         }
+        // `--serve [--bind ADDR:PORT]`: share this device's chats with other Tailscale devices (remote/host.rs).
+        Some("--serve") => std::process::exit(remote::host::run(&args[1..])),
+        // `--remote <device> list | show <id> | ask <id> <prompt> | new <agent> <folder> <prompt>` (remote/client.rs).
+        Some("--remote") => std::process::exit(remote::client::run(&args[1..])),
         // `--test <agent>`: one "Reply with exactly: ok" turn with the agent's defaults.
         Some("--test") => {
             let agents = engine::detect(&harness_settings());
