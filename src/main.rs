@@ -170,6 +170,7 @@ fn headless(args: &[String]) -> bool {
                 std::process::exit(1);
             };
             let mut session = agent.harness.preassign_session().then(store::new_id);
+            let mut failed = false;
             for prompt in prompts {
                 println!("> {prompt}");
                 let last = std::ptr::eq(prompt, prompts.last().unwrap());
@@ -194,9 +195,16 @@ fn headless(args: &[String]) -> bool {
                             session.get_or_insert(s);
                         }
                         Event::Out(other) => eprintln!("[{other:?}]"),
-                        Event::Finished(r) => println!("\n[finished: {r:?}, session: {session:?}]"),
+                        Event::Finished(r) => {
+                            failed |= r.is_err();
+                            println!("\n[finished: {r:?}, session: {session:?}]");
+                        }
                     }
                 }
+            }
+            // Scripts check the exit status, so a failed turn must not exit 0.
+            if failed {
+                std::process::exit(1);
             }
         }
         // A mistyped headless flag would otherwise open the window with it attached as a file.

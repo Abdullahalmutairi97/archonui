@@ -133,7 +133,10 @@ impl Parser {
             // Each complete block arrives in its own message, with its whole input.
             Some("assistant") => {
                 let u = &v["message"]["usage"];
-                if u.is_object() && v["parent_tool_use_id"].is_null() {
+                // A `<synthetic>` message (a local slash command's output, a model error) made no model
+                // call: its usage is all zeros and says nothing about the context.
+                let synthetic = v["message"]["model"] == "<synthetic>";
+                if u.is_object() && v["parent_tool_use_id"].is_null() && !synthetic {
                     let n = |k: &str| u[k].as_u64().unwrap_or(0);
                     let used = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens") + n("output_tokens");
                     out.push(Out::ContextUsed(used));
@@ -1092,6 +1095,9 @@ mod tests {
         assert_eq!(ctx(Protocol::Claude, call), [("used", 1010)]);
         let sub = r#"{"type":"assistant","parent_tool_use_id":"t1","message":{"content":[],"usage":{"input_tokens":5}}}"#;
         assert!(ctx(Protocol::Claude, sub).is_empty(), "a subagent's calls are its own context");
+        // `/context` or a bad model: Claude's synthetic reply has zero usage, which must not reset the meter.
+        let synthetic = r#"{"type":"assistant","parent_tool_use_id":null,"message":{"model":"<synthetic>","content":[{"type":"text","text":"ctx"}],"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#;
+        assert!(ctx(Protocol::Claude, synthetic).is_empty(), "a synthetic message made no model call");
         let result = r#"{"type":"result","subtype":"success","is_error":false,"result":"hi","modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}}}"#;
         assert_eq!(ctx(Protocol::Claude, result), [("window", 1_000_000)]);
         let pi = r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":5,"cacheRead":50,"cacheWrite":0}}}"#;
