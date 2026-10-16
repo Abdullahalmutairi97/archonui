@@ -37,8 +37,7 @@ const BACKUP_EVERY: Duration = Duration::from_secs(5 * 60);
 /// Sharing state of the window. Not saved.
 #[derive(Default)]
 pub struct RemoteUi {
-    /// This window's host, once started. It keeps listening while the app runs; turning sharing off
-    /// makes it refuse new devices.
+    /// This window's host while sharing is on. Turning sharing off stops it.
     hub: Option<Hub>,
     /// The host is being started.
     starting: bool,
@@ -48,8 +47,10 @@ pub struct RemoteUi {
     clients: HashMap<String, Client>,
     /// Devices being connected to.
     connecting: HashSet<String>,
-    /// The periodic list refresh runs.
+    /// The periodic list refresh and backup run.
     ticking: bool,
+    /// Bumped each time sharing stops, so the timers started before end.
+    epoch: u64,
     /// The cloud copy, when this device is the one marked as cloud.
     cloud: Option<Store>,
     /// Project id -> the latest snapshot commit the cloud confirmed, so later copies send only changes.
@@ -82,34 +83,16 @@ impl Shell {
         if let Some(hub) = &self.remote.hub {
             hub.set_sync(sync.clone());
         }
-        if !sync.enabled {
-            let devices: Vec<String> = self.remote.clients.drain().map(|(id, _)| id).collect();
-            for id in devices {
-                self.state.remove_remote(&id);
-                self.drop_device_approvals(&id);
+        let me = match next_step(&sync, self.remote.me.as_ref()) {
+            Step::Off => {
+                self.stop_sharing();
+                return;
             }
-            return;
-        }
-        let Some(me) = self.remote.me.clone() else {
-            // Tailscale first: it gives the address to listen on and the name devices see.
-            if !self.remote.starting {
-                self.remote.starting = true;
-                cx.spawn(async move |this, cx| {
-                    let found = cx.background_executor().spawn(async { tailscale::discover() }).await;
-                    let _ = this.update(cx, |this, cx| {
-                        this.remote.starting = false;
-                        match found {
-                            Ok(net) => {
-                                this.remote.me = Some(net.me);
-                                this.refresh_remote(cx);
-                            }
-                            Err(e) => this.toast(format!("Sharing: {e}"), cx),
-                        }
-                    });
-                })
-                .detach();
+            Step::Run(me) => me,
+            Step::FindThisDevice => {
+                self.find_this_device(cx);
+                return;
             }
-            return;
         };
         // This device keeps the cloud copy when the user marked it as the cloud.
         if sync.is_cloud(&me.id) {
@@ -122,10 +105,9 @@ impl Shell {
         if self.remote.hub.is_none() {
             self.start_hub(&me, cx);
         }
-        // Devices no longer included are dropped, with their chats.
-        let included: HashSet<&str> = sync.devices.iter().map(|d| d.id.as_str()).collect();
-        let dropped: Vec<String> = self.remote.clients.keys().filter(|id| !included.contains(id.as_str())).cloned().collect();
-        for id in dropped {
+        // Devices no longer included are dropped, with their chats (live or from the cloud).
+        let shown = self.state.sessions().iter().filter_map(|s| s.origin.clone());
+        for id in dropped_devices(&sync, self.remote.clients.keys().cloned().chain(shown)) {
             self.remote.clients.remove(&id);
             self.state.remove_remote(&id);
             self.drop_device_approvals(&id);
@@ -137,25 +119,80 @@ impl Shell {
         }
         if !self.remote.ticking {
             self.remote.ticking = true;
+            let epoch = self.remote.epoch;
             cx.spawn(async move |this, cx| loop {
                 cx.background_executor().timer(LIST_EVERY).await;
                 let alive = this.update(cx, |this, _| {
                     for client in this.remote.clients.values() {
                         let _ = client.send(&ClientMsg::ListSessions);
                     }
+                    this.remote.epoch == epoch
                 });
-                if alive.is_err() {
+                if !matches!(alive, Ok(true)) {
                     break;
                 }
             })
             .detach();
             cx.spawn(async move |this, cx| loop {
                 cx.background_executor().timer(BACKUP_EVERY).await;
-                if this.update(cx, |this, cx| this.backup(cx)).is_err() {
+                let alive = this.update(cx, |this, cx| {
+                    let alive = this.remote.epoch == epoch;
+                    if alive {
+                        this.backup(cx);
+                    }
+                    alive
+                });
+                if !matches!(alive, Ok(true)) {
                     break;
                 }
             })
             .detach();
+        }
+    }
+
+    /// Asks Tailscale for this device off the UI thread: it gives the address to listen on and the
+    /// name devices see.
+    fn find_this_device(&mut self, cx: &mut Context<Self>) {
+        if self.remote.starting {
+            return;
+        }
+        self.remote.starting = true;
+        cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async { tailscale::discover() }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.remote.starting = false;
+                match found {
+                    Ok(net) => {
+                        this.remote.me = Some(net.me);
+                        this.refresh_remote(cx);
+                    }
+                    Err(e) => this.toast(format!("Sharing: {e}"), cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Turns sharing off at once: stops the host, drops every connection, every chat shown from
+    /// another device and every approval forwarded from one, and ends the timers. Cheap when already off.
+    fn stop_sharing(&mut self) {
+        if let Some(hub) = self.remote.hub.take() {
+            hub.stop();
+        }
+        let shown: HashSet<String> = self.state.sessions().iter().filter_map(|s| s.origin.clone()).collect();
+        for id in shown {
+            self.state.remove_remote(&id);
+        }
+        self.drop_forwarded(|_| true);
+        let r = &mut self.remote;
+        r.clients.clear();
+        r.cloud = None;
+        r.pushed.clear();
+        r.cloud_projects = None;
+        r.open_new = None;
+        if r.ticking {
+            r.ticking = false;
+            r.epoch += 1;
         }
     }
 
@@ -165,10 +202,18 @@ impl Shell {
         let bind = SocketAddr::new(ip, self.state.settings.sync.port);
         match Hub::start(bind, me.name.clone(), self.state.settings.sync.clone()) {
             Ok((hub, requests)) => {
-                self.remote.hub = Some(hub);
+                self.remote.hub = Some(hub.clone());
                 cx.spawn(async move |this, cx| {
                     while let Ok(req) = requests.recv().await {
-                        if this.update(cx, |this, cx| this.host_request(req, cx)).is_err() {
+                        // Requests still queued when sharing stopped belong to no host.
+                        let current = this.update(cx, |this, cx| {
+                            let current = this.remote.hub.as_ref().is_some_and(|h| h.same(&hub));
+                            if current {
+                                this.host_request(req, cx);
+                            }
+                            current
+                        });
+                        if !matches!(current, Ok(true)) {
                             break;
                         }
                     }
@@ -354,7 +399,16 @@ impl Shell {
                 .flatten();
             let Some(events) = events else { return };
             while let Ok(ev) = events.recv().await {
-                if this.update(cx, |this, cx| this.device_event(&device.id, ev, cx)).is_err() {
+                // Messages still queued from a connection that was dropped (sharing off, the device
+                // removed, or replaced by a newer connection) are left unread.
+                let current = this.update(cx, |this, cx| {
+                    let current = this.remote.clients.get(&device.id).is_some_and(|c| c.events.same_channel(&events));
+                    if current {
+                        this.device_event(&device.id, ev, cx);
+                    }
+                    current
+                });
+                if !matches!(current, Ok(true)) {
                     break;
                 }
             }
@@ -744,5 +798,70 @@ impl Shell {
             });
         })
         .detach();
+    }
+}
+
+/// What `refresh_remote` does next, from the settings alone.
+#[derive(Debug, PartialEq)]
+enum Step {
+    /// Sharing is off: nothing listens, connects, runs `tailscale` or copies.
+    Off,
+    /// Sharing is on but this device isn't known yet: ask Tailscale.
+    FindThisDevice,
+    /// Host, connect and copy as this device.
+    Run(Device),
+}
+
+fn next_step(sync: &crate::remote::SyncSettings, me: Option<&Device>) -> Step {
+    match me {
+        _ if !sync.enabled => Step::Off,
+        None => Step::FindThisDevice,
+        Some(me) => Step::Run(me.clone()),
+    }
+}
+
+/// The devices whose connection or chats must go: every one of `known` the settings no longer include.
+fn dropped_devices(sync: &crate::remote::SyncSettings, known: impl Iterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = known.filter(|id| !sync.devices.iter().any(|d| &d.id == id)).collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::SyncSettings;
+
+    fn device(id: &str) -> Device {
+        Device { id: id.into(), name: id.into(), dns_name: String::new(), addr: "100.1.2.3".into() }
+    }
+
+    /// The hard rule: a fresh install, or settings from before sharing existed, never reach Tailscale,
+    /// a listener, a connection or a timer.
+    #[test]
+    fn sharing_is_off_with_fresh_or_old_settings() {
+        let dir = std::env::temp_dir().join(format!("archonui-sharing-off-{}", crate::store::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fresh = crate::app::persist::load(&dir, &dir.join("no-legacy-settings.json"));
+        assert_eq!(next_step(&fresh.settings.sync, None), Step::Off);
+        std::fs::write(dir.join("settings.json"), "{}").unwrap();
+        let old = crate::app::persist::load(&dir, &dir.join("no-legacy-settings.json"));
+        assert_eq!(next_step(&old.settings.sync, None), Step::Off);
+        // Off wins even when this device was found while sharing was on.
+        let me = device("me");
+        assert_eq!(next_step(&SyncSettings::default(), Some(&me)), Step::Off);
+        assert_eq!(next_step(&SyncSettings { enabled: true, ..Default::default() }, None), Step::FindThisDevice);
+        let ui = RemoteUi::default();
+        assert!(ui.hub.is_none() && ui.clients.is_empty() && ui.cloud.is_none() && !ui.ticking);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn devices_no_longer_included_are_dropped_with_their_cloud_chats() {
+        let sync = SyncSettings { enabled: true, devices: vec![device("pc")], ..Default::default() };
+        // "laptop" is connected, "vps" only shows chats from the cloud: both were unticked.
+        let known = ["pc", "laptop", "vps", "vps"].into_iter().map(String::from);
+        assert_eq!(dropped_devices(&sync, known), vec!["laptop".to_string(), "vps".to_string()]);
     }
 }
