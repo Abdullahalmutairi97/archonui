@@ -58,6 +58,8 @@ pub struct RemoteUi {
     backing_up: bool,
     /// What the cloud holds, for Settings → Devices; `None` until asked.
     pub(super) cloud_projects: Option<Vec<CloudProject>>,
+    /// A chat asked for with "New on <device>": opened in the focused tile when it arrives.
+    open_new: Option<(String, Option<String>)>,
     /// Approvals of other devices' chats waiting for an answer here, by the local request id.
     pub(super) forwarded: HashMap<u64, Forwarded>,
 }
@@ -388,13 +390,24 @@ impl Shell {
             }
             HostMsg::Snapshot { session, busy } => match serde_json::from_value::<Session>(session) {
                 Ok(s) if self.state.session(&s.id).is_none_or(|old| old.origin.as_deref() == Some(device)) => {
-                    self.state.put_remote(s, device, busy)
+                    let id = s.id.clone();
+                    self.state.put_remote(s, device, busy);
+                    // The chat started with "New on <device>" opens here as soon as it arrives.
+                    if self.remote.open_new.as_ref().is_some_and(|(d, opened)| d == device && opened.as_deref() == Some(id.as_str())) {
+                        self.remote.open_new = None;
+                        self.state.workspace.layout.open_in_focused(&id);
+                        self.save(cx);
+                    }
                 }
                 // Same id as one of this device's chats: never replace a local chat.
                 Ok(_) => {}
                 Err(e) => eprintln!("archonui: a chat from {device} could not be read: {e}"),
             },
             HostMsg::Created { session } => {
+                if let Some((asked, _)) = self.remote.open_new.as_ref().filter(|(d, opened)| d == device && opened.is_none()) {
+                    let asked = asked.clone();
+                    self.remote.open_new = Some((asked, Some(session.id.clone())));
+                }
                 if let Some(client) = self.remote.clients.get(device) {
                     let _ = client.send(&ClientMsg::Subscribe { session: session.id });
                 }
@@ -514,6 +527,25 @@ impl Shell {
                 Ok(RemoteFile { name: a.name.clone(), data: STANDARD.encode(bytes) })
             })
             .collect()
+    }
+
+    /// Connected devices as (id, name), for the sidebar's "New on <device>" buttons.
+    pub(super) fn connected_devices(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self.remote.clients.keys().map(|id| (id.clone(), self.chat_device_name(id))).collect();
+        out.sort_by(|a, b| a.1.cmp(&b.1));
+        out
+    }
+
+    /// Starts a chat on `device` with its default agent and folder; it opens here when it arrives.
+    pub(super) fn new_remote_chat(&mut self, device: &str, cx: &mut Context<Self>) {
+        let Some(client) = self.remote.clients.get(device) else {
+            self.toast("That device is not connected", cx);
+            return;
+        };
+        let msg = ClientMsg::NewSession { agent: String::new(), cwd: std::path::PathBuf::new(), project: None };
+        if client.send(&msg).is_ok() {
+            self.remote.open_new = Some((device.to_string(), None));
+        }
     }
 
     /// Stops the reply in chat `id`: here for this device's chats, on its device for a remote one.
