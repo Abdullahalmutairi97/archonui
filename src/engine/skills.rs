@@ -345,26 +345,49 @@ fn sync_in(home: &Path) -> io::Result<SyncReport> {
     let found = scan(&user_roots(home));
     // Into the hub: every skill its readers do not reach yet.
     let mut in_hub: HashSet<PathBuf> = walk(&hub, Depth::One).iter().filter_map(|d| fs::canonicalize(d).ok()).collect();
+    let names: HashMap<&Path, &str> = found.iter().map(|f| (f.canonical.as_path(), f.skill.name.as_str())).collect();
+    // Skill names the hub's readers already load: a second skill under the same name would be a
+    // duplicate to them, so it is skipped rather than linked under another folder name.
+    let mut hub_names: HashSet<String> = in_hub.iter().filter_map(|c| names.get(c.as_path())).map(|n| n.to_string()).collect();
     for f in &found {
         // A personal skill below the hub's top level is Pi's alone; linking it would list it twice.
         if f.skill.source == "Personal" || in_hub.contains(&f.canonical) {
             continue;
         }
+        if hub_names.contains(&f.skill.name) {
+            report.skipped.push(format!("{} ({}): {} already has a skill with this name", f.skill.name, f.skill.source, tilde(home, &hub)));
+            continue;
+        }
         link(home, &hub, &f.canonical, &f.skill.source, &[], &mut report)?;
         in_hub.insert(f.canonical.clone());
+        hub_names.insert(f.skill.name.clone());
     }
     // Into Claude Code's folder: every hub skill it does not load yet.
     let sources: HashMap<&Path, &str> = found.iter().map(|f| (f.canonical.as_path(), f.skill.source.as_str())).collect();
     let mut in_claude: HashSet<PathBuf> =
         found.iter().filter(|f| f.skill.agents.contains(&"claude")).map(|f| f.canonical.clone()).collect();
+    // Claude Code namespaces plugin and Claude.ai skills (`runpod:discovery`), so only the names in
+    // its own folder can clash.
+    let mut claude_names: HashSet<String> = walk(&claude, Depth::One)
+        .iter()
+        .filter_map(|d| fs::canonicalize(d).ok())
+        .filter_map(|c| names.get(c.as_path()).map(|n| n.to_string()))
+        .collect();
     for entry in walk(&hub, Depth::One) {
         let Ok(canonical) = fs::canonicalize(&entry) else { continue };
         if in_claude.contains(&canonical) {
             continue;
         }
+        if let Some(name) = names.get(canonical.as_path()).filter(|n| claude_names.contains(**n)) {
+            report.skipped.push(format!("{name}: Claude Code already has a skill with this name"));
+            continue;
+        }
         let source = sources.get(canonical.as_path()).copied().unwrap_or("Personal");
         let name = entry.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         link_named(home, &claude, &canonical, &name, source, &["synced"], &mut report)?;
+        if let Some(skill) = names.get(canonical.as_path()) {
+            claude_names.insert(skill.to_string());
+        }
         in_claude.insert(canonical);
     }
     Ok(report)
@@ -848,24 +871,42 @@ mod tests {
     }
 
     #[test]
-    fn sync_prefixes_a_taken_name_and_skips_when_both_are_taken() {
+    fn sync_prefixes_a_taken_folder_and_skips_a_taken_skill_name() {
         let home = scratch("collide");
         let hub = home.join(".agents/skills");
-        skill_md(&hub.join("discovery"), "---\nname: discovery\n---\n");
-        skill_md(&hub.join("pdf"), "---\nname: pdf\n---\n");
-        skill_md(&hub.join("claude-ai-pdf"), "---\nname: claude-ai-pdf\n---\n");
+        // A different skill already uses the folder name `discovery`.
+        skill_md(&hub.join("discovery"), "---\nname: find-things\n---\n");
+        // A skill named `pdf` is already in the hub, under another folder.
+        skill_md(&hub.join("my-pdf"), "---\nname: pdf\n---\n");
+        // Both folder names a third skill could use are taken by other skills.
+        skill_md(&hub.join("fmt"), "---\nname: format\n---\n");
+        skill_md(&hub.join("claude-ai-fmt"), "---\nname: format-2\n---\n");
         let plugin = home.join(".claude/plugins/cache/p/runpod/1/skills/discovery");
         skill_md(&plugin, "---\nname: discovery\n---\n");
         plugin_json(&home.join(".claude/plugins/cache/p/runpod/1"), "runpod");
         skill_md(&home.join(".claude/skills/synced/b/pdf"), "---\nname: pdf\n---\n");
+        skill_md(&home.join(".claude/skills/synced/b/fmt"), "---\nname: fmt\n---\n");
 
         let report = sync_in(&home).unwrap();
         assert_eq!(target(&hub.join("runpod-discovery")), fs::canonicalize(&plugin).unwrap());
         assert!(report.linked.contains(&"discovery → ~/.agents/skills/runpod-discovery".to_string()), "{report:?}");
-        assert_eq!(report.skipped, ["pdf: ~/.agents/skills already has `pdf` and `claude-ai-pdf`"]);
-        // Hub skills reach Claude under their own names; the plugin link is already Claude's.
+        assert!(report.skipped.contains(&"pdf (Claude.ai): ~/.agents/skills already has a skill with this name".to_string()), "{report:?}");
+        assert!(report.skipped.contains(&"fmt: ~/.agents/skills already has `fmt` and `claude-ai-fmt`".to_string()), "{report:?}");
+        assert_eq!(report.skipped.len(), 2, "{report:?}");
+        // Hub skills reach Claude under their own folder names; the plugin link is already Claude's.
         assert!(fs::symlink_metadata(home.join(".claude/skills/discovery")).is_ok());
         assert!(fs::symlink_metadata(home.join(".claude/skills/runpod-discovery")).is_err());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_skips_a_hub_skill_whose_name_claude_already_has_in_its_folder() {
+        let home = scratch("claude-name");
+        skill_md(&home.join(".agents/skills/review"), "---\nname: review\n---\n");
+        skill_md(&home.join(".claude/skills/review-mine"), "---\nname: review\n---\n");
+        let report = sync_in(&home).unwrap();
+        assert!(fs::symlink_metadata(home.join(".claude/skills/review")).is_err());
+        assert!(report.skipped.contains(&"review: Claude Code already has a skill with this name".to_string()), "{report:?}");
         let _ = fs::remove_dir_all(&home);
     }
 
