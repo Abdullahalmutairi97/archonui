@@ -708,8 +708,9 @@ impl ChatView {
         if let Some(live) = self.live.get_mut(&id) {
             if index < live.pending.len() {
                 let a = live.pending.remove(index);
-                // Pasted images only exist in ArchonUI's copy.
-                if a.path.starts_with(store::attachments_dir(&id)) {
+                // Pasted images only exist in ArchonUI's copy, unless an earlier message already kept it.
+                let kept = self.sessions.iter().any(|s| s.id == id && kept_by_message(s, &a.path));
+                if a.path.starts_with(store::attachments_dir(&id)) && !kept {
                     let _ = std::fs::remove_file(&a.path);
                 }
             }
@@ -1547,6 +1548,11 @@ fn attachment_view(a: &Attachment, thumb: Option<&Thumb>, size: gpui::Pixels) ->
         .into_any_element()
 }
 
+/// Whether a message in `session` already keeps this file, so removing it must not delete the copy.
+fn kept_by_message(session: &Session, path: &std::path::Path) -> bool {
+    session.messages.iter().any(|m| m.attachments.iter().any(|f| f.path == path))
+}
+
 /// The chats that vanish when moving away: no messages, no terminal, and not `current`.
 fn unused_sessions(sessions: &[Session], current: Option<&str>) -> Vec<String> {
     sessions
@@ -1882,8 +1888,18 @@ impl Render for ChatView {
 
 #[cfg(test)]
 mod tests {
-    use super::{unused_sessions, Role, Session};
+    use super::{kept_by_message, unused_sessions, Role, Session};
+    use crate::engine::attach::{Attachment, Kind};
     use std::path::PathBuf;
+
+    #[test]
+    fn files_kept_by_earlier_messages_are_recognised() {
+        let file = |path: &str| Attachment { path: PathBuf::from(path), name: "a.png".into(), kind: Kind::Image, size: 1 };
+        let mut s = Session::new("claude", PathBuf::from("/tmp"));
+        s.push_with(Role::User, "look", vec![file("/attachments/s/a.png")]);
+        assert!(kept_by_message(&s, &PathBuf::from("/attachments/s/a.png")));
+        assert!(!kept_by_message(&s, &PathBuf::from("/attachments/s/b.png")));
+    }
 
     #[test]
     fn only_unused_empty_chats_are_pruned() {
