@@ -1,8 +1,10 @@
 //! OpenCode: `opencode run --format json`. Auto runs the default `build`
 //! agent; Plan and Ask run the read-only `plan` agent.
 
-use super::{planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
-use crate::app::settings::{McpServer, McpTransport};
+use super::{
+    planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput,
+};
+use crate::app::settings::{McpServer, McpTransport, Permission, Permissions};
 use crate::engine::{
     attach::{Delivery, Kind},
     discover::{command, list, run_json, run_text, Capabilities, ModelInfo},
@@ -79,8 +81,9 @@ impl Harness for OpenCode {
             a.push("--".into());
         }
         a.extend(message.map(|m| prompt_arg(&m)));
-        // MCP servers and the step limit share OpenCode's config variable with the folder rules, so all go in `config_env`.
-        let env = config_env(&files.dirs(), input.tools.mcp, turn_agent(input.mode), input.tools.max_steps).into_iter().collect();
+        // MCP servers, tool settings and the step limit share OpenCode's config variable with the
+        // folder rules, so all go in `config_env`.
+        let env = config_env(&files.dirs(), &input.tools, turn_agent(input.mode)).into_iter().collect();
         Plan { args: a, stdin: None, env, files: Vec::new() }
     }
 
@@ -154,11 +157,20 @@ fn turn_agent(mode: Mode) -> &'static str {
 
 /// `OPENCODE_CONFIG_CONTENT`, which OpenCode merges over its own config: the
 /// folders files may be read from, every server (switched-off ones with
-/// `enabled: false`), and the step limit of `agent`. Merged into any value the user
-/// already set. `None` when there is none of these.
-fn config_env(dirs: &[PathBuf], servers: &[McpServer], agent: &str, steps: Option<u32>) -> Option<(String, String)> {
+/// `enabled: false`), `deny` for the tools switched off and the disabled skills, and
+/// the step limit of `agent`. Merged into any value the user already set. `None` when
+/// there is none of these.
+fn config_env(dirs: &[PathBuf], tools: &ToolSettings, agent: &str) -> Option<(String, String)> {
     const VAR: &str = "OPENCODE_CONFIG_CONTENT";
-    if dirs.is_empty() && servers.is_empty() && steps.is_none() {
+    let (servers, steps) = (tools.mcp, tools.max_steps);
+    let denied = denied_permissions(tools.permissions);
+    let skills: Vec<&str> = tools
+        .skills
+        .iter()
+        .filter(|s| tools.disabled_skills.contains(&s.id))
+        .map(|s| s.name.as_str())
+        .collect();
+    if dirs.is_empty() && servers.is_empty() && steps.is_none() && denied.is_empty() && skills.is_empty() {
         return None;
     }
     let mut config: Value = std::env::var(VAR)
@@ -173,6 +185,12 @@ fn config_env(dirs: &[PathBuf], servers: &[McpServer], agent: &str, steps: Optio
     for s in servers {
         object_at(&mut config, "mcp")[&s.name] = mcp_entry(s);
     }
+    for key in denied {
+        object_at(&mut config, "permission")[key] = json!("deny");
+    }
+    for name in skills {
+        object_at(object_at(&mut config, "permission"), "skill")[name] = json!("deny");
+    }
     if let Some(steps) = steps {
         object_at(object_at(&mut config, "agent"), agent)["steps"] = json!(steps);
     }
@@ -186,6 +204,32 @@ fn object_at<'a>(v: &'a mut Value, key: &str) -> &'a mut Value {
         v[key] = json!({});
     }
     &mut v[key]
+}
+
+/// OpenCode permission keys (from its permissions docs) for each permission set to Off. `edit`
+/// covers writes and patches too.
+fn denied_permissions(p: Permissions) -> Vec<&'static str> {
+    let off = |perm: Permission| perm == Permission::Off;
+    let mut keys = Vec::new();
+    if off(p.read) {
+        keys.push("read");
+    }
+    if off(p.grep) {
+        keys.extend(["grep", "glob"]);
+    }
+    if off(p.edit) {
+        keys.push("edit");
+    }
+    if off(p.run) {
+        keys.push("bash");
+    }
+    if off(p.web) {
+        keys.push("websearch");
+    }
+    if off(p.fetch) {
+        keys.push("webfetch");
+    }
+    keys
 }
 
 /// An OpenCode `mcp` entry: a local command as one argv array, or a remote URL.
@@ -234,7 +278,8 @@ mod tests {
                 enabled: false,
             },
         ];
-        let (var, text) = config_env(&[PathBuf::from("/data/files")], &servers, "build", None).unwrap();
+        let tools = ToolSettings { mcp: &servers, ..Default::default() };
+        let (var, text) = config_env(&[PathBuf::from("/data/files")], &tools, "build").unwrap();
         assert_eq!(var, "OPENCODE_CONFIG_CONTENT");
         let config: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(config["permission"]["external_directory"]["/data/files/*"], "allow");
@@ -242,7 +287,7 @@ mod tests {
         assert_eq!(config["mcp"]["local"]["environment"]["K"], "v");
         assert_eq!(config["mcp"]["remote"]["type"], "remote");
         assert_eq!(config["mcp"]["remote"]["enabled"], false);
-        assert!(config_env(&[], &[], "build", None).is_none());
+        assert!(config_env(&[], &ToolSettings::default(), "build").is_none());
     }
 
     #[test]
@@ -268,9 +313,38 @@ mod tests {
         assert_eq!(turn_agent(Mode::Auto), "build");
         assert_eq!(turn_agent(Mode::Plan), "plan");
         assert_eq!(turn_agent(Mode::Ask), "plan");
-        let (_, text) = config_env(&[], &[], "plan", Some(40)).unwrap();
+        let tools = ToolSettings { max_steps: Some(40), ..Default::default() };
+        let (_, text) = config_env(&[], &tools, "plan").unwrap();
         let config: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(config["agent"]["plan"]["steps"], 40);
         assert!(config["agent"].get("build").is_none());
+    }
+
+    #[test]
+    fn off_tools_and_disabled_skills_are_denied() {
+        use crate::engine::skills::Skill;
+        let skills = [Skill {
+            id: "/s/review".into(),
+            name: "review".into(),
+            description: String::new(),
+            command: "/review".into(),
+            source: "Personal".into(),
+            path: PathBuf::from("/s/review"),
+        }];
+        let off = ["/s/review".to_string()];
+        let tools = ToolSettings {
+            skills: &skills,
+            disabled_skills: &off,
+            permissions: Permissions { grep: Permission::Off, run: Permission::Off, fetch: Permission::Off, ..Permissions::default() },
+            ..Default::default()
+        };
+        let (_, text) = config_env(&[PathBuf::from("/data/files")], &tools, "build").unwrap();
+        let config: Value = serde_json::from_str(&text).unwrap();
+        for key in ["grep", "glob", "bash", "webfetch"] {
+            assert_eq!(config["permission"][key], "deny", "{key}");
+        }
+        assert!(config["permission"].get("read").is_none());
+        assert_eq!(config["permission"]["skill"]["review"], "deny");
+        assert_eq!(config["permission"]["external_directory"]["/data/files/*"], "allow");
     }
 }
