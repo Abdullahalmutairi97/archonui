@@ -29,19 +29,23 @@ impl Shell {
             .count();
 
         let installed: Vec<&'static str> = self.agents.iter().map(|a| a.harness.id()).collect();
-        // How many skills each installed agent loads, so a gap between agents shows before syncing.
-        let counts = installed
-            .iter()
-            .map(|agent| format!("{} {}", short_name(agent), skills.iter().flatten().filter(|k| k.agents.contains(agent)).count()))
-            .collect::<Vec<_>>()
-            .join(" · ");
+        // How many skills each installed agent loads, so a gap between agents shows before syncing. Nothing
+        // is counted while the search runs, rather than a row of misleading zeros.
+        let counts = skills.as_ref().map(|list| {
+            installed
+                .iter()
+                .map(|agent| format!("{} {}", short_name(agent), list.iter().filter(|k| k.agents.contains(agent)).count()))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        });
+        let title = if skills.is_some() { format!("SKILLS · {on} OF {total} ON") } else { "SKILLS".to_string() };
 
         let header = div()
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(heading(&format!("SKILLS · {on} OF {total} ON"), None, &theme))
-            .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(counts))
+            .child(heading(&title, None, &theme))
+            .when_some(counts, |d, counts| d.child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(counts)))
             .child(div().flex_1())
             .child(
                 Button::new("sync-skills", "Sync to all agents", &theme)
