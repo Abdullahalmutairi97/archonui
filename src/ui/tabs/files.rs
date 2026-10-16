@@ -542,11 +542,13 @@ impl Shell {
                 .child(indicator),
         );
         let meta = if is_dir {
-            format!("{} items", tree.count(&path))
+            item_count(tree.count(&path))
         } else {
             fs::metadata(&path).map(|m| human_size(m.len())).unwrap_or_default()
         };
-        line.child(div().w(px(48.)).flex_none().text_right().text_size(px(11.)).text_color(muted).child(meta))
+        // At least the old 48px so short sizes still line up, but wide enough that `14 items` or `183.6 KB`
+        // stay on one line.
+        line.child(div().min_w(px(48.)).flex_none().whitespace_nowrap().text_right().text_size(px(11.)).text_color(muted).child(meta))
             .into_any_element()
     }
 
@@ -1341,6 +1343,11 @@ fn read_info(root: &Path, path: &Path) -> Option<Info> {
     Some(Info { path: path.to_path_buf(), size: meta.len(), lines: lines.len(), modified: meta.modified().ok(), preview })
 }
 
+/// A folder's entry count as its row shows it: `1 item`, `14 items`.
+fn item_count(n: usize) -> String {
+    format!("{n} item{}", if n == 1 { "" } else { "s" })
+}
+
 /// A byte count as the footer shows it: `402 B`, `1.2 KB`, `3.4 MB`.
 fn human_size(bytes: u64) -> String {
     if bytes < 1024 {
@@ -1415,6 +1422,9 @@ mod tests {
 
     #[test]
     fn sizes_ages_and_names_read_as_the_footer_shows_them() {
+        assert_eq!(item_count(1), "1 item");
+        assert_eq!(item_count(0), "0 items");
+        assert_eq!(item_count(14), "14 items");
         assert_eq!(human_size(402), "402 B");
         assert_eq!(human_size(1536), "1.5 KB");
         assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");

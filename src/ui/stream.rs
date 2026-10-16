@@ -39,6 +39,8 @@ pub struct StreamEnv<'a> {
     pub busy: bool,
     /// Settings → General "Show tool calls in chat" (chat.md §1.4 item 2).
     pub show_tools: bool,
+    /// Where the session runs and on which model, as the tile header names them: `ArchonUI · Sonnet 5.5`.
+    pub place: String,
 }
 
 /// What a stream asks of the view that hosts it. `Shell` implements it; the stream demo has its own view.
@@ -245,7 +247,10 @@ impl StreamUi {
                 .px(px(18.))
                 .pt(px(18.))
                 .pb(px(8.))
-                .child(list(list_state, move |ix, _window, _cx| message_row(&ctx, ix, &items[ix])).size_full())
+                .child(
+                    list(list_state, move |ix, _window, _cx| message_row(&ctx, ix, &items[ix], items.get(ix + 1).map(|i| &**i)))
+                        .size_full(),
+                )
                 .into_any_element()
         };
 
@@ -386,8 +391,6 @@ fn copy_on_ctrl_c<H: StreamHost>(host: Entity<H>) -> impl Fn(&KeyDownEvent, &mut
 /// The empty state of a session with no messages (chat.md §1.2).
 fn empty_state(env: &StreamEnv) -> AnyElement {
     let theme = env.theme;
-    let project = env.session.project.clone().unwrap_or_default();
-    let model = env.session.model.clone().unwrap_or_default();
     div()
         .flex_1()
         .min_h_0()
@@ -409,7 +412,7 @@ fn empty_state(env: &StreamEnv) -> AnyElement {
             div()
                 .text_size(px(12.))
                 .text_color(theme.muted.to_hsla())
-                .child(format!("in {project} · {model}")),
+                .child(format!("in {}", env.place)),
         )
         .into_any_element()
 }
@@ -433,6 +436,7 @@ impl Shell {
             session,
             busy: self.state.busy(session_id),
             show_tools: self.state.settings.show_tools,
+            place: format!("{} · {}", self.session_place(session), self.trigger_label(session)),
         };
         self.stream.render(cx.entity(), env, cx)
     }

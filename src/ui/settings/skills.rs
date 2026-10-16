@@ -30,19 +30,23 @@ impl Shell {
 
         // Agents turned off in settings get no chip and no count.
         let installed: Vec<&'static str> = self.agents.iter().filter(|a| a.enabled).map(|a| a.harness.id()).collect();
-        // How many skills each installed agent loads, so a gap between agents shows before syncing.
-        let counts = installed
-            .iter()
-            .map(|agent| format!("{} {}", short_name(agent), skills.iter().flatten().filter(|k| k.agents.contains(agent)).count()))
-            .collect::<Vec<_>>()
-            .join(" · ");
+        // How many skills each installed agent loads, so a gap between agents shows before syncing. Nothing
+        // is counted while the search runs, rather than a row of misleading zeros.
+        let counts = skills.as_ref().map(|list| {
+            installed
+                .iter()
+                .map(|agent| format!("{} {}", short_name(agent), list.iter().filter(|k| k.agents.contains(agent)).count()))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        });
+        let title = if skills.is_some() { format!("SKILLS · {on} OF {total} ON") } else { "SKILLS".to_string() };
 
         let header = div()
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(heading(&format!("SKILLS · {on} OF {total} ON"), None, &theme))
-            .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(counts))
+            .child(heading(&title, None, &theme))
+            .when_some(counts, |d, counts| d.child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(counts)))
             .child(div().flex_1())
             .child(
                 Button::new("sync-skills", "Sync to all agents", &theme)
@@ -190,14 +194,18 @@ impl Shell {
         .detach();
     }
 
-    /// Searches for skills again off the UI thread.
-    fn reload_skills(&mut self, cx: &mut Context<Self>) {
+    /// Searches for skills again off the UI thread. Only the latest search's result is kept.
+    pub(super) fn reload_skills(&mut self, cx: &mut Context<Self>) {
         let cwd = self.default_folder();
+        self.settings.skills_search += 1;
+        let search = self.settings.skills_search;
         cx.spawn(async move |this, cx| {
             let skills = cx.background_executor().spawn(async move { engine::skills::discover(&cwd) }).await;
             let _ = this.update(cx, |this, cx| {
-                this.settings.skills = Some(skills);
-                cx.notify();
+                if this.settings.skills_search == search {
+                    this.settings.skills = Some(skills);
+                    cx.notify();
+                }
             });
         })
         .detach();

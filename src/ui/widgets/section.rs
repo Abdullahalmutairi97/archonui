@@ -114,13 +114,16 @@ impl RenderOnce for SettingRow {
                     .flex_col()
                     .gap(px(3.))
                     .child(div().text_size(px(14.)).line_height(px(16.)).text_color(c.fg).child(self.name))
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(14.))
-                            .text_color(c.muted)
-                            .child(self.description),
-                    )
+                    // An empty description would still take a line and push the name above the control's centre.
+                    .when(!self.description.is_empty(), |col| {
+                        col.child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(14.))
+                                .text_color(c.muted)
+                                .child(self.description),
+                        )
+                    })
                     .when_some(self.detail, |col, detail| col.child(div().pt(px(3.)).child(detail))),
             )
             .when_some(self.control, |row, control| row.child(control))

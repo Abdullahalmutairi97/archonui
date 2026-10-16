@@ -5,6 +5,7 @@ use super::{Shell, Target};
 use crate::{
     app::{
         sections::{ago, Section},
+        settings::Action,
         state::Placement,
     },
     engine,
@@ -24,6 +25,7 @@ use gpui::{
     Hsla, MouseButton, MouseDownEvent, Window,
 };
 use crate::ui::scale::px;
+use std::collections::HashMap;
 
 /// A session row or rail button, as the sidebar draws it.
 pub(super) struct Entry {
@@ -142,10 +144,12 @@ impl Shell {
         }
     }
 
-    /// The accent "New session" button with its Ctrl ⇧ ⏎ hint. Tighter than layout.md §2.1 row
+    /// The accent "New session" button with its shortcut hint (the New session binding, none when
+    /// unbound). Tighter than layout.md §2.1 row
     /// 3.1's spec padding/text size, by request.
     fn new_session_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
+        let hint = new_session_hint(&self.state.settings.keys);
         div()
             .id("new-session")
             .flex()
@@ -161,7 +165,7 @@ impl Shell {
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_session(window, cx)))
             .child("New session")
-            .child(div().text_size(px(10.)).opacity(0.75).child("Ctrl ⇧ ⏎"))
+            .when_some(hint, |d, hint| d.child(div().text_size(px(10.)).opacity(0.75).child(hint)))
     }
 
     fn session_row(&self, entry: &Entry, rename: Option<&Entity<TextInput>>, cx: &mut Context<Self>) -> AnyElement {
@@ -365,9 +369,24 @@ fn search_box(input: &Entity<TextInput>, theme: &Theme) -> impl IntoElement {
         .child(div().flex_1().min_w_0().child(text_input(input, theme)))
 }
 
+/// The shortcut the New session button shows: whatever New session is bound to, or nothing when unbound.
+fn new_session_hint(keys: &HashMap<Action, String>) -> Option<String> {
+    keys.get(&Action::NewSession).filter(|k| !k.is_empty()).map(|k| crate::ui::settings::key_label(k))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_session_hint_follows_the_binding() {
+        let mut keys = crate::app::settings::default_keys();
+        assert_eq!(new_session_hint(&keys).as_deref(), Some("Ctrl N"));
+        keys.insert(Action::NewSession, "alt-shift-n".into());
+        assert_eq!(new_session_hint(&keys).as_deref(), Some("Alt ⇧ N"));
+        keys.insert(Action::NewSession, String::new());
+        assert_eq!(new_session_hint(&keys), None);
+    }
     use crate::store::Message;
 
     fn session(title: &str, texts: &[&str]) -> Session {

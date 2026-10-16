@@ -6,6 +6,7 @@ use crate::{
     ui::{shell::Shell, widgets::{kbd::Kbd, section::SettingRow}},
 };
 use gpui::{div, prelude::*, AnyElement, Context};
+use std::collections::HashMap;
 use crate::ui::scale::px;
 
 /// Tile shortcuts, read by the tiles key handler.
@@ -32,6 +33,22 @@ const COMPOSER: [(&str, &str); 1] = [("Cycle agent mode: Auto, Plan, Ask", "⇧ 
 
 /// The composer and dialog keys the prototype groups under APP (settings.md §4); hard-coded, not rebindable.
 const HARD_KEYS: [(&str, &str); 2] = [("Send / new line", "⏎ / ⇧⏎"), ("Close dialog", "Esc")];
+
+/// What Swap changes to resolve the clash between `action` and `other`: the action to rebind and its new
+/// key. Both share one key, so trading their current keys would change nothing. When one of the two was
+/// just rebound onto the shared key, the other one takes the key it gave up, which is the swap the user
+/// means. Otherwise `other` falls back to its own default when that is free, else is left unbound.
+fn swap_binding(keys: &HashMap<Action, String>, action: Action, other: Action, displaced: Option<(Action, String)>) -> (Action, String) {
+    let taken_by_another = |target: Action, spec: &str| keys.iter().any(|(a, k)| *a != target && k.as_str() == spec);
+    if let Some((rebound, before)) = displaced {
+        let target = if rebound == action { Some(other) } else if rebound == other { Some(action) } else { None };
+        if let Some(target) = target.filter(|t| !before.is_empty() && !taken_by_another(*t, &before)) {
+            return (target, before);
+        }
+    }
+    let default = other.default_key();
+    (other, if taken_by_another(other, default) { String::new() } else { default.to_string() })
+}
 
 impl Shell {
     pub(super) fn keyboard_page(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -120,16 +137,43 @@ impl Shell {
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.line2.to_hsla()))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            let keys = &mut this.state.settings.keys;
-                            let mine = keys.get(&action).cloned().unwrap_or_default();
-                            let theirs = keys.get(&other).cloned().unwrap_or_default();
-                            keys.insert(action, theirs);
-                            keys.insert(other, mine);
+                            let displaced = this.settings.displaced.take();
+                            let (target, spec) = swap_binding(&this.state.settings.keys, action, other, displaced);
+                            this.state.settings.keys.insert(target, spec);
                             this.save(cx);
                         }))
                         .child("Swap"),
                 );
         }
         SettingRow::new(name.to_string(), String::new(), &theme).control(control)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::swap_binding;
+    use crate::app::settings::{default_keys, Action};
+
+    #[test]
+    fn swap_gives_the_clashing_action_the_key_that_was_given_up() {
+        let mut keys = default_keys();
+        // Next theme was rebound onto Close tile's key; it used to be alt-t.
+        keys.insert(Action::NextTheme, "alt-q".into());
+        let displaced = || Some((Action::NextTheme, "alt-t".to_string()));
+        // From either row, Close tile takes alt-t and Next theme keeps alt-q.
+        assert_eq!(swap_binding(&keys, Action::NextTheme, Action::CloseTile, displaced()), (Action::CloseTile, "alt-t".into()));
+        assert_eq!(swap_binding(&keys, Action::CloseTile, Action::NextTheme, displaced()), (Action::CloseTile, "alt-t".into()));
+    }
+
+    #[test]
+    fn swap_without_history_uses_a_free_default_or_unbinds() {
+        let mut keys = default_keys();
+        keys.insert(Action::NextTheme, "alt-q".into());
+        // Close tile's default is the shared key itself, so it is left unbound rather than still clashing.
+        assert_eq!(swap_binding(&keys, Action::NextTheme, Action::CloseTile, None), (Action::CloseTile, String::new()));
+        let mut keys = default_keys();
+        keys.insert(Action::CloseTile, "ctrl-b".into());
+        // Close tile was moved onto Toggle sidebar's key; its default alt-q is free again.
+        assert_eq!(swap_binding(&keys, Action::ToggleSidebar, Action::CloseTile, None), (Action::CloseTile, "alt-q".into()));
     }
 }

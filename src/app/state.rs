@@ -24,6 +24,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The note a turn leaves after its reply when it was stopped.
+pub const STOPPED_NOTE: &str = "Stopped.";
+/// The first line of the note a turn leaves after its reply when the agent failed.
+pub const FAILED_NOTE: &str = "Agent exited with an error:";
+
 /// Where a new session's tile goes.
 #[derive(Clone, Copy, Debug)]
 pub enum Placement {
@@ -642,9 +647,9 @@ impl AppState {
                     (false, Ok(())) => Outcome::Finished,
                 };
                 if cancelled {
-                    s.push(Role::Error, "Stopped.");
+                    s.push(Role::Error, STOPPED_NOTE);
                 } else if let Err(e) = result {
-                    s.push(Role::Error, format!("Agent exited with an error:\n{e}"));
+                    s.push(Role::Error, format!("{FAILED_NOTE}\n{e}"));
                 } else if !had_reply {
                     s.push(Role::Error, "The agent finished without replying.");
                 }

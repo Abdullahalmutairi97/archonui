@@ -11,6 +11,7 @@ mod models;
 mod skills;
 mod tools;
 
+pub(crate) use controls::key_label;
 pub(crate) use models::long_context_model;
 
 use super::{
@@ -186,6 +187,9 @@ pub struct SettingsUi {
     pub(super) images: HashMap<String, Arc<Image>>,
     /// The action waiting for a key on the Keyboard page.
     pub(super) capture: Option<Action>,
+    /// The last rebound action and the binding it had before, so Swap can hand that binding to the
+    /// action that now shares its keys.
+    pub(super) displaced: Option<(Action, String)>,
     /// The open colour picker, if any.
     pub(super) picker: Option<colour::Picker>,
     /// Whether the Appearance page's custom colour swatches are shown.
@@ -194,6 +198,9 @@ pub struct SettingsUi {
     pub(super) font_slot: FontSlot,
     /// Discovered skills; `None` until the first search finishes.
     pub(super) skills: Option<Vec<Skill>>,
+    /// The latest skills search. An older one finishing late (say, one started before a sync) is dropped
+    /// rather than drawn over the newer result.
+    pub(super) skills_search: u64,
     /// Installed and available extensions; `None` until the first search finishes.
     pub(super) plugins: Option<(Vec<Extension>, Vec<Extension>)>,
     /// MCP server checks by server id. `None` while a check runs.
@@ -220,17 +227,15 @@ impl Shell {
     }
 
     /// Searches for skills and extensions off the UI thread. Both are blocking reads of the disk and the CLIs.
+    /// They run apart, so skills (a quick disk scan) don't wait on the extension catalogues the CLIs list.
     fn load_catalogues(&mut self, cx: &mut Context<Self>) {
-        let cwd = self.default_folder();
+        self.reload_skills(cx);
         cx.spawn(async move |this, cx| {
-            let (skills, installed, available) = cx
+            let (installed, available) = cx
                 .background_executor()
-                .spawn(async move {
-                    (engine::skills::discover(&cwd), engine::plugins::installed(), engine::plugins::available())
-                })
+                .spawn(async move { (engine::plugins::installed(), engine::plugins::available()) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.settings.skills = Some(skills);
                 this.settings.plugins = Some((installed, available));
                 cx.notify();
             });
@@ -639,7 +644,8 @@ impl Shell {
             } else if !MODIFIER_KEYS.contains(&key) {
                 match capture_spec(&ev.keystroke) {
                     Ok(spec) => {
-                        self.state.settings.keys.insert(action, spec);
+                        let old = self.state.settings.keys.insert(action, spec).unwrap_or_default();
+                        self.settings.displaced = Some((action, old));
                         self.settings.capture = None;
                         self.save(cx);
                     }

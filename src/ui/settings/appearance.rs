@@ -54,6 +54,18 @@ const COLOUR_GROUPS: [(&str, usize); 4] = [("Surfaces", 4), ("Text", 4), ("Accen
 /// Image files the backgrounds folder offers.
 const IMAGE_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "webp", "gif"];
 
+/// The width of the wallpaper tiles' row for `tiles` tiles: one row while they fit, else the widest row
+/// that fits the cap, so the rest wrap below.
+fn wall_grid_width(tiles: usize) -> f32 {
+    const TILE: f32 = 64.;
+    const GAP: f32 = 6.;
+    const MAX: f32 = 420.;
+    let per_row = (((MAX + GAP) / (TILE + GAP)).floor() as usize).max(1);
+    let n = tiles.clamp(1, per_row) as f32;
+    // One px of slack, so rounding in the scaled layout can't push the last tile onto a new line.
+    n * TILE + (n - 1.) * GAP + 1.
+}
+
 /// A theme's background without an image, as a thumbnail: its three gradient colours.
 fn gradient_thumb(stops: [crate::ui::theme::Rgba; 3]) -> gpui::Div {
     // GPUI gradients take two stops, so the middle colour fills the box under a blend of the ends.
@@ -456,7 +468,10 @@ impl Shell {
     fn wallpaper_grid(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let picked = self.state.settings.wallpapers.get(theme_key(&self.state.settings.theme)).filter(|p| p.is_file()).cloned();
-        let mut grid = div().flex().flex_wrap().justify_end().gap(px(6.)).max_w(px(420.));
+        let backgrounds = self.backgrounds();
+        // A wrapping row sized by its content shrinks to one tile wide, stacking every tile in a column that
+        // spills over the rows below. So it gets the width its tiles need, capped where it should wrap.
+        let mut grid = div().flex().flex_wrap().justify_end().gap(px(6.)).flex_none().w(px(wall_grid_width(backgrounds.len() + 2)));
         let cell = |id: ElementId, active: bool| {
             div()
                 .id(id)
@@ -495,7 +510,7 @@ impl Shell {
                         .child("Theme"),
                 ),
         );
-        for (i, path) in self.backgrounds().into_iter().enumerate() {
+        for (i, path) in backgrounds.into_iter().enumerate() {
             let Some(thumb) = self.wall_thumb(&path) else { continue };
             let active = picked.as_ref() == Some(&path);
             grid = grid.child(
@@ -884,5 +899,17 @@ impl Shell {
             ),
         ];
         section("WINDOW", rows, &theme)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wall_grid_width;
+
+    #[test]
+    fn wallpaper_tiles_get_room_for_one_row_up_to_the_cap() {
+        assert_eq!(wall_grid_width(2), 135., "the theme tile and Upload side by side");
+        assert_eq!(wall_grid_width(6), 415.);
+        assert_eq!(wall_grid_width(9), 415., "more tiles wrap instead of widening the row");
     }
 }

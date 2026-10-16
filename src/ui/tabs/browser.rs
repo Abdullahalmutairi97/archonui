@@ -410,7 +410,8 @@ impl Shell {
                     .rounded(px(6.))
                     .bg(theme.deep.to_hsla())
                     .text_xs()
-                    .text_color(theme.on.to_hsla())
+                    // `on` is for text on the bright accent; on `deep` it is dark on dark, so the body colour reads.
+                    .text_color(theme.fg.to_hsla())
                     .child(e)
             }))
             .child(

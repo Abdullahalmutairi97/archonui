@@ -78,14 +78,17 @@ impl Shell {
         }
         for ext in shown {
             let (id, name) = (ext.id.clone(), ext.name.clone());
-            let toggle = Toggle::new(SharedString::from(format!("ext-{}", ext.id)), ext.enabled, &theme).on_change(edit(
-                &weak,
-                move |this: &mut Shell, on: bool, cx| {
-                    let id = id.clone();
-                    let done = format!("{} {name}", if on { "Enabled" } else { "Disabled" });
-                    this.change_extension(done, move || engine::plugins::set_enabled(&id, on), cx);
-                },
-            ));
+            // A switch its CLI can't honour would only toast an error, so those extensions just get Remove.
+            let toggle = engine::plugins::can_toggle(&ext.harness).then(|| {
+                Toggle::new(SharedString::from(format!("ext-{}", ext.id)), ext.enabled, &theme).on_change(edit(
+                    &weak,
+                    move |this: &mut Shell, on: bool, cx| {
+                        let id = id.clone();
+                        let done = format!("{} {name}", if on { "Enabled" } else { "Disabled" });
+                        this.change_extension(done, move || engine::plugins::set_enabled(&id, on), cx);
+                    },
+                ))
+            });
             list = list.child(extension_row(ext, &theme, toggle, cx));
         }
 
@@ -212,8 +215,8 @@ fn name_meta(ext: &Extension, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// An installed extension: sigil, name, description, Remove, and its toggle.
-fn extension_row(ext: &Extension, theme: &Theme, toggle: Toggle, cx: &mut Context<Shell>) -> AnyElement {
+/// An installed extension: sigil, name, description, Remove, and its toggle when it has one.
+fn extension_row(ext: &Extension, theme: &Theme, toggle: Option<Toggle>, cx: &mut Context<Shell>) -> AnyElement {
     let (id, name) = (ext.id.clone(), ext.name.clone());
     div()
         .flex()
@@ -249,6 +252,10 @@ fn extension_row(ext: &Extension, theme: &Theme, toggle: Toggle, cx: &mut Contex
                 }))
                 .child("Remove"),
         )
-        .child(toggle)
+        // Without a switch, an empty slot of the switch's width keeps Remove lined up with the other rows.
+        .child(match toggle {
+            Some(toggle) => toggle.into_any_element(),
+            None => div().w(px(34.)).flex_none().into_any_element(),
+        })
         .into_any_element()
 }
