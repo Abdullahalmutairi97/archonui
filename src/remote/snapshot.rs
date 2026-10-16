@@ -207,18 +207,32 @@ fn indexed(repo: &Repo, index: &Path) -> Command {
 }
 
 /// Removes secret-looking paths from the temporary index only. The project's files and real index
-/// are untouched, so the snapshot simply lacks those paths.
+/// are untouched, so the snapshot simply lacks those paths. Paths reach git as raw bytes through a
+/// pathspec file, so names that are not UTF-8 are removed too.
 fn drop_secrets(repo: &Repo, index: &Path) -> Result<(), String> {
     let paths = secret_paths(repo, index)?;
-    for chunk in paths.chunks(500) {
-        let specs: Vec<String> = chunk.iter().map(|p| format!(":(top,literal){p}")).collect();
-        run(indexed(repo, index).args(["rm", "-q", "--cached", "--ignore-unmatch", "--"]).args(&specs))?;
+    if paths.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let mut specs = Vec::new();
+    for p in &paths {
+        specs.extend_from_slice(b":(top,literal)");
+        specs.extend_from_slice(p);
+        specs.push(0);
+    }
+    let list = temp_path("secrets");
+    fs::write(&list, &specs).map_err(|e| format!("write {}: {e}", list.display()))?;
+    let result = run(
+        indexed(repo, index)
+            .args(["rm", "-q", "--cached", "--ignore-unmatch", "--pathspec-file-nul"])
+            .arg(format!("--pathspec-from-file={}", list.display())),
+    );
+    let _ = fs::remove_file(&list);
+    result.map(|_| ())
 }
 
 /// Paths in the temporary index, from the top of the repository, whose file name is a secret.
-fn secret_paths(repo: &Repo, index: &Path) -> Result<Vec<String>, String> {
+fn secret_paths(repo: &Repo, index: &Path) -> Result<Vec<Vec<u8>>, String> {
     let out = indexed(repo, index)
         .args(["ls-files", "-z", "--full-name", "--", ":/"])
         .output()
@@ -229,9 +243,11 @@ fn secret_paths(repo: &Repo, index: &Path) -> Result<Vec<String>, String> {
     Ok(out
         .stdout
         .split(|b| *b == 0)
-        .filter_map(|p| std::str::from_utf8(p).ok())
-        .filter(|p| is_secret(p.rsplit('/').next().unwrap_or_default()))
-        .map(str::to_string)
+        .filter(|p| {
+            let name = p.rsplit(|b| *b == b'/').next().unwrap_or_default();
+            !p.is_empty() && is_secret(&String::from_utf8_lossy(name))
+        })
+        .map(<[u8]>::to_vec)
         .collect())
 }
 
@@ -503,6 +519,33 @@ mod tests {
         let files = snapshot_files(&proj, &c);
         assert!(files.contains(&".env".to_string()));
         assert!(files.contains(&"keys/server.pem".to_string()));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_files_stay_out_under_non_utf8_folders() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        if !git_available() {
+            return;
+        }
+        let base = root("secrets-bytes");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        let odd = proj.join(OsStr::from_bytes(b"caf\xe9 dir"));
+        fs::create_dir_all(&odd).unwrap();
+        fs::write(odd.join(".env"), "KEY=1\n").unwrap();
+        fs::write(odd.join("keep.txt"), "keep\n").unwrap();
+
+        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let out = Command::new("git").arg("-C").arg(&proj).args(["ls-tree", "-r", "-z", "--name-only", c.as_str()]).output().unwrap();
+        let files: Vec<&[u8]> = out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();
+        assert!(files.contains(&&b"caf\xe9 dir/keep.txt"[..]), "{files:?}");
+        assert!(!files.contains(&&b"caf\xe9 dir/.env"[..]), "{files:?}");
+        assert!(odd.join(".env").exists());
 
         let _ = fs::remove_dir_all(&base);
     }
