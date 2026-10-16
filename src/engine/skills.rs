@@ -264,17 +264,36 @@ fn front_matter(text: &str) -> HashMap<String, String> {
             out.insert(key.to_string(), String::new());
             block = Some(key.to_string());
         } else {
-            out.insert(key.to_string(), unquote(value).to_string());
+            out.insert(key.to_string(), unquote(value));
         }
     }
     out
 }
 
-fn unquote(s: &str) -> &str {
-    s.strip_prefix('"')
-        .and_then(|x| x.strip_suffix('"'))
-        .or_else(|| s.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
-        .unwrap_or(s)
+/// A one-line YAML scalar's text. A double-quoted value has its escapes (`\"`, `\\`, `\n`, `\t`)
+/// read, and a single-quoted one its doubled quotes, so descriptions show what their author wrote.
+fn unquote(s: &str) -> String {
+    if let Some(inner) = s.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            }
+        }
+        return out;
+    }
+    if let Some(inner) = s.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')) {
+        return inner.replace("''", "'");
+    }
+    s.to_string()
 }
 
 /// `skills` folders inside installed Claude plugins, each with its plugin's name. Marketplace
@@ -610,6 +629,14 @@ mod tests {
         assert_eq!(front["name"], "lint");
         assert_eq!(front["description"], "Lints code before commits.");
         assert_eq!(front_matter("---\ndescription: |-\n  one\n---\n")["description"], "one");
+    }
+
+    #[test]
+    fn front_matter_reads_escapes_in_quoted_values() {
+        let text = "---\nname: 'it''s'\ndescription: \"the \\\"browser\\\" pane, C:\\\\x\"\n---\n";
+        let front = front_matter(text);
+        assert_eq!(front["name"], "it's");
+        assert_eq!(front["description"], "the \"browser\" pane, C:\\x");
     }
 
     #[test]
