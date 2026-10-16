@@ -2,9 +2,12 @@
 //! window hosts its own chats for the included devices, and shows theirs as remote chats.
 //! Off (the default), none of this runs.
 
-use super::shell::Shell;
+use super::{approval::DENIED, shell::Shell};
 use crate::{
-    engine::Event,
+    engine::{
+        approve::{self, Verdict},
+        Event,
+    },
     remote::{
         client::{Client, ClientEvent},
         cloud::Store,
@@ -20,6 +23,7 @@ use gpui::Context;
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
+    sync::mpsc,
     time::Duration,
 };
 
@@ -54,6 +58,18 @@ pub struct RemoteUi {
     backing_up: bool,
     /// What the cloud holds, for Settings → Devices; `None` until asked.
     pub(super) cloud_projects: Option<Vec<CloudProject>>,
+    /// Approvals of other devices' chats waiting for an answer here, by the local request id.
+    pub(super) forwarded: HashMap<u64, Forwarded>,
+}
+
+/// An approval asked on another device, waiting for the answer given here.
+pub(super) struct Forwarded {
+    pub(super) device: String,
+    pub(super) session: String,
+    /// The host's id for the request.
+    pub(super) request: u64,
+    /// The user chose "Always allow" for it here.
+    pub(super) always: bool,
 }
 
 impl Shell {
@@ -68,6 +84,7 @@ impl Shell {
             let devices: Vec<String> = self.remote.clients.drain().map(|(id, _)| id).collect();
             for id in devices {
                 self.state.remove_remote(&id);
+                self.drop_device_approvals(&id);
             }
             return;
         }
@@ -109,6 +126,7 @@ impl Shell {
         for id in dropped {
             self.remote.clients.remove(&id);
             self.state.remove_remote(&id);
+            self.drop_device_approvals(&id);
         }
         for device in sync.devices.iter().filter(|d| d.id != me.id) {
             if !self.remote.clients.contains_key(&device.id) && !self.remote.connecting.contains(&device.id) {
@@ -164,10 +182,109 @@ impl Shell {
     /// in the window, so the window and every device follow the same turn.
     fn host_request(&mut self, req: Request, cx: &mut Context<Self>) {
         let Some(hub) = self.remote.hub.clone() else { return };
+        let conn = req.conn;
+        if let ClientMsg::Answer { session, request, allow, always } = &req.msg {
+            // Only this device's own requests: a forwarded one is answered by the device it came from.
+            let own = !self.remote.forwarded.contains_key(request) && self.state.is_remote(session).is_none();
+            let waiting = own && self.approvals.queue.iter().any(|p| p.id == *request && &p.request.session == session);
+            if waiting {
+                let verdict = if *allow { Verdict::Allow } else { Verdict::Deny(DENIED.into()) };
+                self.answer_approval(*request, verdict, *allow && *always, cx);
+                cx.notify();
+                return;
+            }
+        }
+        let subscribed = match &req.msg {
+            ClientMsg::Subscribe { session } => Some(session.clone()),
+            _ => None,
+        };
         if let Some((id, events)) = host::handle(&mut self.state, &self.agents, &hub, self.remote.cloud.as_ref(), req) {
             self.follow_turn(&id, events, cx);
         }
+        if let Some(session) = subscribed {
+            self.send_waiting_approvals(&hub, conn, &session);
+        }
         cx.notify();
+    }
+
+    /// Tells connection `conn` which approvals of this device's chat `session` are waiting, when it subscribes.
+    fn send_waiting_approvals(&self, hub: &Hub, conn: u64, session: &str) {
+        if self.state.is_remote(session).is_some() || self.state.session(session).is_none() {
+            return;
+        }
+        for p in self.approvals.queue.iter().filter(|p| p.request.session == session) {
+            if self.remote.forwarded.contains_key(&p.id) {
+                continue;
+            }
+            let msg = HostMsg::Approval {
+                session: session.to_string(),
+                request: p.id,
+                tool: p.request.tool_name.clone(),
+                input: p.request.input.clone(),
+            };
+            hub.reply(conn, &msg);
+        }
+    }
+
+    /// Tells the devices following this device's chat `session` that tool use `id` waits for an answer.
+    pub(super) fn share_approval(&self, session: &str, id: u64, tool: &str, input: &serde_json::Value) {
+        let Some(hub) = &self.remote.hub else { return };
+        if self.state.is_remote(session).is_some() {
+            return;
+        }
+        let msg = HostMsg::Approval { session: session.to_string(), request: id, tool: tool.to_string(), input: input.clone() };
+        hub.broadcast(session, &msg, None);
+    }
+
+    /// Tells the devices following this device's chat `session` that request `id` is no longer waiting.
+    /// Nothing for a request that came from another device, or for a chat shown from another device.
+    pub(super) fn share_approval_done(&self, session: &str, id: u64) {
+        let Some(hub) = &self.remote.hub else { return };
+        if self.state.is_remote(session).is_some() || self.remote.forwarded.contains_key(&id) {
+            return;
+        }
+        hub.broadcast(session, &HostMsg::ApprovalDone { session: session.to_string(), request: id }, None);
+    }
+
+    /// Drops the forwarded approvals of `device` that are waiting. Dropping one unanswered sends nothing.
+    fn drop_device_approvals(&mut self, device: &str) {
+        self.drop_forwarded(|f| f.device == device);
+    }
+
+    /// Drops the forwarded approvals `gone` matches, unanswered.
+    fn drop_forwarded(&mut self, gone: impl Fn(&Forwarded) -> bool) {
+        let ids: Vec<u64> = self.remote.forwarded.iter().filter(|(_, f)| gone(*f)).map(|(id, _)| *id).collect();
+        self.approvals.queue.retain(|p| !ids.contains(&p.id));
+        for id in ids {
+            self.remote.forwarded.remove(&id);
+        }
+    }
+
+    /// Waits off the UI thread for the answer to forwarded approval `id`, then sends it to the device it came
+    /// from. Nothing is sent when the request was dropped unanswered.
+    fn await_forwarded(id: u64, answered: mpsc::Receiver<Verdict>, cx: &mut Context<Self>) {
+        // A plain thread, not the shared background pool: the wait can last up to `approve::TIMEOUT`.
+        let (done, verdict) = smol::channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done.send_blocking(answered.recv_timeout(approve::TIMEOUT).ok());
+        });
+        cx.spawn(async move |this, cx| {
+            let verdict = verdict.recv().await.ok().flatten();
+            let _ = this.update(cx, |this, _| {
+                let Some(forwarded) = this.remote.forwarded.remove(&id) else { return };
+                let Some(verdict) = verdict else { return };
+                if let Some(client) = this.remote.clients.get(&forwarded.device) {
+                    let msg = ClientMsg::Answer {
+                        session: forwarded.session,
+                        request: forwarded.request,
+                        allow: verdict == Verdict::Allow,
+                        always: forwarded.always,
+                    };
+                    let _ = client.send(&msg);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Tells the devices following chat `id` about one of its turn events. Only for this device's
@@ -254,6 +371,7 @@ impl Shell {
             ClientEvent::Closed(_) => {
                 self.remote.clients.remove(device);
                 self.state.remove_remote(device);
+                self.drop_device_approvals(device);
                 self.ask_cloud_for_chats(device);
                 self.retry_later(cx);
                 cx.notify();
@@ -291,6 +409,19 @@ impl Shell {
                 self.send_queued(&session, stopped, cx);
             }
             HostMsg::Draft { session, text } => self.state.set_draft(&session, &text),
+            HostMsg::Approval { session, request, tool, input } => {
+                let known = self.remote.forwarded.values().any(|f| f.device == device && f.session == session && f.request == request);
+                // A subscriber gets the waiting approvals again on each subscribe: show each one once.
+                if !known {
+                    let (req, answered) = approve::forwarded(session.clone(), tool, input);
+                    let id = self.queue_approval(req, cx);
+                    self.remote.forwarded.insert(id, Forwarded { device: device.to_string(), session, request, always: false });
+                    Self::await_forwarded(id, answered, cx);
+                }
+            }
+            HostMsg::ApprovalDone { session, request } => {
+                self.drop_forwarded(|f| f.device == device && f.session == session && f.request == request);
+            }
             // A copy the cloud couldn't apply (it lacks an earlier snapshot): send everything next time.
             HostMsg::Error { message } if message.starts_with("git ") => {
                 eprintln!("archonui: cloud copy from {device}: {message}");

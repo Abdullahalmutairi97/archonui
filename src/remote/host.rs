@@ -18,14 +18,19 @@ use crate::{
         persist::Paths,
         state::{AppState, Placement},
     },
-    engine::{self, DetectedAgent, Event, Mode},
+    engine::{self, approve, DetectedAgent, Event, Mode},
     store::{self, Session},
 };
 use std::{
+    collections::HashMap,
     io,
     net::{IpAddr, SocketAddr},
     thread,
+    time::Duration,
 };
+
+/// What a waiting approval is told when the user denies it.
+const DENIED: &str = "The user denied this action.";
 
 /// Serves this device's chats on `bind` until the process ends. Loads the settings and chats itself.
 pub fn serve(bind: SocketAddr) -> io::Result<()> {
@@ -246,6 +251,8 @@ pub fn handle(
                 hub.broadcast(&session, &HostMsg::Draft { session: session.clone(), text }, Some(conn));
             }
         }
+        // An answer the owner did not match to a waiting request.
+        ClientMsg::Answer { .. } => hub.reply(conn, &HostMsg::Error { message: "Nothing is waiting for that answer".into() }),
     }
     turn
 }
@@ -257,7 +264,8 @@ fn target(msg: &ClientMsg) -> Option<&str> {
         | ClientMsg::Unsubscribe { session }
         | ClientMsg::Prompt { session, .. }
         | ClientMsg::Cancel { session }
-        | ClientMsg::Draft { session, .. } => Some(session),
+        | ClientMsg::Draft { session, .. }
+        | ClientMsg::Answer { session, .. } => Some(session),
         ClientMsg::Hello { .. }
         | ClientMsg::ListSessions
         | ClientMsg::NewSession { .. }
@@ -324,10 +332,89 @@ pub fn forward(state: &mut AppState, hub: &Hub, session: &str, ev: Event) {
     }
 }
 
-/// What the headless owner thread handles: a client request, or an event of a running turn.
+/// What the headless owner thread handles: a client request, an event of a running turn, or an approval
+/// request from an agent. `Expired` is sent when the listener has timed a request out on its own.
 enum Work {
     Req(Request),
     Turn(String, Event),
+    Approval(approve::Request),
+    Expired(u64),
+}
+
+/// The approval requests of this headless host's chats that wait for an answer, by the id clients see.
+#[derive(Default)]
+struct Approvals {
+    next: u64,
+    waiting: HashMap<u64, approve::Request>,
+}
+
+impl Approvals {
+    /// Keeps `req` waiting and tells the chat's subscribers about it. Returns its id.
+    fn add(&mut self, req: approve::Request, hub: &Hub) -> u64 {
+        let id = self.next;
+        self.next += 1;
+        let msg = HostMsg::Approval { session: req.session.clone(), request: id, tool: req.tool_name.clone(), input: req.input.clone() };
+        hub.broadcast(&req.session, &msg, None);
+        self.waiting.insert(id, req);
+        id
+    }
+
+    /// Answers request `id` with `verdict` and tells the subscribers it is done. Nothing if it is not waiting.
+    fn settle(&mut self, id: u64, verdict: approve::Verdict, hub: &Hub) {
+        if let Some(req) = self.waiting.remove(&id) {
+            hub.broadcast(&req.session, &HostMsg::ApprovalDone { session: req.session.clone(), request: id }, None);
+            req.answer(verdict);
+        }
+    }
+
+    /// Applies a client's `Answer` to a request waiting in its chat. Returns false when none matches, so
+    /// `handle` refuses the message. With `always`, the tool is allowed for the rest of the session, and the
+    /// other waiting requests for it are allowed too.
+    fn answer(&mut self, req: &Request, allowances: &approve::Allowances, hub: &Hub) -> bool {
+        let ClientMsg::Answer { session, request, allow, always } = &req.msg else { return false };
+        let Some(tool) = self.waiting.get(request).filter(|r| &r.session == session).map(|r| r.tool_name.clone()) else {
+            return false;
+        };
+        if *allow && *always {
+            allowances.allow(session, &tool);
+            let same: Vec<u64> = self
+                .waiting
+                .iter()
+                .filter(|(_, r)| &r.session == session && r.tool_name == tool)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in same {
+                self.settle(id, approve::Verdict::Allow, hub);
+            }
+        }
+        let verdict = if *allow { approve::Verdict::Allow } else { approve::Verdict::Deny(DENIED.into()) };
+        self.settle(*request, verdict, hub);
+        true
+    }
+
+    /// The turn in chat `session` ended: its waiting requests are denied, as the agent that asked is gone.
+    fn end(&mut self, session: &str, hub: &Hub) {
+        let ids: Vec<u64> = self.waiting.iter().filter(|(_, r)| r.session == session).map(|(id, _)| *id).collect();
+        for id in ids {
+            self.settle(id, approve::Verdict::Deny("The chat stopped before an answer.".into()), hub);
+        }
+    }
+
+    /// Sends `conn` the requests waiting in chat `session`, when it subscribes.
+    fn send_waiting(&self, hub: &Hub, conn: u64, session: &str) {
+        for (id, req) in self.waiting.iter().filter(|(_, r)| r.session == session) {
+            let msg = HostMsg::Approval { session: session.to_string(), request: *id, tool: req.tool_name.clone(), input: req.input.clone() };
+            hub.reply(conn, &msg);
+        }
+    }
+}
+
+/// Sends `Work::Expired(id)` once the listener's timeout has passed, for a request it denied on its own.
+fn expire_later(id: u64, work: smol::channel::Sender<Work>) {
+    thread::spawn(move || {
+        thread::sleep(approve::TIMEOUT + Duration::from_secs(1));
+        let _ = work.send_blocking(Work::Expired(id));
+    });
 }
 
 /// Pushes each event of one turn into the owner's queue, until the turn's channel closes.
@@ -361,14 +448,55 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
             }
         }
     });
+    // Tools that need approval ask this process; clients answer them through `Answer`.
+    let allowances = approve::Allowances::default();
+    let (approval_tx, approval_rx) = smol::channel::unbounded::<approve::Request>();
+    if let Err(e) = approve::listen(approve::socket(), approval_tx, allowances.clone(), approve::TIMEOUT) {
+        eprintln!("archonui host: could not listen for approvals: {e}");
+    }
+    let from_approvals = work_tx.clone();
+    thread::spawn(move || {
+        while let Ok(req) = smol::block_on(approval_rx.recv()) {
+            if from_approvals.send_blocking(Work::Approval(req)).is_err() {
+                break;
+            }
+        }
+    });
+    let mut approvals = Approvals::default();
     while let Ok(work) = smol::block_on(work_rx.recv()) {
         match work {
             Work::Req(req) => {
+                if approvals.answer(&req, &allowances, &hub) {
+                    continue;
+                }
+                let conn = req.conn;
+                let subscribed = match &req.msg {
+                    ClientMsg::Subscribe { session } => Some(session.clone()),
+                    _ => None,
+                };
                 if let Some((id, turn)) = handle(&mut state, &agents, &hub, Some(&cloud), req) {
                     follow(id, turn, work_tx.clone());
                 }
+                if let Some(session) = subscribed.filter(|s| state.session(s).is_some()) {
+                    approvals.send_waiting(&hub, conn, &session);
+                }
             }
-            Work::Turn(id, ev) => forward(&mut state, &hub, &id, ev),
+            Work::Turn(id, ev) => {
+                let finished = matches!(ev, Event::Finished(_));
+                forward(&mut state, &hub, &id, ev);
+                if finished {
+                    approvals.end(&id, &hub);
+                }
+            }
+            Work::Approval(req) => {
+                if state.session(&req.session).is_none() {
+                    req.answer(approve::Verdict::Deny("Unknown session.".into()));
+                } else {
+                    let id = approvals.add(req, &hub);
+                    expire_later(id, work_tx.clone());
+                }
+            }
+            Work::Expired(id) => approvals.settle(id, approve::Verdict::Deny("Timed out".into()), &hub),
         }
     }
     Ok(())
