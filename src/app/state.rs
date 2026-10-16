@@ -246,7 +246,8 @@ impl AppState {
     /// conversation so far (see `engine::handoff`). Returns false, changing nothing, while a turn
     /// runs, for an unknown chat, or when the chat already uses `agent`.
     pub fn switch_agent(&mut self, id: &str, agent: &str, model: Option<String>, effort: Option<String>, mode: Mode) -> bool {
-        if self.busy(id) {
+        // A remote chat's agent runs on its device, which keeps its own.
+        if self.busy(id) || self.is_remote(id).is_some() {
             return false;
         }
         let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return false };
@@ -323,9 +324,9 @@ impl AppState {
     }
 
     /// Mirrors a prompt sent from another device into chat `id`: the user's message and an empty reply.
-    /// Runs nothing. Events of the turn follow through `remote_event`.
+    /// Runs nothing. Events of the turn follow through `remote_event`. Nothing for a chat of this device.
     pub fn remote_started(&mut self, id: &str, text: &str) {
-        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return };
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id && s.origin.is_some()) else { return };
         // Same titling as `send`: the first message names the chat unless the user named it.
         if s.messages.is_empty() && (s.title.is_empty() || s.title_auto) {
             s.title = store::title_from(text);
@@ -364,13 +365,20 @@ impl AppState {
     }
 
     /// Folds one event of a remote turn into chat `id`. Returns what the caller should do next.
+    /// Nothing for a chat of this device (one adopted here, say).
     pub fn remote_event(&mut self, id: &str, out: Out) -> Applied {
+        if self.is_remote(id).is_none() {
+            return Applied::default();
+        }
         self.apply(id, Event::Out(out))
     }
 
     /// Ends a remote turn in chat `id`. `error` is set when the agent failed on its device.
     /// The preview is not opened: a remote chat's files are on another device.
     pub fn remote_finished(&mut self, id: &str, error: Option<String>, stopped: bool) -> Applied {
+        if self.is_remote(id).is_none() {
+            return Applied::default();
+        }
         self.remote_busy.remove(id);
         // Stopped on any device shows as stopped here too, not as the agent failing.
         self.live.entry(id.to_string()).or_default().cancelled = stopped;
@@ -1657,6 +1665,33 @@ mod tests {
         assert_eq!(s.cwd, PathBuf::from("/home/laptop/app"));
         assert!(app.dirty.contains(&id), "saved here from now on");
         assert!(!app.adopt_remote(&id, "/x".into()), "already local");
+    }
+
+    #[test]
+    fn turns_from_another_device_never_touch_a_chat_of_this_device() {
+        let mut app = state();
+        let mut chat = Session::new("claude", "/home/pc/app".into());
+        chat.push(Role::User, "fix the bug");
+        chat.push(Role::Agent, "Fixed.");
+        let id = chat.id.clone();
+        app.put_remote(chat, "pc", false);
+        assert!(app.adopt_remote(&id, "/home/laptop/app".into()));
+        app.dirty.clear();
+        // The pc comes back and goes on with its own copy of the chat.
+        app.remote_started(&id, "and the tests?");
+        let applied = app.remote_event(&id, Out::Text("Done.".into()));
+        assert_eq!(applied, Applied::default());
+        assert_eq!(app.remote_finished(&id, None, false), Applied::default());
+        let s = app.session(&id).unwrap();
+        assert_eq!(s.messages.len(), 2, "the adopted chat keeps only its own messages");
+        assert!(!app.busy(&id));
+        assert!(app.dirty.is_empty());
+        // Nor can a remote chat's agent be switched here: it runs on its device.
+        let remote = Session::new("claude", "/home/pc".into());
+        let remote_id = remote.id.clone();
+        app.put_remote(remote, "pc", false);
+        assert!(!app.switch_agent(&remote_id, "codex", None, None, Mode::default()));
+        assert_eq!(app.session(&remote_id).unwrap().agent, "claude");
     }
 
     #[test]
