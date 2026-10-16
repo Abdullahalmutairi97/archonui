@@ -114,8 +114,14 @@ pub enum HostMsg {
     Started { session: String, text: String },
     /// One event of a running turn.
     Event { session: String, out: Out },
-    /// The turn ended. `error` is set when the agent failed or could not start.
-    Finished { session: String, error: Option<String> },
+    /// The turn ended. `error` is set when the agent failed or could not start. `stopped`: someone
+    /// stopped it, so `error` is only the signal that ended the agent.
+    Finished {
+        session: String,
+        error: Option<String>,
+        #[serde(default)]
+        stopped: bool,
+    },
     /// The chat's draft changed on another device.
     Draft { session: String, text: String },
     /// Something the client asked for failed, e.g. an unknown session id.
@@ -169,7 +175,8 @@ mod tests {
             HostMsg::Event { session: "s1".into(), out: Out::Text("Hel".into()) },
             HostMsg::Event { session: "s1".into(), out: Out::ToolStart { id: "t1".into(), kind: ToolKind::Edit, target: "a.rs".into() } },
             HostMsg::Event { session: "s1".into(), out: Out::Thinking(true) },
-            HostMsg::Finished { session: "s1".into(), error: None },
+            HostMsg::Finished { session: "s1".into(), error: None, stopped: false },
+            HostMsg::Finished { session: "s1".into(), error: Some("signal: 15".into()), stopped: true },
             HostMsg::Approval { session: "s1".into(), request: 3, tool: "Bash".into(), input: serde_json::json!({"command": "ls"}) },
             HostMsg::ApprovalDone { session: "s1".into(), request: 3 },
         ];
@@ -183,5 +190,8 @@ mod tests {
         assert_eq!(encode(&ClientMsg::ListSessions), r#"{"type":"list_sessions"}"#);
         let p: ClientMsg = decode(r#"{"type":"prompt","session":"s","text":"x"}"#).unwrap();
         assert_eq!(p, ClientMsg::Prompt { session: "s".into(), text: "x".into(), mode: None, model: None, effort: None, files: Vec::new() });
+        // A host from before `stopped` leaves it out.
+        let f: HostMsg = decode(r#"{"type":"finished","session":"s","error":null}"#).unwrap();
+        assert_eq!(f, HostMsg::Finished { session: "s".into(), error: None, stopped: false });
     }
 }

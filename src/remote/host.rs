@@ -351,7 +351,7 @@ fn start_prompt(
         // `send` has put the reason in the chat; clients get the same words.
         let error = Some(start_error(state, session, before));
         flush(state);
-        hub.broadcast(session, &HostMsg::Finished { session: session.to_string(), error }, None);
+        hub.broadcast(session, &HostMsg::Finished { session: session.to_string(), error, stopped: false }, None);
         return Ok(None);
     };
     flush(state);
@@ -398,9 +398,10 @@ pub fn forward(state: &mut AppState, hub: &Hub, session: &str, ev: Event) {
         }
         Event::Finished(result) => {
             let error = result.as_ref().err().cloned();
+            let stopped = state.stopping(session);
             state.apply(session, Event::Finished(result));
             flush(state);
-            hub.broadcast(session, &HostMsg::Finished { session: session.to_string(), error }, None);
+            hub.broadcast(session, &HostMsg::Finished { session: session.to_string(), error, stopped }, None);
         }
     }
 }
