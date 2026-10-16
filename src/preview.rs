@@ -543,13 +543,12 @@ impl Session {
                     self.emit(BrowserEvent::Error(outside_project(url)));
                 }
             }
-            // A `file://` page outside the project that got past `Fetch` is left at once.
+            // A `file://` page or frame outside the project that got past `Fetch` is left at once.
             "Page.frameNavigated"
-                if params["frame"]["parentId"].is_null()
-                    && !file_allowed(params["frame"]["url"].as_str().unwrap_or_default(), self.root.as_deref()) =>
+                if !file_allowed(params["frame"]["url"].as_str().unwrap_or_default(), self.root.as_deref()) =>
             {
                 let url = params["frame"]["url"].as_str().unwrap_or_default().to_string();
-                self.page_call("Page.navigate", json!({"url": "about:blank"}));
+                self.page_call("Page.navigate", json!({"url": "about:blank", "frameId": params["frame"]["id"]}));
                 self.emit(BrowserEvent::Error(outside_project(&url)));
             }
             "Page.frameNavigated" if params["frame"]["parentId"].is_null() => {
@@ -910,15 +909,28 @@ fn search_url(query: &str) -> String {
 /// folder `root` (resolved with symlinks, as the Files tab does). With no project nothing local loads,
 /// so a page or a typed address can't read the rest of the disk.
 pub fn file_allowed(url: &str, root: Option<&Path>) -> bool {
-    let url = url.trim();
-    if !url.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("file://")) {
+    // Read the URL the way a browser does: leading and trailing controls and spaces go, and tabs and newlines
+    // are dropped wherever they are, so `fi\tle:///etc/passwd` is still a file URL.
+    let url: String =
+        url.trim_matches(|c: char| c <= ' ').chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let Some((scheme, rest)) = url.split_once(':') else { return true };
+    if !scheme.eq_ignore_ascii_case("file") {
         return true;
     }
     let Some(root) = root else { return false };
+    let rest = rest.replace('\\', "/");
     // `file://localhost/x` is `file:///x`; any other host is not this machine.
-    let rest = &url[7..];
-    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-    let path = percent_decode(rest.split(['?', '#']).next().unwrap_or_default());
+    let path = match rest.strip_prefix("//") {
+        Some(authority) => {
+            let (host, path) = authority.split_at(authority.find(['/', '?', '#']).unwrap_or(authority.len()));
+            if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+                return false;
+            }
+            path
+        }
+        None => rest.as_str(),
+    };
+    let path = percent_decode(path.split(['?', '#']).next().unwrap_or_default());
     path.starts_with(b"/")
         && crate::workspace::resolve(root, Path::new(std::ffi::OsStr::from_bytes(&path))).is_ok()
 }
@@ -1028,6 +1040,38 @@ mod tests {
         // Web pages are not this check's business.
         for url in ["https://example.com", "http://localhost:3000/", "about:blank", "data:text/html,hi"] {
             assert!(file_allowed(url, None), "{url}");
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn file_urls_are_checked_however_they_are_spelled() {
+        let root = env::temp_dir().join(format!("archonui-preview-spelling-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        let inside = format!("{}/dist/index.html", root.display());
+        // Single-slash, upper-case, host-less and browser-normalised spellings of a file inside the project.
+        assert!(file_allowed(&format!("file:{inside}"), Some(&root)));
+        assert!(file_allowed(&format!("FILE:{inside}"), Some(&root)));
+        assert!(file_allowed(&format!("  file://{inside}\n"), Some(&root)), "surrounding spaces are dropped");
+        assert!(file_allowed(&format!("fi\tle://{inside}"), Some(&root)), "tabs are ignored");
+
+        // The same URLs pointing at the rest of the disk, however they are spelled.
+        for url in [
+            "file:/etc/passwd",
+            "FILE:/etc/passwd",
+            "file:///etc/passwd",
+            "file://localhost/etc/passwd",
+            "file:etc/passwd",
+            "fi\tle:///etc/passwd",
+            "fi\nle:///etc/passwd",
+            "\u{1}file:///etc/passwd",
+            "File:\\\\etc\\passwd",
+            "file:\\\\etc\\passwd",
+            "file://LOCALHOST/etc/passwd",
+            "file://%6cocalhost/etc/passwd",
+            "file://otherhost/etc/passwd",
+        ] {
+            assert!(!file_allowed(url, Some(&root)), "{url:?}");
         }
         std::fs::remove_dir_all(&root).ok();
     }
