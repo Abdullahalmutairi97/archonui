@@ -40,22 +40,26 @@ pub fn current(dir: &Path, device: &str) -> Option<String> {
 
 /// Writes the files of `commit` (from a full bundle) into `dest`, which must not exist or be empty.
 /// The result is plain files plus a fresh repository whose branch "main" holds the snapshot.
+/// On failure a `dest` made here is removed again, so no half-written copy is left behind.
 pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
     if !is_hex(commit) {
         return Err(format!("not a commit id: {commit:?}"));
     }
-    if dest.exists() {
+    let created = !dest.exists();
+    if created {
+        fs::create_dir_all(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    } else {
         let mut entries = fs::read_dir(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
         if entries.next().is_some() {
             return Err(format!("{} is not empty", dest.display()));
         }
-    } else {
-        fs::create_dir_all(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     }
     let file = temp_path("restore");
-    fs::write(&file, bundle).map_err(|e| format!("write bundle: {e}"))?;
-    let result = fetch_into(dest, &file, commit);
+    let result = fs::write(&file, bundle).map_err(|e| format!("write bundle: {e}")).and_then(|_| fetch_into(dest, &file, commit));
     let _ = fs::remove_file(&file);
+    if result.is_err() && created {
+        let _ = fs::remove_dir_all(dest);
+    }
     result
 }
 
@@ -638,6 +642,28 @@ mod tests {
         for name in [".env.example", ".env.sample", ".env.template", "environment.txt", "id_rsa.pub", "main.rs", "service-account.txt", "keys.json", "credentials.toml"] {
             assert!(!is_secret(name), "{name}");
         }
+    }
+
+    #[test]
+    fn failed_restore_leaves_no_folder_behind() {
+        if !git_available() {
+            return;
+        }
+        let base = root("failed-restore");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let dest = base.join("dest");
+
+        assert!(restore(b"not a bundle", &c, &dest).is_err());
+        assert!(!dest.exists());
+
+        let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
+        restore(&full, &c, &dest).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("tracked.txt")).unwrap(), "one\n");
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
