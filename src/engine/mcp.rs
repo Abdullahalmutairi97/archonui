@@ -8,9 +8,11 @@ use std::{
     collections::{BTreeMap, HashSet},
     env, fs,
     io::{BufRead, BufReader, Write},
+    iter::Peekable,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
+    str::Chars,
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread,
     time::{Duration, Instant},
@@ -198,7 +200,7 @@ fn strip_jsonc(text: &str) -> String {
             }
             ',' => {
                 // A comma before `}` or `]` is dropped; JSON does not allow it.
-                if !matches!(chars.clone().find(|n| !n.is_whitespace()), Some('}' | ']')) {
+                if !matches!(next_token(chars.clone()), Some('}' | ']')) {
                     out.push(c);
                 }
             }
@@ -206,6 +208,29 @@ fn strip_jsonc(text: &str) -> String {
         }
     }
     out
+}
+
+/// The first char of `ahead` that is neither whitespace nor part of a comment.
+fn next_token(mut ahead: Peekable<Chars>) -> Option<char> {
+    loop {
+        match ahead.next()? {
+            c if c.is_whitespace() => {}
+            '/' if ahead.peek() == Some(&'/') => {
+                ahead.find(|&n| n == '\n');
+            }
+            '/' if ahead.peek() == Some(&'*') => {
+                ahead.next();
+                let mut prev = '\0';
+                for n in ahead.by_ref() {
+                    if prev == '*' && n == '/' {
+                        break;
+                    }
+                    prev = n;
+                }
+            }
+            c => return Some(c),
+        }
+    }
 }
 
 /// `server` in the `mcpServers` shape Claude and Pi read. `typed` adds Claude's `type` field.
@@ -672,6 +697,14 @@ enabled = false
         assert_eq!(v["url"], "https://x.test//y");
         assert_eq!(v["a"], json!([1, 2]));
         assert_eq!(v["b"], "q\"/*");
+    }
+
+    #[test]
+    fn strip_jsonc_drops_trailing_commas_before_comments() {
+        assert_eq!(strip_jsonc("{\"a\": 1, // note\n}"), "{\"a\": 1 \n}");
+        assert_eq!(strip_jsonc("[1, /* two */ ]"), "[1  ]");
+        let v: Value = serde_json::from_str(&strip_jsonc("{\"a\": [1, // c\n], /* d */ \"b\": [2, /* e */ 3, /* f */ ],}")).unwrap();
+        assert_eq!(v, json!({"a": [1], "b": [2, 3]}));
     }
 
     #[test]
