@@ -72,14 +72,27 @@ fn take_in(dir: &Path, device: &str, snapshots: &Path, secrets: bool) -> Result<
     result
 }
 
-/// The snapshot itself, built in a temporary index so the real one is never touched.
+/// The snapshot itself, built in a temporary index so the real one is never touched. The temporary
+/// index starts as a copy of the real one, so git skips files whose stats have not changed instead
+/// of reading every file again.
 fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<Option<String>, String> {
     let r = wip_ref(device);
     let has_head = succeeds(repo.git().args(["rev-parse", "--verify", "-q", "HEAD"]));
-    if has_head {
+    let seed = repo.index_path()?;
+    let seeded = match fs::copy(&seed, index) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(format!("copy {}: {e}", seed.display())),
+    };
+    if !seeded && has_head {
         run(indexed(repo, index).args(["read-tree", "HEAD"]))?;
     }
     run(indexed(repo, index).args(["add", "-A"]))?;
+    if repo.git_dir.is_some() {
+        // A private git dir's index is ours: keep it so the next snapshot can skip unchanged files.
+        // Only a speed-up, so a failed save is not an error.
+        let _ = save_index(index, &seed);
+    }
     if !secrets {
         drop_secrets(repo, index)?;
     }
@@ -201,13 +214,31 @@ impl Repo {
         }
         cmd
     }
+
+    /// The index the snapshot starts from: the repository's own (only ever copied), or the one
+    /// kept in the private git dir. It may not exist.
+    fn index_path(&self) -> Result<PathBuf, String> {
+        if let Some(g) = &self.git_dir {
+            return Ok(g.join("index"));
+        }
+        let p = PathBuf::from(run(self.git().args(["rev-parse", "--git-path", "index"]))?);
+        Ok(if p.is_absolute() { p } else { self.work.join(p) })
+    }
 }
 
-/// A git command for `repo` that uses the temporary index at `index`.
+/// A git command for `repo` that uses the temporary index at `index`. A split index is written
+/// whole, so nothing new lands in the repository's git dir.
 fn indexed(repo: &Repo, index: &Path) -> Command {
     let mut cmd = repo.git();
-    cmd.env("GIT_INDEX_FILE", index);
+    cmd.arg("-c").arg("core.splitIndex=false").env("GIT_INDEX_FILE", index);
     cmd
+}
+
+/// Copies the temporary index to `to` through a temp file beside it, so a reader never sees half.
+fn save_index(index: &Path, to: &Path) -> std::io::Result<()> {
+    let tmp = to.with_extension("archonui-tmp");
+    fs::copy(index, &tmp)?;
+    fs::rename(&tmp, to)
 }
 
 /// Removes secret-looking paths from the temporary index only. The project's files and real index
@@ -466,6 +497,73 @@ mod tests {
         assert!(!proj.join(".git/index").exists());
         assert_eq!(fs::read(proj.join(".git/HEAD")).unwrap(), head);
         assert_eq!(git(&proj, &["--no-optional-locks", "status", "--porcelain"]), status);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Unchanged tracked files are not read again on each snapshot: the real index's file stats are
+    /// reused (from a copy). A counting clean filter shows how many files git read.
+    #[test]
+    fn unchanged_files_are_not_hashed_again() {
+        if !git_available() {
+            return;
+        }
+        let base = root("rehash");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        let log = base.join("clean.log");
+        let filter = format!("sh -c 'echo x >> \"{}\"; cat'", log.display());
+        git(&proj, &["config", "filter.count.clean", filter.as_str()]);
+        fs::write(proj.join(".gitattributes"), "*.txt filter=count\n").unwrap();
+        for i in 0..20 {
+            fs::write(proj.join(format!("f{i}.txt")), format!("{i}\n")).unwrap();
+        }
+        git(&proj, &["add", "-A"]);
+        git(&proj, &["commit", "-q", "-m", "files"]);
+        // Past the racy-git window, so the index's stats are trusted.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        git(&proj, &["update-index", "-q", "--really-refresh"]);
+        let index = fs::read(proj.join(".git/index")).unwrap();
+        let runs = || fs::read_to_string(&log).map(|s| s.lines().count()).unwrap_or(0);
+        let _ = fs::remove_file(&log);
+
+        take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        assert_eq!(runs(), 0);
+        fs::write(proj.join("f3.txt"), "changed\n").unwrap();
+        take_in(&proj, "n1", &snaps, false).unwrap().expect("second snapshot");
+        // Only the changed file is read (git may run the filter on it twice), not all 21.
+        assert!(runs() <= 2, "{} files read again", runs());
+        assert_eq!(fs::read(proj.join(".git/index")).unwrap(), index);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn plain_folders_skip_unchanged_files_too() {
+        if !git_available() {
+            return;
+        }
+        let base = root("rehash-plain");
+        let folder = base.join("folder");
+        let snaps = base.join("snaps");
+        fs::create_dir_all(&folder).unwrap();
+        for i in 0..20 {
+            fs::write(folder.join(format!("f{i}.txt")), format!("{i}\n")).unwrap();
+        }
+        take_in(&folder, "n1", &snaps, false).unwrap().expect("first snapshot");
+        let private = fs::read_dir(&snaps).unwrap().flatten().next().unwrap().path();
+        let log = base.join("clean.log");
+        let filter = format!("sh -c 'echo x >> \"{}\"; cat'", log.display());
+        git(&private, &["config", "filter.count.clean", filter.as_str()]);
+        fs::write(private.join("info/attributes"), "*.txt filter=count\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let runs = || fs::read_to_string(&log).map(|s| s.lines().count()).unwrap_or(0);
+
+        fs::write(folder.join("f3.txt"), "changed\n").unwrap();
+        take_in(&folder, "n1", &snaps, false).unwrap().expect("second snapshot");
+        assert!(runs() <= 2, "{} files read again", runs());
+        assert!(!folder.join(".git").exists());
 
         let _ = fs::remove_dir_all(&base);
     }
