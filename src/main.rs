@@ -169,6 +169,10 @@ fn headless(args: &[String]) -> bool {
                 eprintln!("agent '{id}' not found");
                 std::process::exit(1);
             };
+            if let Err(e) = check_effort(agent, opts.model, opts.effort) {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
             let mut session = agent.harness.preassign_session().then(store::new_id);
             let mut failed = false;
             for prompt in prompts {
@@ -215,6 +219,24 @@ fn headless(args: &[String]) -> bool {
         _ => return false,
     }
     true
+}
+
+/// Rejects an `--effort` the agent says the model does not take, before a turn runs with it.
+fn check_effort(agent: &engine::DetectedAgent, model: Option<&str>, effort: Option<&str>) -> Result<(), String> {
+    let Some(effort) = effort else { return Ok(()) };
+    let caps = engine::discover(agent, &working_dir());
+    match caps.accepts_effort(model, effort) {
+        Some(false) => {
+            let levels = caps.efforts(model);
+            let model = model.or(caps.default_model.as_deref()).unwrap_or("the default model");
+            Err(if levels.is_empty() {
+                format!("{model} has no effort levels")
+            } else {
+                format!("effort '{effort}' is not one of {model}'s: {}", levels.join(", "))
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 fn preview_shot(args: &[String]) -> Result<(), String> {

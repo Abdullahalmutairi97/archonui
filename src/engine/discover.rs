@@ -57,6 +57,18 @@ impl Capabilities {
             Some(id) => self.models.iter().find(|m| m.id == id).map_or(&[], |m| &m.efforts),
         }
     }
+
+    /// Whether `model` (the default if `None`) takes `effort`, ignoring case as Pi does. `None`
+    /// when its levels are not known, so the effort can be neither checked nor ruled out.
+    pub fn accepts_effort(&self, model: Option<&str>, effort: &str) -> Option<bool> {
+        let listed = |id: &str| self.models.iter().find(|m| m.id == id).map(|m| &m.efforts);
+        let levels = match model {
+            Some(id) => listed(id)?,
+            None if !self.default_efforts.is_empty() => &self.default_efforts,
+            None => listed(self.default_model.as_deref()?)?,
+        };
+        Some(levels.iter().any(|l| l.eq_ignore_ascii_case(effort)))
+    }
 }
 
 /// Capabilities of an installed agent, sorted and without duplicate names.
@@ -257,6 +269,28 @@ mod tests {
     #[test]
     fn run_text_reports_failure_for_a_missing_binary() {
         assert_eq!(run_text(Path::new("/nonexistent/archonui-cli"), &std::env::temp_dir(), &[]), None);
+    }
+
+    #[test]
+    fn efforts_are_checked_against_the_model() {
+        let model = |id: &str, efforts: &[&str]| ModelInfo {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+            efforts: efforts.iter().map(|e| e.to_string()).collect(),
+        };
+        let caps = Capabilities {
+            models: vec![model("opus", &["low", "high"]), model("old", &[])],
+            default_model: Some("opus".into()),
+            ..Default::default()
+        };
+        assert_eq!(caps.accepts_effort(Some("opus"), "high"), Some(true));
+        assert_eq!(caps.accepts_effort(Some("opus"), "High"), Some(true));
+        assert_eq!(caps.accepts_effort(Some("opus"), "bogus"), Some(false));
+        assert_eq!(caps.accepts_effort(None, "bogus"), Some(false), "the default model's levels");
+        assert_eq!(caps.accepts_effort(Some("old"), "low"), Some(false), "a model without effort levels");
+        assert_eq!(caps.accepts_effort(Some("unlisted"), "low"), None);
+        assert_eq!(Capabilities::default().accepts_effort(None, "low"), None);
     }
 
     #[test]

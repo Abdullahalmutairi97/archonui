@@ -371,8 +371,13 @@ impl Parser {
             Some("message_end") if v["message"]["role"].as_str() == Some("assistant") => {
                 let u = &v["message"]["usage"];
                 let n = |k: &str| u[k].as_u64().unwrap_or(0);
+                let used = n("input") + n("cacheRead") + n("cacheWrite") + n("output");
+                // A cancelled call's usage is partial, or zero if it stopped before the reply began;
+                // Pi's own context estimate skips such messages, so the meter keeps the last full call.
+                if u.is_object() && used > 0 && v["message"]["stopReason"].as_str() != Some("aborted") {
+                    out.push(Out::ContextUsed(used));
+                }
                 if u.is_object() {
-                    out.push(Out::ContextUsed(n("input") + n("cacheRead") + n("cacheWrite") + n("output")));
                     out.push(Out::Usage(Usage {
                         input: n("input"),
                         output: n("output"),
@@ -1102,6 +1107,13 @@ mod tests {
         assert_eq!(ctx(Protocol::Claude, result), [("window", 1_000_000)]);
         let pi = r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":5,"cacheRead":50,"cacheWrite":0}}}"#;
         assert_eq!(ctx(Protocol::Pi, pi), [("used", 155)]);
+        // Stopping Pi mid-reply ends the message as aborted with partial or zero usage.
+        let aborted = r#"{"type":"message_end","message":{"role":"assistant","stopReason":"aborted","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}}"#;
+        assert!(ctx(Protocol::Pi, aborted).is_empty(), "an aborted call must not reset the meter");
+        let partial = r#"{"type":"message_end","message":{"role":"assistant","stopReason":"aborted","usage":{"input":100,"output":2}}}"#;
+        assert!(ctx(Protocol::Pi, partial).is_empty());
+        let empty = r#"{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":0,"output":0}}}"#;
+        assert!(ctx(Protocol::Pi, empty).is_empty(), "zero usage says nothing about the context");
     }
 
     #[test]

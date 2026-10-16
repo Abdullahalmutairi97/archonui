@@ -138,22 +138,13 @@ impl Harness for Claude {
                 })
             })
             .collect();
-        let default = r["models"].as_array().into_iter().flatten().find(|m| m["value"] == "default");
+        let all = r["models"].as_array().map_or(&[][..], Vec::as_slice);
+        let (default_model, default_efforts) = default_model(all, configured_model(cwd).as_deref());
         Capabilities {
             commands: list(&v, "/response/response/commands", "argumentHint"),
             models,
-            // The default's resolved id maps back to its alias (e.g. "opus"), so the picker can label it.
-            default_model: default.and_then(|d| d["resolvedModel"].as_str()).map(|resolved| {
-                r["models"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|m| m["value"] != "default" && m["resolvedModel"] == resolved)
-                    .and_then(|m| m["value"].as_str())
-                    .unwrap_or(resolved)
-                    .to_string()
-            }),
-            default_efforts: default.map(|m| strings(&m["supportedEffortLevels"])).unwrap_or_default(),
+            default_model,
+            default_efforts,
             // Claude Code does not report its default effort, so use the one set in its settings.
             default_effort: settings_effort(),
         }
@@ -179,6 +170,47 @@ fn settings_effort() -> Option<String> {
 fn effort_from_settings(text: &str) -> Option<String> {
     let settings: Value = serde_json::from_str(text).ok()?;
     settings["effortLevel"].as_str().map(String::from)
+}
+
+/// The default model's alias and efforts from the `initialize` list. Its "default" entry is the
+/// plan's recommended model; a `configured` model (settings or ANTHROPIC_MODEL) overrides it for
+/// turns run without --model, so that one is reported instead.
+fn default_model(all: &[Value], configured: Option<&str>) -> (Option<String>, Vec<String>) {
+    let entry = match configured {
+        Some(id) => all.iter().find(|m| m["value"] == id || m["resolvedModel"] == id),
+        None => all.iter().find(|m| m["value"] == "default"),
+    };
+    let Some(entry) = entry else { return (configured.map(String::from), Vec::new()) };
+    // The resolved id maps back to its alias (e.g. "opus"), so the picker can label it.
+    let resolved = entry["resolvedModel"].as_str().or(entry["value"].as_str());
+    let alias = resolved.map(|resolved| {
+        all.iter()
+            .find(|m| m["value"] != "default" && m["resolvedModel"] == resolved)
+            .and_then(|m| m["value"].as_str())
+            .unwrap_or(resolved)
+            .to_string()
+    });
+    (alias, strings(&entry["supportedEffortLevels"]))
+}
+
+/// The model Claude Code runs without --model: ANTHROPIC_MODEL, else the `model` key of the
+/// project's local, project, then user settings.
+fn configured_model(cwd: &Path) -> Option<String> {
+    if let Some(m) = std::env::var("ANTHROPIC_MODEL").ok().filter(|m| !m.is_empty()) {
+        return Some(m);
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let files = [cwd.join(".claude/settings.local.json"), cwd.join(".claude/settings.json")];
+    files
+        .into_iter()
+        .chain(home.map(|h| h.join(".claude/settings.json")))
+        .find_map(|f| model_from_settings(&std::fs::read_to_string(f).ok()?))
+}
+
+/// The `model` key of a Claude Code settings file.
+fn model_from_settings(text: &str) -> Option<String> {
+    let settings: Value = serde_json::from_str(text).ok()?;
+    settings["model"].as_str().filter(|m| !m.is_empty()).map(String::from)
 }
 
 /// `--mcp-config` takes several values, so a bare one followed by the prompt would read the prompt as
@@ -341,6 +373,29 @@ mod tests {
 
     fn value_of<'a>(flags: &'a [String], prefix: &str) -> Option<&'a str> {
         flags.iter().find_map(|f| f.strip_prefix(prefix))
+    }
+
+    #[test]
+    fn claude_default_model_is_the_configured_one_not_the_plan_default() {
+        let all = [
+            json!({"value": "default", "resolvedModel": "claude-sonnet-5-5", "supportedEffortLevels": ["low", "high"]}),
+            json!({"value": "opus", "resolvedModel": "claude-opus-5-5", "supportedEffortLevels": ["low", "max"]}),
+            json!({"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "supportedEffortLevels": ["low", "high"]}),
+        ];
+        let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(default_model(&all, None), (Some("sonnet".into()), strs(&["low", "high"])));
+        assert_eq!(default_model(&all, Some("opus")), (Some("opus".into()), strs(&["low", "max"])));
+        assert_eq!(default_model(&all, Some("claude-opus-5-5")), (Some("opus".into()), strs(&["low", "max"])));
+        // An unlisted model is still the one that runs; its efforts are unknown.
+        assert_eq!(default_model(&all, Some("claude-x")), (Some("claude-x".into()), vec![]));
+    }
+
+    #[test]
+    fn claude_default_model_comes_from_its_settings() {
+        assert_eq!(model_from_settings(r#"{"model":"opus"}"#), Some("opus".into()));
+        assert_eq!(model_from_settings(r#"{"model":""}"#), None);
+        assert_eq!(model_from_settings("{}"), None);
+        assert_eq!(model_from_settings("not json"), None);
     }
 
     #[test]
