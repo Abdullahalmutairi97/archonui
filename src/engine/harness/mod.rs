@@ -16,7 +16,7 @@ use super::{
     session::{spawn, Event},
     skills::Skill,
 };
-use crate::app::settings::{McpServer, Permissions};
+use crate::app::settings::{McpServer, Permission, Permissions};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -106,6 +106,28 @@ pub struct ToolSettings<'a> {
     pub approval: Option<Route<'a>>,
 }
 
+/// Which tool settings a harness really applies, so the settings page can say which ones do nothing.
+/// Not read until the settings page shows it.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToolSupport {
+    /// ArchonUI's enabled MCP servers reach the agent.
+    pub mcp: bool,
+    /// One per built-in tool row, in the settings page's order: read, edit, grep, run, browser, web,
+    /// fetch. `true` when setting the row to Off really removes the tool.
+    pub permissions: [bool; 7],
+    /// The harness can stop and ask before each use of a tool set to Ask.
+    pub ask: bool,
+    /// Switching a skill off stops this harness from loading it.
+    pub skill_toggles: bool,
+}
+
+/// `p` as one level per built-in tool row, in `ToolSupport::permissions` order.
+#[allow(dead_code)]
+pub fn permission_rows(p: Permissions) -> [Permission; 7] {
+    [p.read, p.edit, p.grep, p.run, p.browser, p.web, p.fetch]
+}
+
 /// Everything one turn needs from the chat.
 pub struct TurnInput<'a> {
     /// Folder the agent runs in.
@@ -162,6 +184,11 @@ pub trait Harness: Send + Sync {
     /// without MCP config returns nothing, so its own MCP settings still apply.
     fn mcp_args(&self, _servers: &[McpServer]) -> Plan {
         Plan::default()
+    }
+    /// Which tool settings `plan` applies. The default applies none.
+    #[allow(dead_code)]
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport::default()
     }
     /// What the CLI offers, from its own listings. Blocking; missing pieces
     /// come back empty.
