@@ -150,11 +150,15 @@ fn synced_buckets(synced: &Path) -> Vec<PathBuf> {
 }
 
 /// The skill folders the roots reach, once per resolved path, sorted by source, name and path.
-/// A folder reached from several roots is listed from the first and loaded by all of their harnesses.
+/// A folder reached from several roots is loaded by all of their harnesses. It is listed from the
+/// first root that holds the folder itself, else from the first root that links to it, so linking
+/// a skill into another root (as `sync` does) keeps its id, and with it its on/off setting, and its source.
 fn scan(roots: &[Root]) -> Vec<Found> {
     let mut out: Vec<Found> = Vec::new();
     let mut index: HashMap<PathBuf, usize> = HashMap::new();
     let mut agents: Vec<HashSet<&'static str>> = Vec::new();
+    // Whether each entry was listed from a symlink, and so may still be listed from its real folder.
+    let mut via_link: Vec<bool> = Vec::new();
     let mut grouped = HashSet::new();
     for root in roots {
         for dir in walk(&root.path, root.depth) {
@@ -163,13 +167,23 @@ fn scan(roots: &[Root]) -> Vec<Found> {
                 continue;
             }
             let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            let link = fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink());
             let i = match index.get(&canonical) {
-                Some(&i) => i,
+                Some(&i) => {
+                    if via_link[i] && !link {
+                        if let Some(skill) = parse_skill(&dir, &root.source) {
+                            out[i].skill = skill;
+                            via_link[i] = false;
+                        }
+                    }
+                    i
+                }
                 None => {
                     let Some(skill) = parse_skill(&dir, &root.source) else { continue };
                     index.insert(canonical.clone(), out.len());
                     out.push(Found { skill, canonical });
                     agents.push(HashSet::new());
+                    via_link.push(link);
                     out.len() - 1
                 }
             };
@@ -867,6 +881,23 @@ mod tests {
         assert!(!fs::symlink_metadata(hub.join("fmt")).unwrap().file_type().is_symlink());
         assert!(!fs::symlink_metadata(claude.join("cc-only")).unwrap().file_type().is_symlink());
         assert_eq!(sync_in(&home).unwrap(), SyncReport::default());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_keeps_each_skills_id_and_source() {
+        let home = scratch("stable-id");
+        skill_md(&home.join(".claude/skills/cc-only"), "---\nname: cc-only\n---\n");
+        skill_md(&home.join(".claude/skills/synced/b/pdf"), "---\nname: pdf\n---\n");
+        skill_md(&home.join(".gemini/skills/gem"), "---\nname: gem\n---\n");
+        let rows = |skills: Vec<Skill>| -> Vec<(String, String, String)> {
+            skills.into_iter().map(|s| (s.name, s.id, s.source)).collect()
+        };
+        let before = rows(discover_in(&home, &home.join("repo")));
+        let report = sync_in(&home).unwrap();
+        assert_eq!(report.linked.len(), 4, "{report:?}");
+        // The ids key the on/off settings: a skill turned off must stay off after a sync.
+        assert_eq!(rows(discover_in(&home, &home.join("repo"))), before);
         let _ = fs::remove_dir_all(&home);
     }
 
