@@ -348,6 +348,21 @@ impl AppState {
         self.remote_busy.insert(id.to_string());
     }
 
+    /// Makes remote chat `id` one of this device's own, to continue it here while its device is
+    /// away. The agent's session stays on the other device, so the next message carries the chat so
+    /// far (as after an agent switch). Runs in `cwd` from now on. Returns false if `id` isn't remote.
+    pub fn adopt_remote(&mut self, id: &str, cwd: PathBuf) -> bool {
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id && s.origin.is_some()) else { return false };
+        s.origin = None;
+        s.agent_session = None;
+        s.handoff = !s.messages.is_empty();
+        s.cwd = cwd;
+        s.project = None;
+        self.remote_busy.remove(id);
+        self.dirty.insert(id.to_string());
+        true
+    }
+
     /// Folds one event of a remote turn into chat `id`. Returns what the caller should do next.
     pub fn remote_event(&mut self, id: &str, out: Out) -> Applied {
         self.apply(id, Event::Out(out))
@@ -1605,6 +1620,23 @@ mod tests {
         assert!(!dir.join(format!("{id}.json")).exists(), "no file for a remote chat");
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_adopted_remote_chat_continues_here_with_its_history() {
+        let mut app = state();
+        let mut chat = Session::new("claude", "/home/pc/app".into());
+        chat.agent_session = Some("pc-thread".into());
+        chat.push(Role::User, "fix the bug");
+        chat.push(Role::Agent, "Fixed.");
+        let id = chat.id.clone();
+        app.put_remote(chat, "pc", false);
+        assert!(app.adopt_remote(&id, "/home/laptop/app".into()));
+        let s = app.session(&id).unwrap();
+        assert!(s.origin.is_none() && s.handoff && s.agent_session.is_none());
+        assert_eq!(s.cwd, PathBuf::from("/home/laptop/app"));
+        assert!(app.dirty.contains(&id), "saved here from now on");
+        assert!(!app.adopt_remote(&id, "/x".into()), "already local");
     }
 
     #[test]
