@@ -2,7 +2,7 @@
 //! agent; Plan and Ask run the read-only `plan` agent.
 
 use super::{
-    planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput,
+    planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, ToolSupport, TurnInput,
 };
 use crate::app::settings::{McpServer, McpTransport, Permission, Permissions};
 use crate::engine::{
@@ -85,6 +85,12 @@ impl Harness for OpenCode {
         // folder rules, so all go in `config_env`.
         let env = config_env(&files.dirs(), &input.tools, turn_agent(input.mode)).into_iter().collect();
         Plan { args: a, stdin: None, env, files: Vec::new() }
+    }
+
+    /// Off denies the matching OpenCode permissions (see `denied_permissions`); it has no browser
+    /// tool. A disabled skill is denied by name. `opencode run` cannot ask, so Ask is not applied.
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport { mcp: true, permissions: [true, true, true, true, false, true, true], ask: false, skill_toggles: true }
     }
 
     /// Commands come from `run --command`: two built-ins, config, and skills.

@@ -2,7 +2,7 @@
 //! Gemini CLI 0.64.0's bundle; see `docs/HARNESS_MAPPING.md`.
 
 use super::{
-    planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput,
+    planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, ToolSupport, TurnInput,
 };
 use crate::app::settings::{Permission, Permissions};
 use crate::engine::{attach::Delivery, mcp, parse::Protocol};
@@ -76,6 +76,14 @@ impl Harness for Gemini {
         // Plan and Ask share `--approval-mode plan`, so Plan also asks for a plan in the prompt.
         a.extend(["-p".into(), prompt_arg(&scoped(input, planned(input.mode, files.prompt(input.prompt))))]);
         Plan { args: a, files: policies, ..Default::default() }
+    }
+
+    /// Off denies the matching built-in tools (see `denied_tools`); Gemini has no browser tool. A
+    /// disabled skill cannot be activated. ArchonUI's MCP servers do not reach Gemini: `gemini -p`
+    /// reads servers only from its settings files, and it skips system settings files that root
+    /// does not own. Headless Gemini cannot ask, so Ask is not applied.
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport { mcp: false, permissions: [true, true, true, true, false, true, true], ask: false, skill_toggles: true }
     }
 
     fn auth_status(&self) -> AuthStatus {
@@ -254,5 +262,10 @@ mod tests {
         assert_eq!(plan.args[plan.args.len() - 2], "-p");
         assert!(plan.args.last().unwrap().ends_with("do it"));
         assert!(plan.env.is_empty());
+    }
+
+    #[test]
+    fn mcp_servers_are_not_claimed() {
+        assert!(!Gemini.tool_support().mcp);
     }
 }

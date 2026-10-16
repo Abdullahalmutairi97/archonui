@@ -1,7 +1,7 @@
 //! Pi: `pi -p` with inlined `@file` arguments. Pi has no permission system,
 //! so Plan and Ask narrow the tool list instead.
 
-use super::{chat_note, prompt_arg, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput, PLAN_PREAMBLE};
+use super::{chat_note, prompt_arg, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, ToolSupport, TurnInput, PLAN_PREAMBLE};
 use crate::app::settings::{McpServer, Permission, Permissions};
 use crate::engine::{
     attach::{Delivery, Kind},
@@ -94,6 +94,12 @@ impl Harness for Pi {
             },
             None => Plan::default(),
         }
+    }
+
+    /// Off removes Pi's read, edit and shell tools; it has no browser or web tools. Disabled skills
+    /// are left out of the skills it loads.
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport { mcp: true, permissions: [true, true, true, true, false, false, false], ask: false, skill_toggles: true }
     }
 
     fn discover(&self, path: &Path, cwd: &Path) -> Capabilities {

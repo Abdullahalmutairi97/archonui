@@ -1,7 +1,7 @@
 //! Claude Code: `claude -p` with stream-json output. Modes are verified in
 //! `docs/HARNESS_MAPPING.md`.
 
-use super::{signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
+use super::{signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSupport, TurnInput};
 use crate::app::settings::{McpServer, Permission, Permissions};
 use crate::engine::{
     attach::{Attachment, Delivery, Kind, CLAUDE_PDF_BYTES},
@@ -111,6 +111,12 @@ impl Harness for Claude {
             Some((path, text)) => Plan { args: vec![mcp_config_flag(&path)], files: vec![(path, text)], ..Default::default() },
             None => Plan::default(),
         }
+    }
+
+    /// Every row but the browser one maps to `--disallowedTools` (see `tools_at`). Ask tools go to
+    /// Claude's own safety check, which approves or blocks them without asking.
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport { mcp: true, permissions: [true, true, true, true, false, true, true], ask: false, skill_toggles: true }
     }
 
     fn discover(&self, path: &Path, cwd: &Path) -> Capabilities {

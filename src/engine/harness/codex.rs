@@ -4,7 +4,7 @@
 //! setting uses the same flag in Auto, so resumed turns get it too.
 
 use super::{
-    planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput,
+    planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, ToolSupport, TurnInput,
 };
 use crate::app::settings::{McpServer, McpTransport, Permission};
 use crate::engine::{
@@ -102,6 +102,12 @@ impl Harness for Codex {
             .flat_map(|o| ["-c".to_string(), o])
             .collect();
         Plan { args, env: env.into_iter().collect(), ..Default::default() }
+    }
+
+    /// Codex's config can only switch off its shell and web search tools. A disabled skill is
+    /// switched off by folder. `codex exec` cannot ask, so Ask is not applied.
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport { mcp: true, permissions: [false, false, false, true, false, true, false], ask: false, skill_toggles: true }
     }
 
     /// Models come from the catalog, limited to the ones its own picker lists;
