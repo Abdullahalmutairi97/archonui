@@ -204,21 +204,31 @@ impl Shell {
     }
 }
 
-/// One line for the toast after a sync: what was linked, skipped and removed.
+/// One line for the toast after a sync: what was linked, skipped and removed. Skills kept as the
+/// user's own copies, or turned off, are the steady state: a sync with only those changed nothing.
 fn sync_summary(report: &engine::skills::SyncReport) -> String {
     let (linked, skipped, pruned) = (report.linked.len(), report.skipped.len(), report.pruned.len());
-    if linked + skipped + pruned == 0 {
-        return "Every agent already has every skill.".into();
+    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    let mut steady = Vec::new();
+    if !report.kept.is_empty() {
+        steady.push(format!("{} kept as your own copies", report.kept.len()));
     }
-    let mut parts = vec![format!("Linked {linked} skill{}", if linked == 1 { "" } else { "s" })];
+    if !report.off.is_empty() {
+        steady.push(format!("{} turned off", report.off.len()));
+    }
+    let steady = if steady.is_empty() { String::new() } else { format!(" ({})", steady.join(", ")) };
+    if linked + skipped + pruned == 0 {
+        return format!("Every agent already has every skill{steady}.");
+    }
+    let mut parts = vec![format!("Linked {}", plural(linked, "skill"))];
     if skipped > 0 {
         // Name the first skip, since its reason is what the user can act on.
         parts.push(format!("skipped {skipped} ({})", report.skipped[0]));
     }
     if pruned > 0 {
-        parts.push(format!("removed {pruned} broken link{}", if pruned == 1 { "" } else { "s" }));
+        parts.push(format!("removed {}", plural(pruned, "broken link")));
     }
-    parts.join(", ")
+    parts.join(", ") + &steady
 }
 
 #[cfg(test)]
@@ -233,7 +243,20 @@ mod tests {
             linked: vec!["a → x".into(), "b → y".into()],
             skipped: vec!["pdf: taken".into()],
             pruned: vec!["~/.claude/skills/dead".into()],
+            ..SyncReport::default()
         };
         assert_eq!(sync_summary(&report), "Linked 2 skills, skipped 1 (pdf: taken), removed 1 broken link");
+    }
+
+    #[test]
+    fn a_sync_with_only_kept_copies_reads_as_nothing_to_do() {
+        let report = SyncReport {
+            kept: vec!["canvas-design (Claude.ai): ~/.agents/skills already has a skill with this name".into(); 4],
+            off: vec!["fmt (Personal): turned off in settings".into()],
+            ..SyncReport::default()
+        };
+        assert_eq!(sync_summary(&report), "Every agent already has every skill (4 kept as your own copies, 1 turned off).");
+        let report = SyncReport { linked: vec!["a → x".into()], kept: vec!["k".into()], ..SyncReport::default() };
+        assert_eq!(sync_summary(&report), "Linked 1 skill (1 kept as your own copies)");
     }
 }

@@ -33,8 +33,13 @@ const HUB_READERS: [&str; 4] = ["codex", "gemini", "opencode", "pi"];
 pub struct SyncReport {
     /// `name → link` for each symlink made.
     pub linked: Vec<String>,
-    /// `name: reason` for each skill left unlinked.
+    /// `name: reason` for each skill left unlinked that needs the user: no free folder name for it.
     pub skipped: Vec<String>,
+    /// `name: reason` for each skill left unlinked because the agent already loads another skill
+    /// with that name, usually the user's own copy. This is the steady state, not a problem.
+    pub kept: Vec<String>,
+    /// `name: reason` for each skill left unlinked because it is turned off in settings.
+    pub off: Vec<String>,
     /// Each dead symlink removed.
     pub pruned: Vec<String>,
 }
@@ -468,7 +473,7 @@ fn sync_in(home: &Path, disabled: &[String], agents: &[&str]) -> io::Result<Sync
             continue;
         }
         if off.contains_key(f.canonical.as_path()) {
-            skip_off(&f.skill, &mut report.skipped);
+            skip_off(&f.skill, &mut report.off);
             continue;
         }
         let others: Vec<&(PathBuf, Vec<&str>)> =
@@ -482,7 +487,7 @@ fn sync_in(home: &Path, disabled: &[String], agents: &[&str]) -> io::Result<Sync
                 readers.dedup();
                 readers.iter().map(|a| super::agent_name(a)).collect::<Vec<_>>().join(" and ")
             };
-            report.skipped.push(format!("{} ({}): {holder} already has a skill with this name", f.skill.name, f.skill.source));
+            report.kept.push(format!("{} ({}): {holder} already has a skill with this name", f.skill.name, f.skill.source));
             continue;
         }
         link(home, &hub, &f.canonical, &f.skill.source, &[], &mut report)?;
@@ -519,11 +524,11 @@ fn sync_in(home: &Path, disabled: &[String], agents: &[&str]) -> io::Result<Sync
             continue;
         }
         if let Some(skill) = off.get(canonical.as_path()) {
-            skip_off(skill, &mut report.skipped);
+            skip_off(skill, &mut report.off);
             continue;
         }
         if let Some(name) = names.get(canonical.as_path()).filter(|n| claude_names.contains(**n)) {
-            report.skipped.push(format!("{name}: Claude Code already has a skill with this name"));
+            report.kept.push(format!("{name}: Claude Code already has a skill with this name"));
             continue;
         }
         let source = sources.get(canonical.as_path()).copied().unwrap_or("Personal");
@@ -1163,7 +1168,7 @@ mod tests {
         let off = [hub.join("fmt").display().to_string(), claude.join("cc-only").display().to_string()];
         let report = sync_in(&home, &off, &AGENTS).unwrap();
         assert_eq!(report.linked, ["on → ~/.claude/skills/on"]);
-        assert_eq!(report.skipped, ["cc-only (Claude Code): turned off in settings", "fmt (Personal): turned off in settings"]);
+        assert_eq!(report.off, ["cc-only (Claude Code): turned off in settings", "fmt (Personal): turned off in settings"]);
         assert!(fs::symlink_metadata(claude.join("fmt")).is_err() && fs::symlink_metadata(hub.join("cc-only")).is_err());
         let _ = fs::remove_dir_all(&home);
     }
@@ -1188,9 +1193,8 @@ mod tests {
         let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert_eq!(target(&hub.join("runpod-discovery")), fs::canonicalize(&plugin).unwrap());
         assert!(report.linked.contains(&"discovery → ~/.agents/skills/runpod-discovery".to_string()), "{report:?}");
-        assert!(report.skipped.contains(&"pdf (Claude.ai): ~/.agents/skills already has a skill with this name".to_string()), "{report:?}");
-        assert!(report.skipped.contains(&"fmt: ~/.agents/skills already has `fmt` and `claude-ai-fmt`".to_string()), "{report:?}");
-        assert_eq!(report.skipped.len(), 2, "{report:?}");
+        assert_eq!(report.kept, ["pdf (Claude.ai): ~/.agents/skills already has a skill with this name"], "{report:?}");
+        assert_eq!(report.skipped, ["fmt: ~/.agents/skills already has `fmt` and `claude-ai-fmt`"], "{report:?}");
         // Hub skills reach Claude under their own folder names; the plugin link is already Claude's.
         assert!(fs::symlink_metadata(home.join(".claude/skills/discovery")).is_ok());
         assert!(fs::symlink_metadata(home.join(".claude/skills/runpod-discovery")).is_err());
@@ -1207,9 +1211,30 @@ mod tests {
         assert!(fs::symlink_metadata(home.join(".agents/skills/review")).is_err(), "{report:?}");
         assert!(report.linked.is_empty(), "{report:?}");
         assert_eq!(
-            report.skipped,
+            report.kept,
             ["review (Claude Code): Gemini CLI already has a skill with this name", "review (Gemini): OpenCode already has a skill with this name"]
         );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_second_sync_of_the_real_layout_changes_nothing() {
+        // The real layout: skills in the hub linked into Claude's folder, a Claude-only skill, and
+        // claude.ai copies of some of the same skills, which stay the user's own copies.
+        let home = scratch("steady");
+        let (hub, claude) = (home.join(".agents/skills"), home.join(".claude/skills"));
+        for n in ["archon-triage", "canvas-design", "theme-factory"] {
+            skill_md(&hub.join(n), &format!("---\nname: {n}\ndescription: d\n---\n"));
+            ln(&hub.join(n), &claude.join(n));
+            skill_md(&claude.join("synced/b").join(n), &format!("---\nname: {n}\ndescription: d\n---\n"));
+        }
+        skill_md(&claude.join("setup-writing-style"), "---\nname: setup-writing-style\ndescription: d\n---\n");
+        skill_md(&claude.join("synced/b/setup-writing-style"), "---\nname: setup-writing-style\ndescription: d\n---\n");
+        let first = sync_in(&home, &[], &AGENTS).unwrap();
+        assert_eq!(first.linked, ["setup-writing-style → ~/.agents/skills/setup-writing-style"]);
+        let second = sync_in(&home, &[], &AGENTS).unwrap();
+        assert_eq!(second.kept.len(), 4, "{second:?}");
+        assert_eq!(SyncReport { kept: Vec::new(), ..second }, SyncReport::default());
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -1220,7 +1245,8 @@ mod tests {
         skill_md(&home.join(".claude/skills/review-mine"), "---\nname: review\n---\n");
         let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert!(fs::symlink_metadata(home.join(".claude/skills/review")).is_err());
-        assert!(report.skipped.contains(&"review: Claude Code already has a skill with this name".to_string()), "{report:?}");
+        assert!(report.kept.contains(&"review: Claude Code already has a skill with this name".to_string()), "{report:?}");
+        assert!(report.skipped.is_empty(), "{report:?}");
         let _ = fs::remove_dir_all(&home);
     }
 
