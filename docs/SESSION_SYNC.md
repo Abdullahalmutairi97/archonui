@@ -7,6 +7,8 @@ Status: built on branch `feature/session-sync`. Off by default.
 - **Use one device's chats from another.** A chat lives on the device where it was started; its agent
   runs there. Your other devices show it in the sidebar with that device's name, and anything you
   type in it runs on that device, with the reply streaming in live. Stop and Esc reach that device.
+  When the agent asks to use a tool, the approval card shows on every device following the chat;
+  the first answer wins.
 - **A cloud copy.** One device can be marked as the cloud (an always-on VPS, say). The others copy
   their projects to it, uncommitted and untracked work included, plus their chats, every five minutes
   and after each reply.
