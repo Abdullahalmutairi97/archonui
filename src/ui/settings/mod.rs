@@ -1,8 +1,9 @@
-//! The settings modal: 1320×880, nav + 8 pages. Spec: docs/design/settings.md.
+//! The settings modal: 1320×880, nav + 9 pages. Spec: docs/design/settings.md.
 
 mod appearance;
 mod colour;
 mod controls;
+mod devices;
 mod extensions;
 mod general;
 mod harnesses;
@@ -81,6 +82,7 @@ pub enum Page {
     Tools,
     Skills,
     Extensions,
+    Devices,
 }
 
 /// One row of the nav: a section heading or a page.
@@ -89,7 +91,7 @@ enum NavEntry {
     Page(Page),
 }
 
-const NAV: [NavEntry; 11] = [
+const NAV: [NavEntry; 13] = [
     NavEntry::Head("APP"),
     NavEntry::Page(Page::General),
     NavEntry::Page(Page::Appearance),
@@ -101,13 +103,25 @@ const NAV: [NavEntry; 11] = [
     NavEntry::Page(Page::Tools),
     NavEntry::Page(Page::Skills),
     NavEntry::Page(Page::Extensions),
+    NavEntry::Head("NETWORK"),
+    NavEntry::Page(Page::Devices),
 ];
 
 impl Page {
     /// The page whose label is `name`, in any case.
     pub fn from_label(name: &str) -> Option<Self> {
-        [Page::General, Page::Appearance, Page::Keyboard, Page::Harnesses, Page::Models, Page::Tools, Page::Skills, Page::Extensions]
-            .into_iter()
+        [
+            Page::General,
+            Page::Appearance,
+            Page::Keyboard,
+            Page::Harnesses,
+            Page::Models,
+            Page::Tools,
+            Page::Skills,
+            Page::Extensions,
+            Page::Devices,
+        ]
+        .into_iter()
             .find(|p| p.label().eq_ignore_ascii_case(name))
     }
 
@@ -121,6 +135,7 @@ impl Page {
             Page::Tools => "Tools",
             Page::Skills => "Skills",
             Page::Extensions => "Extensions",
+            Page::Devices => "Devices",
         }
     }
 
@@ -134,6 +149,7 @@ impl Page {
             Page::Tools => "MCP servers and built-in tools the agent can call.",
             Page::Skills => "Reusable instructions the agent loads when a task matches.",
             Page::Extensions => "Plugins that add panels, commands and integrations.",
+            Page::Devices => "Share chats with your other devices over Tailscale, and choose which one is the cloud.",
         }
     }
 }
@@ -207,6 +223,10 @@ pub struct SettingsUi {
     pub(super) mcp: HashMap<String, Option<McpStatus>>,
     /// The harness whose test connection is running.
     pub(super) testing: Option<&'static str>,
+    /// Tailnet devices from Tailscale on the Devices page; `None` until the first search finishes.
+    pub(super) tailnet: Option<Result<crate::remote::tailscale::Tailnet, String>>,
+    /// Whether a Tailscale search is running.
+    pub(super) tailnet_loading: bool,
 }
 
 impl Shell {
@@ -352,6 +372,7 @@ impl Shell {
             Page::Tools => self.tools_page(cx),
             Page::Skills => self.skills_page(cx),
             Page::Extensions => self.extensions_page(cx),
+            Page::Devices => self.devices_page(cx),
         };
         // The window is in real px, so the design-unit sizes are converted before they are compared.
         let viewport = window.viewport_size();
@@ -586,6 +607,9 @@ impl Shell {
             .sum();
         counts.insert(Page::Models, models);
         counts.insert(Page::Tools, s.mcp_servers.iter().filter(|m| m.enabled).count());
+        if s.sync.enabled {
+            counts.insert(Page::Devices, s.sync.devices.len());
+        }
         // Skills and extensions show no count until their discovery has finished, rather than a misleading 0.
         if let Some(skills) = &self.settings.skills {
             counts.insert(Page::Skills, skills.iter().filter(|k| s.skills_enabled.get(&k.id).copied().unwrap_or(true)).count());
