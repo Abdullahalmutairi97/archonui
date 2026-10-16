@@ -1,131 +1,83 @@
-# Session sync and remote control (design)
+# Sharing chats between devices
 
-Status: proposal, branch `feature/session-sync`.
+Status: built on branch `feature/session-sync`. Off by default.
 
-## Optional by default
+## What it does
 
-Everything here is off until the user turns it on (`SyncSettings::enabled`, Settings → Devices). One
-machine without Tailscale and without a cloud copy works exactly as before: no listener, no
-`tailscale` calls, no background copies.
+- **Use one device's chats from another.** A chat lives on the device where it was started; its agent
+  runs there. Your other devices show it in the sidebar with that device's name, and anything you
+  type in it runs on that device, with the reply streaming in live. Stop and Esc reach that device.
+- **A cloud copy.** One device can be marked as the cloud (an always-on VPS, say). The others copy
+  their projects to it, uncommitted and untracked work included, plus their chats, every five minutes
+  and after each reply.
+- **Away devices.** While a device is off, its chats still show (from the cloud). Writing in one
+  continues it on the device you're on, with the conversation so far carried over, like switching
+  agents. Settings → Devices → Cloud copy opens any project copy in a new folder.
 
-## Goals
+Everything is off until Settings → Devices → "Share chats between devices" is on. One machine without
+Tailscale works exactly as before: no listener, no `tailscale` calls, no background copies.
 
-Three machines: **PC**, **laptop**, **VPS**.
+## Setting it up
 
-1. **Remote control.** A chat lives on one machine (its *host*) and its agent runs there, but any other
-   machine can open it, read it live and send prompts. PC → laptop and laptop → PC both work.
-2. **Cloud copy.** Every project is mirrored to the VPS automatically, including uncommitted and
-   untracked work, so a project left mid-edit on the PC is still reachable from the laptop when the PC is off.
+1. Install Tailscale on each device and sign in to the same tailnet.
+2. On each device running the app: Settings → Devices → turn sharing on, tick the devices to include,
+   and mark one as the cloud.
+3. On a device without a screen (a VPS or mini PC): `archonui --serve`. It uses the same settings
+   file; or pass `--bind <tailscale-ip>:7420` to run without them. A `--serve` device keeps a cloud
+   store, so it can be the cloud.
 
-## Why it fits ArchonUI
+Command line, handy for testing: `archonui --remote <device> list | show <chat> | ask <chat> <prompt> |
+new <agent> <folder> <prompt>`.
 
-- A turn is already a separate process: `engine::session::start_turn` spawns the CLI and turns its
-  output into `parse::Out` events. Those events are the whole wire protocol a remote viewer needs.
-- `store::Session`, `Message`, `ToolCall`, `Usage` and `Todo` are already `serde` types.
-- Tool approvals already go through a socket with a token (`engine::approve`), so forwarding them is
-  a known shape.
-- Chats can already change agent mid-conversation (`engine::handoff`), which is how a chat continues on
-  another machine when its host is offline (see below).
-- `tungstenite` and `notify` are already dependencies.
-
-## Architecture
+## How it works
 
 ```
-      laptop (UI) ◄──── tailnet (ws) ────► PC (UI + host)
-              │                                 │
-              └────────►  VPS (mirror)  ◄───────┘
-                      always on, snapshots + chat history
+      laptop (app) ◄──── tailnet (WebSocket :7420) ────► PC (app)
+              │                                           │
+              └──────────►  VPS (archonui --serve)  ◄─────┘
+                         cloud: project snapshots + chats
 ```
 
-**Network: Tailscale.** All three machines are on one tailnet, so they reach each other directly by
-MagicDNS name (`pc`, `laptop`, `vps`) through NAT, with WireGuard encryption. That means:
+| Piece | File | Role |
+|---|---|---|
+| Settings | `remote/mod.rs` | `SyncSettings { enabled, port, devices, cloud }` |
+| Discovery | `remote/tailscale.rs` | `tailscale status --json` → this device and its peers |
+| Protocol | `remote/proto.rs` | JSON messages, one per WebSocket frame |
+| Sockets | `remote/hub.rs` | Listens on the Tailscale address, handshake, subscriptions |
+| Chat logic | `remote/host.rs` | Answers requests with `AppState`; also the headless `--serve` loop |
+| Client | `remote/client.rs` | Connects to another device; `--remote` command line |
+| Snapshots | `remote/snapshot.rs` | Git snapshots of working files, bundles, restore |
+| Cloud store | `remote/cloud.rs` | Bare repo per project, chats per device |
+| Window | `ui/remote.rs` | Hosts the window's chats, shows other devices', backups |
 
-- No relay is needed for remote control; the laptop connects straight to the PC.
-- No TLS or public ports: hosts listen only on their Tailscale address (100.x / `tailscale0`), never
-  on `0.0.0.0`.
-- The VPS's job shrinks to the always-on mirror (projects + chat history).
-- Any device on the tailnet may connect: being on the user's Tailscale network is the trust boundary.
-  When the user has picked devices (below), only those may connect.
+- **Remote chats** are kept in `AppState` with `Session::origin` set to their device. They are never
+  saved here; `remote_started`/`remote_event`/`remote_finished` mirror the host's turn.
+- **Snapshots** use a temporary index (`GIT_INDEX_FILE`) and `commit-tree` onto
+  `refs/archon/wip/<device>`, so HEAD, the index, branches and files are never touched. `.gitignore`
+  is respected. A folder that isn't a repository gets a private git dir outside it. Copies to the
+  cloud are incremental git bundles.
 
-### Devices settings
+## Security
 
-Settings → Devices lists what `tailscale status --json` reports (`remote::tailscale`): this device and
-its peers, online first. The user ticks which devices join the workspace and marks one as the
-**cloud** (the always-on copy); any number of devices works, three is just the example. The choice
-is saved as `SyncSettings { enabled, port, devices, cloud }`.
+- Hosts listen only on their Tailscale address and refuse anything outside the tailnet. When devices
+  are ticked, only those may connect. With sharing off, no tailnet device is accepted.
+- Being on your tailnet is the trust boundary: a connected device can run prompts, and so tools, on
+  the host. Only include your own devices.
+- Ids from the network are checked before they become paths or git refs.
+- `.env` files that aren't ignored are included in the cloud copy; add them to `.gitignore` to keep
+  them out.
 
-Without Tailscale, the fallback is every machine connecting outbound to the VPS as a relay.
+## Not done yet
 
-### 1. Host mode: `archonui serve`
+- Attachments in remote chats.
+- A remote side panel (the host's files, git and terminal).
+- Opening a folder copy into an existing folder (it always goes into a new one).
 
-A headless mode of the same binary (no GPUI window). It owns the sessions stored on that machine and
-runs their turns. The desktop app runs the same host loop in-process, so a PC with the app open is
-also a host.
+## Testing checklist
 
-### 2. Protocol
-
-JSON messages over a WebSocket on the host's Tailscale address (e.g. `ws://pc:7420`). `ssh host archonui
-serve --stdio` also works and is handy for testing. Client → host:
-
-| message | meaning |
-|---|---|
-| `hello {machine, token, version}` | authenticate |
-| `list_sessions` / `subscribe {session}` | sidebar and live view |
-| `prompt {session, text, attachments, mode, model, effort}` | start a turn on the host |
-| `cancel {session}` | Esc |
-| `approve {request, verdict}` | answer a tool approval |
-| `draft {session, text}` | keep drafts in step |
-
-Host → client: `sessions [...]`, `snapshot {session}`, `event {session, Out}`, `finished {session, result}`,
-`approval_request {...}`, `host_status`.
-
-`parse::Out` needs `#[derive(Serialize, Deserialize)]`; everything inside it already has it.
-
-### 3. Sessions in the UI
-
-- `Session` gains `host: String` (machine id). Local chats keep working unchanged.
-- The sidebar groups or badges chats by host; a remote chat whose host is offline is read-only with a
-  "Continue here" button.
-- **Continue here** copies the chat to this machine and uses the existing handoff path: the agent's own
-  session (e.g. Claude's resume id) lives on the PC and can't be resumed elsewhere, so the first prompt
-  carries the conversation as text, exactly like switching agents.
-
-### 4. Project mirror on the VPS
-
-Plain file sync (rsync, Syncthing) is risky with two machines editing: last write wins silently.
-Instead, use git without touching the user's branch or index:
-
-1. On change (debounced `notify` watcher) or every N minutes, build a snapshot commit with a temporary
-   index: `GIT_INDEX_FILE=tmp git add -A && git write-tree && git commit-tree`.
-2. Push it to `refs/archon/wip/<machine>` on a bare repo on the VPS.
-3. On another machine, "Open from cloud" checks the snapshot out into the project folder (or a worktree),
-   and shows a diff first if local files differ.
-
-This captures uncommitted and untracked files, respects `.gitignore` (no `target/`, `node_modules/`),
-never rewrites the user's commits, and keeps history so a bad sync can be undone. Projects that are not
-git repos get `git init` into a separate `GIT_DIR` under the ArchonUI data folder so the project itself is
-untouched.
-
-Session JSON files and attachments are mirrored to the VPS too, so chat history is visible from the
-laptop even when the PC is off.
-
-### 5. Paths
-
-Machines have different home folders. Projects are matched by project id plus a per-machine path map
-(`projects.toml`), never by absolute path.
-
-### 6. Security
-
-- Hosts listen only on their Tailscale address and refuse addresses outside the tailnet, and outside
-  the picked devices when the user has picked some.
-- A remote prompt can run any tool the agent can, so sharing is off by default.
-- Secrets (`.env`) are excluded from the mirror unless the user opts in.
-
-## Phases
-
-1. Serializable `Out`, `archonui serve` listening on the Tailscale address, remote chats in the sidebar (prompt, stream,
-   cancel). **Delivers PC ↔ laptop control.**
-2. Approvals and drafts over the wire; host online/offline state; "Continue here".
-3. Host discovery on the tailnet (`tailscale status --json`), so other machines appear without typing addresses.
-4. WIP snapshots to the VPS and "Open from cloud".
-5. Remote side panel: files, git and terminal of the host (terminal over the same socket via `portable-pty`).
+1. Minipc: `archonui --serve --bind "$(tailscale ip -4):7420"`.
+2. PC: `archonui --remote minipc new claude ~ "say hi"` streams a reply.
+3. PC app: Devices → sharing on → tick the minipc → its chats appear, labelled.
+4. Type in one: the reply streams; Esc stops it on the minipc.
+5. Mark the minipc as cloud; within a reply or five minutes, Devices → Cloud copy lists your projects.
+6. Stop the PC app; on the laptop app its chats still show; typing in one continues it locally.
