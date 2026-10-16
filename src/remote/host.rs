@@ -394,20 +394,38 @@ fn start_error(state: &AppState, session: &str, before: usize) -> String {
 }
 
 /// Saves files sent with a prompt into the chat's attachments here. Refuses too many or too large.
+/// All or nothing: when one file fails, the ones already saved are removed again.
 fn save_files(session: &str, files: Vec<RemoteFile>) -> Result<Vec<Attachment>, String> {
     if files.len() > engine::attach::MAX_FILES {
         return Err(format!("At most {} files can go with one message", engine::attach::MAX_FILES));
     }
+    // Every file is decoded and counted before any is written.
     let mut total = 0u64;
-    let mut out = Vec::new();
+    let mut decoded = Vec::with_capacity(files.len());
     for f in files {
         let bytes = STANDARD.decode(&f.data).map_err(|e| format!("{} could not be read: {e}", f.name))?;
         total += bytes.len() as u64;
         if total > MAX_REMOTE_FILES_BYTES {
             return Err("The files are too large to send to another device".into());
         }
-        let path = store::store_bytes(session, &f.name, &bytes).map_err(|e| format!("Could not save {}: {e}", f.name))?;
-        out.push(Attachment::inspect(&path)?);
+        decoded.push((f.name, bytes));
+    }
+    let mut out: Vec<Attachment> = Vec::new();
+    for (name, bytes) in decoded {
+        let saved = store::store_bytes(session, &name, &bytes)
+            .map_err(|e| format!("Could not save {name}: {e}"))
+            .and_then(|path| Attachment::inspect(&path).inspect_err(|_| drop(std::fs::remove_file(&path))));
+        match saved {
+            Ok(a) => out.push(a),
+            Err(e) => {
+                for a in &out {
+                    let _ = std::fs::remove_file(&a.path);
+                }
+                // Only removed when empty: files of earlier messages stay.
+                let _ = std::fs::remove_dir(store::attachments_dir(session));
+                return Err(e);
+            }
+        }
     }
     Ok(out)
 }
@@ -663,6 +681,47 @@ mod tests {
         assert!(app.send(&id, "hello", &agents).is_none());
         let error = start_error(&app, &id, 0);
         assert!(error.starts_with("Could not start Pi:"), "{error}");
+    }
+
+    fn file(name: &str, data: &str) -> RemoteFile {
+        RemoteFile { name: name.into(), data: data.into() }
+    }
+
+    fn saved_files(session: &str) -> Vec<PathBuf> {
+        let dir = std::fs::read_dir(store::attachments_dir(session));
+        dir.map_or_else(|_| Vec::new(), |d| d.filter_map(Result::ok).map(|e| e.path()).collect())
+    }
+
+    #[test]
+    fn files_that_fail_leave_nothing_saved() {
+        let ok = STANDARD.encode("hello");
+        let long = format!("{}.txt", "x".repeat(300));
+
+        // Bad base64 after a good file.
+        let s = store::new_id();
+        let err = save_files(&s, vec![file("a.txt", &ok), file("b.txt", "not base64!")]).unwrap_err();
+        assert!(err.starts_with("b.txt could not be read"), "{err}");
+        assert!(saved_files(&s).is_empty());
+
+        // A name the file system refuses, after a good file was already written.
+        let s = store::new_id();
+        let err = save_files(&s, vec![file("a.txt", &ok), file(&long, &ok)]).unwrap_err();
+        assert!(err.starts_with("Could not save"), "{err}");
+        assert!(saved_files(&s).is_empty(), "{:?}", saved_files(&s));
+        assert!(!store::attachments_dir(&s).exists());
+
+        // Files of an earlier message stay.
+        let s = store::new_id();
+        let kept = save_files(&s, vec![file("old.txt", &ok)]).unwrap();
+        assert!(save_files(&s, vec![file("a.txt", &ok), file(&long, &ok)]).is_err());
+        assert_eq!(saved_files(&s), vec![kept[0].path.clone()]);
+        std::fs::remove_dir_all(store::attachments_dir(&s)).ok();
+
+        // All good: all saved.
+        let s = store::new_id();
+        assert_eq!(save_files(&s, vec![file("a.txt", &ok), file("b.txt", &ok)]).unwrap().len(), 2);
+        assert_eq!(saved_files(&s).len(), 2);
+        std::fs::remove_dir_all(store::attachments_dir(&s)).ok();
     }
 
     #[test]
