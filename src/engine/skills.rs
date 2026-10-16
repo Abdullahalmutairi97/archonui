@@ -401,26 +401,37 @@ fn manifest_name(dir: &Path, manifest: &str) -> String {
 /// same skills: `~/.agents/skills` (Codex, Gemini, OpenCode, Pi) and `~/.claude/skills` (Claude
 /// Code). Only symlinks are made or removed; skill folders are never moved, copied or deleted.
 /// Skills whose ids are in `disabled` (turned off in settings) are not linked anywhere new.
-pub fn sync(disabled: &[String]) -> io::Result<SyncReport> {
-    sync_in(&home_or_err()?, disabled)
+/// Only the folders of the harnesses in `agents` (those installed and turned on) are changed: the
+/// hub when one of its readers is there, Claude Code's folder when Claude Code is.
+pub fn sync(disabled: &[String], agents: &[&str]) -> io::Result<SyncReport> {
+    sync_in(&home_or_err()?, disabled, agents)
 }
 
 /// `sync` with the home directory given.
-fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
+fn sync_in(home: &Path, disabled: &[String], agents: &[&str]) -> io::Result<SyncReport> {
     let hub = home.join(".agents/skills");
     let claude = home.join(".claude/skills");
-    fs::create_dir_all(&hub)?;
-    fs::create_dir_all(&claude)?;
+    let to_hub = agents.iter().any(|a| HUB_READERS.contains(a));
+    let to_claude = agents.contains(&"claude");
+    let targets: Vec<&Path> = [(to_claude, claude.as_path()), (to_hub, hub.as_path())]
+        .into_iter()
+        .filter_map(|(on, dir)| on.then_some(dir))
+        .collect();
     let mut report = SyncReport::default();
-    prune(home, &hub, &mut report.pruned)?;
-    prune(home, &claude, &mut report.pruned)?;
+    for dir in &targets {
+        fs::create_dir_all(dir)?;
+    }
+    for dir in targets.iter().rev() {
+        prune(home, dir, &mut report.pruned)?;
+    }
     // Skills of a Gemini extension that is off are loaded by no one, so links to them go too.
     let off_extensions: Vec<PathBuf> =
         gemini_extensions(home).into_iter().filter(|(_, _, on)| !on).filter_map(|(dir, _, _)| fs::canonicalize(dir).ok()).collect();
     if !off_extensions.is_empty() {
         // Claude's links may lead through the hub's, so they go first, while they still resolve.
-        unlink_into(home, &claude, &off_extensions, &mut report.pruned)?;
-        unlink_into(home, &hub, &off_extensions, &mut report.pruned)?;
+        for dir in &targets {
+            unlink_into(home, dir, &off_extensions, &mut report.pruned)?;
+        }
     }
 
     let found = scan(&user_roots(home));
@@ -441,14 +452,19 @@ fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
     // to them, so it is skipped rather than linked under another folder name.
     let mut hub_names: HashMap<String, Vec<(PathBuf, Vec<&str>)>> = HashMap::new();
     for f in &found {
-        let readers: Vec<&str> = f.skill.agents.iter().copied().filter(|a| HUB_READERS.contains(a)).collect();
+        let readers: Vec<&str> =
+            f.skill.agents.iter().copied().filter(|a| HUB_READERS.contains(a) && agents.contains(a)).collect();
         if !readers.is_empty() {
             hub_names.entry(f.skill.name.clone()).or_default().push((f.canonical.clone(), readers));
         }
     }
-    for f in &found {
+    for f in found.iter().filter(|_| to_hub) {
         // A personal skill below the hub's top level is Pi's alone; linking it would list it twice.
         if f.skill.source == "Personal" || in_hub.contains(&f.canonical) {
+            continue;
+        }
+        // Every hub reader that is on loads it already.
+        if agents.iter().filter(|a| HUB_READERS.contains(a)).all(|a| f.skill.agents.contains(a)) {
             continue;
         }
         if off.contains_key(f.canonical.as_path()) {
@@ -473,7 +489,21 @@ fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
         in_hub.insert(f.canonical.clone());
         hub_names.entry(f.skill.name.clone()).or_default().push((f.canonical.clone(), HUB_READERS.to_vec()));
     }
-    // Into Claude Code's folder: every hub skill it does not load yet.
+    if !to_claude {
+        return Ok(report);
+    }
+    // Into Claude Code's folder: every hub skill it does not load yet, and, when the hub was left
+    // alone, every other agent's skill that would have gone through it.
+    let mut candidates: Vec<(String, PathBuf)> = walk(&hub, Depth::One)
+        .into_iter()
+        .filter_map(|entry| Some((entry.file_name()?.to_string_lossy().into_owned(), fs::canonicalize(&entry).ok()?)))
+        .collect();
+    if !to_hub {
+        for f in found.iter().filter(|f| f.skill.source != "Personal" && !in_hub.contains(&f.canonical)) {
+            let folder = f.canonical.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            candidates.push((folder, f.canonical.clone()));
+        }
+    }
     let sources: HashMap<&Path, &str> = found.iter().map(|f| (f.canonical.as_path(), f.skill.source.as_str())).collect();
     let mut in_claude: HashSet<PathBuf> =
         found.iter().filter(|f| f.skill.agents.contains(&"claude")).map(|f| f.canonical.clone()).collect();
@@ -484,8 +514,7 @@ fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
         .filter_map(|d| fs::canonicalize(d).ok())
         .filter_map(|c| names.get(c.as_path()).map(|n| n.to_string()))
         .collect();
-    for entry in walk(&hub, Depth::One) {
-        let Ok(canonical) = fs::canonicalize(&entry) else { continue };
+    for (name, canonical) in candidates {
         if in_claude.contains(&canonical) {
             continue;
         }
@@ -498,7 +527,6 @@ fn sync_in(home: &Path, disabled: &[String]) -> io::Result<SyncReport> {
             continue;
         }
         let source = sources.get(canonical.as_path()).copied().unwrap_or("Personal");
-        let name = entry.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         link_named(home, &claude, &canonical, &name, source, &["synced"], &mut report)?;
         if let Some(skill) = names.get(canonical.as_path()) {
             claude_names.insert(skill.to_string());
@@ -959,7 +987,7 @@ mod tests {
         let rules = format!(r#"{{"off": {{"overrides": ["!{}/*"]}}}}"#, home.display());
         fs::write(ext.join("extension-enablement.json"), rules).unwrap();
 
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert_eq!(report.pruned, ["~/.claude/skills/dropped", "~/.agents/skills/dropped"], "{report:?}");
         assert!(ext.join("off-ext/skills/dropped/SKILL.md").is_file(), "the extension is untouched");
         let skills = discover_in(&home, &home.join("repo"));
@@ -1082,7 +1110,7 @@ mod tests {
         skill_md(&home.join("repo/.agents/skills/local"), "---\nname: local\ndescription: d\n---\n");
         let canon = |p: PathBuf| fs::canonicalize(p).unwrap();
 
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert!(report.skipped.is_empty() && report.pruned.is_empty(), "{report:?}");
         assert_eq!(target(&hub.join("cc-only")), canon(claude.join("cc-only")));
         assert_eq!(target(&hub.join("pdf")), canon(claude.join("synced/bucket/pdf")));
@@ -1103,7 +1131,7 @@ mod tests {
         // Real folders are untouched.
         assert!(!fs::symlink_metadata(hub.join("fmt")).unwrap().file_type().is_symlink());
         assert!(!fs::symlink_metadata(claude.join("cc-only")).unwrap().file_type().is_symlink());
-        assert_eq!(sync_in(&home, &[]).unwrap(), SyncReport::default());
+        assert_eq!(sync_in(&home, &[], &AGENTS).unwrap(), SyncReport::default());
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -1117,7 +1145,7 @@ mod tests {
             skills.into_iter().map(|s| (s.name, s.id, s.source)).collect()
         };
         let before = rows(discover_in(&home, &home.join("repo")));
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert_eq!(report.linked.len(), 4, "{report:?}");
         // The ids key the on/off settings: a skill turned off must stay off after a sync.
         assert_eq!(rows(discover_in(&home, &home.join("repo"))), before);
@@ -1133,7 +1161,7 @@ mod tests {
         skill_md(&hub.join("on"), "---\nname: on\n---\n");
         skill_md(&claude.join("cc-only"), "---\nname: cc-only\n---\n");
         let off = [hub.join("fmt").display().to_string(), claude.join("cc-only").display().to_string()];
-        let report = sync_in(&home, &off).unwrap();
+        let report = sync_in(&home, &off, &AGENTS).unwrap();
         assert_eq!(report.linked, ["on → ~/.claude/skills/on"]);
         assert_eq!(report.skipped, ["cc-only (Claude Code): turned off in settings", "fmt (Personal): turned off in settings"]);
         assert!(fs::symlink_metadata(claude.join("fmt")).is_err() && fs::symlink_metadata(hub.join("cc-only")).is_err());
@@ -1157,7 +1185,7 @@ mod tests {
         skill_md(&home.join(".claude/skills/synced/b/pdf"), "---\nname: pdf\n---\n");
         skill_md(&home.join(".claude/skills/synced/b/fmt"), "---\nname: fmt\n---\n");
 
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert_eq!(target(&hub.join("runpod-discovery")), fs::canonicalize(&plugin).unwrap());
         assert!(report.linked.contains(&"discovery → ~/.agents/skills/runpod-discovery".to_string()), "{report:?}");
         assert!(report.skipped.contains(&"pdf (Claude.ai): ~/.agents/skills already has a skill with this name".to_string()), "{report:?}");
@@ -1175,7 +1203,7 @@ mod tests {
         // Gemini loads its own `review`; linking Claude Code's `review` into the hub would give it two.
         skill_md(&home.join(".claude/skills/review"), "---\nname: review\n---\n");
         skill_md(&home.join(".gemini/skills/review"), "---\nname: review\n---\n");
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert!(fs::symlink_metadata(home.join(".agents/skills/review")).is_err(), "{report:?}");
         assert!(report.linked.is_empty(), "{report:?}");
         assert_eq!(
@@ -1190,7 +1218,7 @@ mod tests {
         let home = scratch("claude-name");
         skill_md(&home.join(".agents/skills/review"), "---\nname: review\n---\n");
         skill_md(&home.join(".claude/skills/review-mine"), "---\nname: review\n---\n");
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert!(fs::symlink_metadata(home.join(".claude/skills/review")).is_err());
         assert!(report.skipped.contains(&"review: Claude Code already has a skill with this name".to_string()), "{report:?}");
         let _ = fs::remove_dir_all(&home);
@@ -1200,7 +1228,7 @@ mod tests {
     fn sync_does_not_take_the_synced_name_in_claudes_folder() {
         let home = scratch("reserved");
         skill_md(&home.join(".agents/skills/synced"), "---\nname: synced\n---\n");
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert_eq!(report.linked, ["synced → ~/.claude/skills/personal-synced"]);
         let _ = fs::remove_dir_all(&home);
     }
@@ -1219,7 +1247,7 @@ mod tests {
         ln(&hub.join("fmt"), &claude.join("fmt"));
         ln(&home.join("gone"), &claude.join("synced/b/dead"));
 
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert_eq!(
             report.pruned,
             ["~/.agents/skills/dead", "~/.agents/skills/old-plugin", "~/.claude/skills/dead", "~/.claude/skills/relative"]
@@ -1240,7 +1268,7 @@ mod tests {
         ln(Path::new("/nonexistent-archonui-drive/skills/notes"), &hub.join("notes"));
         ln(&home.join("projects/gone/skill"), &claude.join("project-skill"));
         ln(&claude.join("loop"), &claude.join("loop"));
-        let report = sync_in(&home, &[]).unwrap();
+        let report = sync_in(&home, &[], &AGENTS).unwrap();
         assert_eq!(report, SyncReport::default());
         for link in [hub.join("notes"), claude.join("project-skill"), claude.join("loop")] {
             assert!(fs::symlink_metadata(&link).is_ok(), "{link:?} was removed");
@@ -1260,22 +1288,54 @@ mod tests {
             let runs: Vec<_> = (0..2)
                 .map(|_| {
                     let home = home.clone();
-                    std::thread::spawn(move || sync_in(&home, &[]))
+                    std::thread::spawn(move || sync_in(&home, &[], &AGENTS))
                 })
                 .collect();
             let reports: Vec<SyncReport> = runs.into_iter().map(|t| t.join().unwrap().unwrap()).collect();
             // Each link is made, and each dead link removed, by exactly one of them.
             assert_eq!(reports.iter().map(|r| r.linked.len()).sum::<usize>(), 60, "{reports:?}");
             assert_eq!(reports.iter().map(|r| r.pruned.len()).sum::<usize>(), 1, "{reports:?}");
-            assert_eq!(sync_in(&home, &[]).unwrap(), SyncReport::default());
+            assert_eq!(sync_in(&home, &[], &AGENTS).unwrap(), SyncReport::default());
             let _ = fs::remove_dir_all(&home);
         }
     }
 
     #[test]
+    fn sync_leaves_the_folders_of_agents_that_are_off_alone() {
+        let home = scratch("agents-off");
+        let hub = home.join(".agents/skills");
+        let claude = home.join(".claude/skills");
+        skill_md(&hub.join("fmt"), "---\nname: fmt\ndescription: d\n---\n");
+        skill_md(&claude.join("cc-only"), "---\nname: cc-only\ndescription: d\n---\n");
+        skill_md(&home.join(".gemini/skills/gem"), "---\nname: gem\ndescription: d\n---\n");
+        ln(&hub.join("gone"), &claude.join("dead"));
+        ln(&hub.join("gone"), &hub.join("dead"));
+
+        // Only Claude Code: nothing new in the hub; the Gemini skill goes straight to Claude.
+        let report = sync_in(&home, &[], &["claude"]).unwrap();
+        assert_eq!(report.linked, ["fmt → ~/.claude/skills/fmt", "gem → ~/.claude/skills/gem"], "{report:?}");
+        assert_eq!(report.pruned, ["~/.claude/skills/dead"]);
+        assert!(fs::symlink_metadata(hub.join("dead")).is_ok() && fs::symlink_metadata(hub.join("cc-only")).is_err());
+
+        // Only Gemini: the hub gets Claude Code's skill; Claude's folder is not touched.
+        ln(&hub.join("gone"), &claude.join("dead"));
+        let report = sync_in(&home, &[], &["gemini"]).unwrap();
+        assert_eq!(report.linked, ["cc-only → ~/.agents/skills/cc-only"], "{report:?}");
+        assert_eq!(report.pruned, ["~/.agents/skills/dead"]);
+        assert!(fs::symlink_metadata(claude.join("dead")).is_ok());
+
+        // None: nothing at all.
+        let empty = scratch("agents-none");
+        assert_eq!(sync_in(&empty, &[], &[]).unwrap(), SyncReport::default());
+        assert!(!empty.join(".agents").exists() && !empty.join(".claude").exists());
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&empty);
+    }
+
+    #[test]
     fn sync_makes_missing_folders() {
         let home = scratch("empty-home");
-        assert_eq!(sync_in(&home, &[]).unwrap(), SyncReport::default());
+        assert_eq!(sync_in(&home, &[], &AGENTS).unwrap(), SyncReport::default());
         assert!(home.join(".agents/skills").is_dir() && home.join(".claude/skills").is_dir());
         let _ = fs::remove_dir_all(&home);
     }

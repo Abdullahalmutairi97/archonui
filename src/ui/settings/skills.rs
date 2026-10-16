@@ -28,7 +28,8 @@ impl Shell {
             .filter(|k| self.state.settings.skills_enabled.get(&k.id).copied().unwrap_or(true))
             .count();
 
-        let installed: Vec<&'static str> = self.agents.iter().map(|a| a.harness.id()).collect();
+        // Agents turned off in settings get no chip and no count.
+        let installed: Vec<&'static str> = self.agents.iter().filter(|a| a.enabled).map(|a| a.harness.id()).collect();
         // How many skills each installed agent loads, so a gap between agents shows before syncing.
         let counts = installed
             .iter()
@@ -138,12 +139,13 @@ impl Shell {
     }
 
     /// Links every skill into each agent's skills folder, toasts what changed, then rediscovers skills.
-    /// Skills turned off here are left out.
+    /// Skills turned off here are left out, and so are the folders of agents turned off.
     fn sync_skills(&mut self, cx: &mut Context<Self>) {
         let disabled: Vec<String> =
             self.state.settings.skills_enabled.iter().filter(|(_, on)| !**on).map(|(id, _)| id.clone()).collect();
+        let agents: Vec<&'static str> = self.agents.iter().filter(|a| a.enabled).map(|a| a.harness.id()).collect();
         cx.spawn(async move |this, cx| {
-            let synced = cx.background_executor().spawn(async move { engine::skills::sync(&disabled) }).await;
+            let synced = cx.background_executor().spawn(async move { engine::skills::sync(&disabled, &agents) }).await;
             let _ = this.update(cx, |this, cx| {
                 match synced {
                     Ok(report) => this.toast(sync_summary(&report), cx),
