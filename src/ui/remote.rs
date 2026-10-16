@@ -63,6 +63,10 @@ pub struct RemoteUi {
     backing_up: bool,
     /// What the cloud holds, for Settings → Devices; `None` until asked.
     pub(super) cloud_projects: Option<Vec<CloudProject>>,
+    /// The cloud was asked what it holds over its current connection; the page doesn't ask again.
+    pub(super) cloud_asked: bool,
+    /// The cloud `cloud_projects` and `pushed` are about, so a newly marked cloud starts afresh.
+    cloud_for: Option<String>,
     /// A chat asked for with "New on <device>": opened in the focused tile when it arrives.
     open_new: Option<(String, Option<String>)>,
     /// Approvals of other devices' chats waiting for an answer here, by the local request id.
@@ -98,6 +102,13 @@ impl Shell {
                 return;
             }
         };
+        // Another cloud holds none of what the last one confirmed or listed.
+        if self.remote.cloud_for != sync.cloud {
+            self.remote.cloud_for = sync.cloud.clone();
+            self.remote.pushed.clear();
+            self.remote.cloud_projects = None;
+            self.remote.cloud_asked = false;
+        }
         // This device keeps the cloud copy when the user marked it as the cloud.
         if sync.is_cloud(&me.id) {
             if self.remote.cloud.is_none() {
@@ -197,6 +208,8 @@ impl Shell {
         r.cloud_jobs = None;
         r.pushed.clear();
         r.cloud_projects = None;
+        r.cloud_asked = false;
+        r.cloud_for = None;
         r.open_new = None;
         if r.ticking {
             r.ticking = false;
@@ -405,7 +418,7 @@ impl Shell {
                             let _ = client.send(&ClientMsg::ListSessions);
                             let is_cloud = this.state.settings.sync.is_cloud(&device.id);
                             if is_cloud {
-                                let _ = client.send(&ClientMsg::ListCloud);
+                                this.remote.cloud_asked = client.send(&ClientMsg::ListCloud).is_ok();
                             }
                             let events = client.events.clone();
                             this.remote.clients.insert(device.id.clone(), client);
@@ -460,6 +473,9 @@ impl Shell {
         let msg = match ev {
             ClientEvent::Msg(msg) => msg,
             ClientEvent::Closed(_) => {
+                if self.state.settings.sync.is_cloud(device) {
+                    self.remote.cloud_asked = false;
+                }
                 self.remote.clients.remove(device);
                 self.remote.subscribed.remove(device);
                 self.state.remove_remote(device);
@@ -719,7 +735,15 @@ impl Shell {
         if let Some(store) = &self.remote.cloud {
             self.remote.cloud_projects = Some(store.projects());
         } else if let Some(cloud) = self.cloud_client() {
-            let _ = cloud.send(&ClientMsg::ListCloud);
+            self.remote.cloud_asked = cloud.send(&ClientMsg::ListCloud).is_ok();
+        }
+    }
+
+    /// Asks the cloud what it holds unless it was already asked over this connection, for the
+    /// Devices page, which calls it on each render.
+    pub(super) fn ask_cloud_list_once(&mut self) {
+        if self.remote.cloud_projects.is_none() && !self.remote.cloud_asked {
+            self.refresh_cloud_list();
         }
     }
 

@@ -235,6 +235,8 @@ impl Shell {
         self.settings.page = Page::General;
         self.settings.capture = None;
         self.settings.picker = None;
+        // The Devices page asks the cloud what it holds again, once.
+        self.remote.cloud_asked = false;
         self.load_catalogues(cx);
         cx.notify();
     }
