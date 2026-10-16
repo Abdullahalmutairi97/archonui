@@ -1,5 +1,5 @@
-//! Extensions: the harnesses' own add-ons (Claude Code plugins, Pi packages, OpenCode plugins),
-//! listed, installed, removed and toggled through each CLI. Ids are `<harness>:<spec>`.
+//! Extensions: the harnesses' own add-ons (Claude Code plugins, Gemini CLI extensions, Pi packages,
+//! OpenCode plugins), listed, installed, removed and toggled through each CLI. Ids are `<harness>:<spec>`.
 #![allow(dead_code)]
 
 use super::{agent_name, detect::detect};
@@ -18,7 +18,7 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Extension {
-    /// Stable id: `<harness>:<spec>`, e.g. `claude:design@synced` or `pi:npm:pi-web-access`.
+    /// Stable id: `<harness>:<spec>`, e.g. `claude:design@synced`, `gemini:conductor` or `pi:npm:pi-web-access`.
     pub id: String,
     pub name: String,
     pub author: String,
@@ -44,21 +44,23 @@ pub fn installed() -> Vec<Extension> {
 }
 
 /// Extensions available to install (from the harnesses' marketplaces/registries). Blocking.
-/// Pi and OpenCode have no catalog command, so only Claude Code's marketplaces appear.
+/// Gemini, Pi and OpenCode have no catalog command, so only Claude Code's marketplaces appear.
 pub fn available() -> Vec<Extension> {
     all().into_iter().filter(|e| !e.installed).collect()
 }
 
-/// Installs the extension `id`. Blocking.
+/// Installs the extension `id`. Blocking. For Gemini the spec is the source to install from,
+/// a git URL or a local path.
 pub fn install(id: &str) -> Result<(), String> {
     let (harness, spec) = split_id(id)?;
     let spec = safe_spec(spec)?;
     let path = binary(harness)?;
     match harness {
-        // Claude's CLI accepts `--`; Pi's rejects it ("Unknown option --").
+        // Claude's CLI accepts `--`; Pi's rejects it ("Unknown option --") and Gemini's drops what follows it.
         "claude" => run(&path, &["plugin", "install", "--", spec], INSTALL_TIMEOUT).map(drop),
+        "gemini" => gemini_install(&path, &home()?, spec),
         "pi" => run(&path, &["install", spec], INSTALL_TIMEOUT).map(drop),
-        _ => Err(OPENCODE_NO_EDITS.into()),
+        _ => Err(no_edits(harness)),
     }
 }
 
@@ -69,12 +71,14 @@ pub fn remove(id: &str) -> Result<(), String> {
     let path = binary(harness)?;
     match harness {
         "claude" => run(&path, &["plugin", "uninstall", "--", spec], CHANGE_TIMEOUT).map(drop),
+        "gemini" => gemini_uninstall(&path, &home()?, spec),
         "pi" => run(&path, &["remove", spec], CHANGE_TIMEOUT).map(drop),
-        _ => Err(OPENCODE_NO_EDITS.into()),
+        _ => Err(no_edits(harness)),
     }
 }
 
-/// Turns the installed extension `id` on or off. Blocking. Pi packages have no off switch;
+/// Turns the installed extension `id` on or off. Blocking. Gemini extensions are switched in the
+/// user scope, which a workspace override can still beat. Pi packages have no off switch;
 /// turning one on is a no-op and turning one off is an error.
 pub fn set_enabled(id: &str, enabled: bool) -> Result<(), String> {
     let (harness, spec) = split_id(id)?;
@@ -85,9 +89,18 @@ pub fn set_enabled(id: &str, enabled: bool) -> Result<(), String> {
             let verb = if enabled { "enable" } else { "disable" };
             run(&path, &["plugin", verb, "--", spec], CHANGE_TIMEOUT).map(drop)
         }
+        ("gemini", _) => gemini_set_enabled(&path, &home()?, spec, enabled),
         ("pi", true) => Ok(()),
         ("pi", false) => Err("Pi packages cannot be turned off; remove the package instead".into()),
-        _ => Err(OPENCODE_NO_EDITS.into()),
+        _ => Err(no_edits(harness)),
+    }
+}
+
+/// Why `harness`'s extensions cannot be changed from ArchonUI.
+fn no_edits(harness: &str) -> String {
+    match harness {
+        "opencode" => OPENCODE_NO_EDITS.into(),
+        _ => format!("ArchonUI does not manage {} extensions", agent_name(harness)),
     }
 }
 
@@ -97,6 +110,7 @@ fn all() -> Vec<Extension> {
         .iter()
         .flat_map(|agent| match agent.harness.id() {
             "claude" => claude_extensions(&agent.path),
+            "gemini" => home().map_or_else(|_| Vec::new(), |home| gemini_extensions(&agent.path, &home)),
             "pi" => run(&agent.path, &["list"], LIST_TIMEOUT).map_or_else(|_| Vec::new(), |t| pi_installed(&t)),
             "opencode" => run(&agent.path, &["debug", "config"], LIST_TIMEOUT)
                 .ok()
@@ -182,6 +196,86 @@ fn claude_extensions_of(v: &Value) -> Vec<Extension> {
     out
 }
 
+/// The user's home directory, where Gemini keeps its extensions.
+fn home() -> Result<PathBuf, String> {
+    std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| "HOME is not set".to_string())
+}
+
+/// Runs `gemini args` for the user whose home is `home`, from that home, and returns stdout and
+/// stderr together, since Gemini prints its results to stderr. Running from the home matters for
+/// the listing: Gemini reports an extension active for its working directory, and the user scope
+/// is the home and everything below it.
+fn gemini_run(path: &Path, home: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
+    let mut command = Command::new(path);
+    command.args(args).current_dir(home).env("HOME", home);
+    run_command(command, timeout).map(|(out, err)| out + &err)
+}
+
+/// `gemini extensions install`, without its two questions: `--consent` accepts the third-party
+/// warning, and trusting the workspace for this one run skips the "Do you trust this folder?"
+/// prompt a local path raises (it would wait on stdin until the timeout). The folder is not added to
+/// Gemini's trusted folders. `--skip-settings` leaves an extension's settings unasked; they can
+/// be set later with `gemini extensions config`.
+fn gemini_install(path: &Path, home: &Path, source: &str) -> Result<(), String> {
+    let mut command = Command::new(path);
+    command
+        .args(["extensions", "install", "--consent", "--skip-settings", source])
+        .current_dir(home)
+        .env("HOME", home)
+        .env("GEMINI_CLI_TRUST_WORKSPACE", "true");
+    run_command(command, INSTALL_TIMEOUT).map(drop)
+}
+
+/// Uninstalls the Gemini extension `name`.
+fn gemini_uninstall(path: &Path, home: &Path, name: &str) -> Result<(), String> {
+    gemini_run(path, home, &["extensions", "uninstall", name], CHANGE_TIMEOUT).map(drop)
+}
+
+/// Turns a Gemini extension on or off in the user scope.
+fn gemini_set_enabled(path: &Path, home: &Path, name: &str, enabled: bool) -> Result<(), String> {
+    let verb = if enabled { "enable" } else { "disable" };
+    gemini_run(path, home, &["extensions", verb, "--scope", "user", name], CHANGE_TIMEOUT).map(drop)
+}
+
+/// Gemini's installed extensions from `gemini extensions list --output-format json`.
+fn gemini_extensions(path: &Path, home: &Path) -> Vec<Extension> {
+    gemini_run(path, home, &["extensions", "list", "--output-format", "json"], LIST_TIMEOUT)
+        .map_or_else(|_| Vec::new(), |t| gemini_installed(&t))
+}
+
+/// The extensions in Gemini's JSON listing, which starts on the first line that opens an array
+/// (other lines, like warnings, may come before it). The listing has no description or author, so
+/// those come from each extension's `gemini-extension.json`.
+///
+/// `isActive` is the state for the directory the listing ran in, which `gemini_run` makes the home:
+/// that is the user scope. A workspace override for some other folder does not show here, and
+/// one for the home itself counts, as Gemini would count it there.
+fn gemini_installed(text: &str) -> Vec<Extension> {
+    let Some(start) = text.lines().position(|line| line.trim_start().starts_with('[')) else {
+        return Vec::new();
+    };
+    let json: String = text.lines().skip(start).collect::<Vec<_>>().join("\n");
+    let Some(Ok(Value::Array(list))) = serde_json::Deserializer::from_str(&json).into_iter::<Value>().next() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|e| {
+            let name = e["name"].as_str().filter(|n| !n.is_empty())?;
+            let manifest = read_json(Path::new(e["path"].as_str().unwrap_or("")), "gemini-extension.json");
+            Some(Extension {
+                id: format!("gemini:{name}"),
+                name: name.into(),
+                author: manifest_author(&manifest),
+                version: e["version"].as_str().unwrap_or_default().into(),
+                description: manifest_text(&manifest, "description").unwrap_or_default(),
+                harness: "gemini".into(),
+                installed: true,
+                enabled: e["isActive"] != false,
+            })
+        })
+        .collect()
+}
+
 /// `pi list`: each package is a line indented two spaces, with its path indented below it.
 /// Pi marks a package it cannot load with a `(filtered)` suffix, which is dropped here.
 fn pi_installed(text: &str) -> Vec<Extension> {
@@ -222,11 +316,16 @@ fn opencode_installed(config: &Value) -> Vec<Extension> {
 }
 
 fn read_manifest(install_path: &Path) -> Value {
+    read_json(install_path, ".claude-plugin/plugin.json")
+}
+
+/// The JSON file at `file` under `dir`, or null.
+fn read_json(dir: &Path, file: &str) -> Value {
     // An entry without an install path must not read a manifest from the working directory.
-    if install_path.as_os_str().is_empty() {
+    if dir.as_os_str().is_empty() {
         return Value::Null;
     }
-    std::fs::read_to_string(install_path.join(".claude-plugin/plugin.json"))
+    std::fs::read_to_string(dir.join(file))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or(Value::Null)
@@ -244,8 +343,15 @@ fn manifest_author(manifest: &Value) -> String {
 /// Runs `path args` and returns stdout. A failed run gives its stderr, or its exit status when
 /// stderr is empty. The process group is killed after `timeout`.
 fn run(path: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(path)
-        .args(args)
+    let mut command = Command::new(path);
+    command.args(args);
+    run_command(command, timeout).map(|(out, _)| out)
+}
+
+/// `run` for a prepared command, giving stdout and stderr of a successful run.
+fn run_command(mut command: Command, timeout: Duration) -> Result<(String, String), String> {
+    let path = PathBuf::from(command.get_program());
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -272,7 +378,7 @@ fn run(path: &Path, args: &[&str], timeout: Duration) -> Result<String, String> 
     let grace = Instant::now() + DRAIN_GRACE;
     let (out, err) = (out.finish(grace), err.finish(grace));
     if status.success() {
-        return Ok(out);
+        return Ok((out, err));
     }
     let err = err.trim();
     Err(if err.is_empty() { format!("exited with {status}") } else { err.to_string() })
@@ -343,6 +449,67 @@ mod tests {
         assert_eq!(rows, [("claude:design@synced", true, false), ("claude:lint@market", false, false)]);
         assert_eq!(found[0].name, "design");
         assert_eq!(found[1].description, "Lints code.");
+    }
+
+    #[test]
+    fn gemini_listing_reads_the_json_and_each_manifest() {
+        let dir = std::env::temp_dir().join(format!("archonui-gemini-list-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("gemini-extension.json"),
+            r#"{"name": "conductor", "version": "0.4.0", "description": "Plans tracks.", "author": {"name": "Google"}}"#,
+        )
+        .unwrap();
+        let text = format!(
+            "Loaded cached credentials.\n[\n  {{\"name\": \"conductor\", \"version\": \"0.4.0\", \"path\": {:?}, \"isActive\": true}},\n  {{\"name\": \"off\", \"version\": \"1.0.0\", \"path\": \"/nonexistent/off\", \"isActive\": false}},\n  {{\"version\": \"9\"}}\n]\n",
+            dir.to_str().unwrap()
+        );
+        let found = gemini_installed(&text);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let rows: Vec<(&str, &str, bool, bool)> =
+            found.iter().map(|e| (e.id.as_str(), e.version.as_str(), e.installed, e.enabled)).collect();
+        assert_eq!(rows, [("gemini:conductor", "0.4.0", true, true), ("gemini:off", "1.0.0", true, false)]);
+        assert_eq!((found[0].description.as_str(), found[0].author.as_str()), ("Plans tracks.", "Google"));
+        assert_eq!((found[1].description.as_str(), found[1].author.as_str()), ("", ""));
+        assert!(gemini_installed("[]\n").is_empty());
+        assert!(gemini_installed("No extensions installed.\n").is_empty());
+        assert!(gemini_installed("[ not json").is_empty());
+    }
+
+    #[test]
+    fn harnesses_without_extension_edits_say_why() {
+        assert_eq!(no_edits("opencode"), OPENCODE_NO_EDITS);
+        assert!(no_edits("codex").contains("does not manage"), "{}", no_edits("codex"));
+    }
+
+    /// Drives the real Gemini CLI in a throwaway home: install a local extension, turn it off and
+    /// on, then uninstall it. Run with `cargo test gemini_cli_round_trip -- --ignored`.
+    #[test]
+    #[ignore = "needs the Gemini CLI"]
+    fn gemini_cli_round_trip() {
+        let path = binary("gemini").expect("Gemini CLI");
+        let home = std::env::temp_dir().join(format!("archonui-gemini-home-{}", std::process::id()));
+        let source = home.join("src/archon-test-ext");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("gemini-extension.json"),
+            r#"{"name": "archon-test-ext", "version": "0.0.1", "description": "ArchonUI test extension"}"#,
+        )
+        .unwrap();
+        let state = || -> Vec<(String, String, String, bool)> {
+            gemini_extensions(&path, &home).into_iter().map(|e| (e.id, e.version, e.description, e.enabled)).collect()
+        };
+        let row = |enabled| vec![("gemini:archon-test-ext".into(), "0.0.1".into(), "ArchonUI test extension".into(), enabled)];
+
+        gemini_install(&path, &home, source.to_str().unwrap()).unwrap();
+        assert_eq!(state(), row(true));
+        gemini_set_enabled(&path, &home, "archon-test-ext", false).unwrap();
+        assert_eq!(state(), row(false));
+        gemini_set_enabled(&path, &home, "archon-test-ext", true).unwrap();
+        assert_eq!(state(), row(true));
+        gemini_uninstall(&path, &home, "archon-test-ext").unwrap();
+        assert_eq!(state(), []);
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
