@@ -48,6 +48,7 @@ impl Render for DemoView {
             session: &self.session,
             busy: false,
             show_tools: true,
+            place: "ArchonUI · Sonnet".into(),
         };
         let stream = self.stream.render(cx.entity(), env, cx);
         let lightbox = self.stream.lightbox_overlay(cx.entity(), &self.theme);

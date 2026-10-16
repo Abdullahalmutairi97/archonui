@@ -438,7 +438,6 @@ impl Shell {
         })
     }
 
-    /// The header's meta line: project, model, effort, mode and running state. Spec: chat.md §0.5.
     /// A tile's border width: the focus ring or the idle border, or none when borders are off.
     fn ring_width(&self, focused: bool) -> f32 {
         match (self.state.settings.show_borders(), focused) {
@@ -448,16 +447,20 @@ impl Shell {
         }
     }
 
-    fn session_meta(&self, s: &Session) -> String {
-        let project = s
-            .project
+    /// Where a session runs: its project's name, else its folder's name.
+    pub(super) fn session_place(&self, s: &Session) -> String {
+        s.project
             .as_deref()
             .and_then(|p| self.state.project(p))
             .map(|p| p.name.clone())
             .or_else(|| s.cwd.file_name().map(|name| name.to_string_lossy().into_owned()))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    /// The header's meta line: project, model, effort, mode and running state. Spec: chat.md §0.5.
+    fn session_meta(&self, s: &Session) -> String {
         // Same short labels as the composer's model trigger (chat.md §5.6).
-        let mut parts = vec![project, self.trigger_label(s)];
+        let mut parts = vec![self.session_place(s), self.trigger_label(s)];
         if let Some(effort) = self.effort_state(s).and_then(|e| e.name) {
             parts.push(format!("{} effort", effort.to_lowercase()));
         }
