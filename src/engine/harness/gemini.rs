@@ -216,6 +216,7 @@ mod tests {
             command: format!("/{name}"),
             source: "Project".into(),
             path: PathBuf::from(format!("/s/{name}")),
+            agents: Vec::new(),
         }
     }
 

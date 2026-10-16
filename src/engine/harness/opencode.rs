@@ -336,6 +336,7 @@ mod tests {
             command: "/review".into(),
             source: "Personal".into(),
             path: PathBuf::from("/s/review"),
+            agents: Vec::new(),
         }];
         let off = ["/s/review".to_string()];
         let tools = ToolSettings {
