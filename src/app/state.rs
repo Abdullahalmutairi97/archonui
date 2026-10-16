@@ -151,6 +151,8 @@ impl AppState {
                 if let Err(e) = store::save(s) {
                     eprintln!("could not save session {id}: {e}");
                     failed.push(format!("Couldn't save the chat: {e}"));
+                    // Keep it dirty so a later flush retries it.
+                    self.dirty.insert(id);
                 }
             }
         }
@@ -158,6 +160,7 @@ impl AppState {
             if let Err(e) = store::delete(&id) {
                 eprintln!("could not delete session {id}: {e}");
                 failed.push(format!("Couldn't delete the chat: {e}"));
+                self.removed.push(id);
             }
         }
         failed
@@ -1359,13 +1362,46 @@ mod tests {
         let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
         s.push(Role::User, "test");
         s.push(Role::Agent, "reply");
-        app.dirty.insert(id);
+        app.dirty.insert(id.clone());
 
         let failed = app.flush_sessions();
         assert!(!failed.is_empty(), "reports save failure");
         assert!(failed[0].contains("Couldn't save the chat"));
+        assert!(app.dirty.contains(&id), "a failed save stays dirty for the next flush");
 
         let _ = std::fs::remove_file(dir);
+    }
+
+    #[test]
+    fn failed_flush_keeps_chats_queued_for_retry() {
+        let _env = lock_env();
+        let dir = std::env::temp_dir().join(format!("archonui-retry-test-{}", store::new_id()));
+        std::fs::write(&dir, b"blocker").unwrap();
+        let data_env = std::env::var_os("ARCHONUI_DATA_DIR");
+        std::env::set_var("ARCHONUI_DATA_DIR", &dir);
+        let _guard = EnvGuard { data_env, cfg_env: None };
+
+        let mut app = state();
+        let id = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "test");
+        s.push(Role::Agent, "reply");
+        app.dirty.insert(id.clone());
+        app.removed.push("archonui-gone-chat".into());
+
+        assert_eq!(app.flush_sessions().len(), 2, "both the save and the delete fail");
+        assert!(app.dirty.contains(&id));
+        assert_eq!(app.removed, ["archonui-gone-chat"]);
+
+        // Make the data dir writable, then the queued work goes through on the next flush.
+        std::fs::remove_file(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(app.flush_sessions().is_empty());
+        assert!(app.dirty.is_empty());
+        assert!(app.removed.is_empty());
+        assert!(dir.join(format!("{id}.json")).exists(), "the chat is saved on retry");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
