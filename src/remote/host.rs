@@ -186,7 +186,8 @@ pub fn handle(
                 agent
             };
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            let cwd = if cwd.as_os_str().is_empty() {
+            let named = !cwd.as_os_str().is_empty();
+            let cwd = if !named {
                 state
                     .settings
                     .default_folder
@@ -204,7 +205,12 @@ pub fn handle(
                 let message = format!("There is no folder {} on this device", cwd.display());
                 hub.reply(conn, &HostMsg::Error { message });
             } else {
+                // A folder the client named wins over the project open here, which would move the chat.
+                let current = if named { state.workspace.current_project.take() } else { None };
                 let id = state.new_session(&agent, cwd, Placement::Focused);
+                if current.is_some() {
+                    state.workspace.current_project = current;
+                }
                 if project.is_some() {
                     state.move_to_project(&id, project);
                 }
@@ -627,5 +633,32 @@ mod tests {
         assert!(app.send(&id, "hello", &agents).is_none());
         let error = start_error(&app, &id, 0);
         assert!(error.starts_with("Could not start Pi:"), "{error}");
+    }
+
+    #[test]
+    fn a_new_chat_runs_in_the_folder_the_client_named() {
+        let project_dir = std::env::temp_dir().join(format!("archonui-host-project-{}", store::new_id()));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let mut app = state();
+        let p = app.add_project("open here", project_dir.clone());
+        app.workspace.current_project = Some(p.clone());
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let agents = [pi_at("/nonexistent/archonui-test-pi")];
+        let mut ask = |cwd: PathBuf| -> (PathBuf, Option<String>) {
+            let before: Vec<String> = app.sessions().iter().map(|s| s.id.clone()).collect();
+            let msg = ClientMsg::NewSession { agent: "pi".into(), cwd, project: None };
+            handle(&mut app, &agents, &hub, None, Request { conn: 1, msg });
+            let s = app.sessions().iter().find(|s| !before.contains(&s.id)).unwrap();
+            (s.cwd.clone(), s.project.clone())
+        };
+
+        let named = ask(std::env::temp_dir());
+        let default = ask(PathBuf::new());
+        assert_eq!(named, (std::env::temp_dir(), None));
+        assert_eq!(app.workspace.current_project.as_deref(), Some(p.as_str()), "the host's project stays open");
+
+        // No folder: the host's defaults, which include its open project.
+        assert_eq!(default, (project_dir.clone(), Some(p.clone())));
+        std::fs::remove_dir_all(&project_dir).ok();
     }
 }
