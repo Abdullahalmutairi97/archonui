@@ -194,10 +194,16 @@ fn scan(roots: &[Root]) -> Vec<Found> {
         }
     }
     for (found, agents) in out.iter_mut().zip(&agents) {
-        found.skill.agents = AGENTS.into_iter().filter(|a| agents.contains(a)).collect();
+        found.skill.agents = AGENTS.into_iter().filter(|a| agents.contains(a) && loads(a, &found.skill)).collect();
     }
     out.sort_by(|a, b| (&a.skill.source, &a.skill.name, &a.skill.path).cmp(&(&b.skill.source, &b.skill.name, &b.skill.path)));
     out
+}
+
+/// Whether `agent`, reading a folder that holds `skill`, loads it. Pi skips a skill whose
+/// SKILL.md has no description.
+fn loads(agent: &str, skill: &Skill) -> bool {
+    agent != "pi" || !skill.description.trim().is_empty()
 }
 
 /// The folders under `root` that hold a SKILL.md, in path order. Symlinked folders are followed;
@@ -838,6 +844,21 @@ mod tests {
     }
 
     #[test]
+    fn pi_does_not_load_a_skill_without_a_description() {
+        let home = scratch("pi-description");
+        skill_md(&home.join(".agents/skills/bare"), "---\nname: bare\n---\n");
+        skill_md(&home.join(".agents/skills/blank"), "---\nname: blank\ndescription: \"  \"\n---\n");
+        skill_md(&home.join(".agents/skills/full"), "---\nname: full\ndescription: Does things.\n---\n");
+        skill_md(&home.join(".pi/agent/skills/pi-bare"), "# no front matter\n");
+        let skills = discover_in(&home, &home.join("repo"));
+        assert_eq!(named(&skills, "bare").agents, ["codex", "gemini", "opencode"]);
+        assert_eq!(named(&skills, "blank").agents, ["codex", "gemini", "opencode"]);
+        assert_eq!(named(&skills, "full").agents, ["codex", "gemini", "opencode", "pi"]);
+        assert!(named(&skills, "pi-bare").agents.is_empty());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn synced_buckets_list_a_name_once_from_the_newest_bucket() {
         let home = scratch("synced");
         let synced = home.join(".claude/skills/synced");
@@ -880,19 +901,19 @@ mod tests {
         let home = scratch("harnesses");
         let cwd = home.join("repo");
         fs::create_dir_all(cwd.join(".git")).unwrap();
-        skill_md(&home.join(".agents/skills/hub"), "---\nname: hub\n---\n");
-        skill_md(&home.join(".agents/skills/group/deep"), "---\nname: deep\n---\n");
-        skill_md(&home.join(".claude/skills/cc"), "---\nname: cc\n---\n");
-        skill_md(&home.join(".gemini/skills/gem"), "---\nname: gem\n---\n");
-        skill_md(&home.join(".gemini/extensions/ext/skills/extskill"), "---\nname: extskill\n---\n");
+        skill_md(&home.join(".agents/skills/hub"), "---\nname: hub\ndescription: d\n---\n");
+        skill_md(&home.join(".agents/skills/group/deep"), "---\nname: deep\ndescription: d\n---\n");
+        skill_md(&home.join(".claude/skills/cc"), "---\nname: cc\ndescription: d\n---\n");
+        skill_md(&home.join(".gemini/skills/gem"), "---\nname: gem\ndescription: d\n---\n");
+        skill_md(&home.join(".gemini/extensions/ext/skills/extskill"), "---\nname: extskill\ndescription: d\n---\n");
         fs::write(home.join(".gemini/extensions/ext/gemini-extension.json"), r#"{"name": "conductor"}"#).unwrap();
-        skill_md(&home.join(".pi/agent/skills/a/b/pideep"), "---\nname: pideep\n---\n");
-        skill_md(&home.join(".codex/skills/cx"), "---\nname: cx\n---\n");
-        skill_md(&home.join(".config/opencode/skills/oc"), "---\nname: oc\n---\n");
-        skill_md(&cwd.join(".gemini/skills/pg"), "---\nname: pg\n---\n");
-        skill_md(&cwd.join(".pi/skills/pp"), "---\nname: pp\n---\n");
-        skill_md(&cwd.join(".opencode/skill/po"), "---\nname: po\n---\n");
-        skill_md(&cwd.join("sub/.agents/skills/above"), "---\nname: above\n---\n");
+        skill_md(&home.join(".pi/agent/skills/a/b/pideep"), "---\nname: pideep\ndescription: d\n---\n");
+        skill_md(&home.join(".codex/skills/cx"), "---\nname: cx\ndescription: d\n---\n");
+        skill_md(&home.join(".config/opencode/skills/oc"), "---\nname: oc\ndescription: d\n---\n");
+        skill_md(&cwd.join(".gemini/skills/pg"), "---\nname: pg\ndescription: d\n---\n");
+        skill_md(&cwd.join(".pi/skills/pp"), "---\nname: pp\ndescription: d\n---\n");
+        skill_md(&cwd.join(".opencode/skill/po"), "---\nname: po\ndescription: d\n---\n");
+        skill_md(&cwd.join("sub/.agents/skills/above"), "---\nname: above\ndescription: d\n---\n");
 
         let skills = discover_in(&home, &cwd.join("sub"));
         let row = |name: &str| {
@@ -921,10 +942,10 @@ mod tests {
     fn a_skill_linked_into_several_folders_is_loaded_by_each_reader() {
         let home = scratch("agents");
         let real = home.join("elsewhere/review");
-        skill_md(&real, "---\nname: review\n---\n");
+        skill_md(&real, "---\nname: review\ndescription: d\n---\n");
         ln(&real, &home.join(".agents/skills/review"));
         ln(&real, &home.join(".claude/skills/review"));
-        skill_md(&home.join(".claude/skills/solo"), "---\nname: solo\n---\n");
+        skill_md(&home.join(".claude/skills/solo"), "---\nname: solo\ndescription: d\n---\n");
         let skills = discover_in(&home, &home.join("repo"));
         assert_eq!(named(&skills, "review").agents, AGENTS);
         assert_eq!(named(&skills, "review").source, "Personal");
@@ -943,12 +964,12 @@ mod tests {
         let home = scratch("sync");
         let hub = home.join(".agents/skills");
         let claude = home.join(".claude/skills");
-        skill_md(&hub.join("fmt"), "---\nname: fmt\n---\n");
-        skill_md(&claude.join("cc-only"), "---\nname: cc-only\n---\n");
-        skill_md(&claude.join("synced/bucket/pdf"), "---\nname: pdf\n---\n");
-        skill_md(&home.join(".gemini/skills/gem"), "---\nname: gem\n---\n");
-        skill_md(&home.join(".claude/plugins/cache/p/runpod/1/skills/discovery"), "---\nname: discovery\n---\n");
-        skill_md(&home.join("repo/.agents/skills/local"), "---\nname: local\n---\n");
+        skill_md(&hub.join("fmt"), "---\nname: fmt\ndescription: d\n---\n");
+        skill_md(&claude.join("cc-only"), "---\nname: cc-only\ndescription: d\n---\n");
+        skill_md(&claude.join("synced/bucket/pdf"), "---\nname: pdf\ndescription: d\n---\n");
+        skill_md(&home.join(".gemini/skills/gem"), "---\nname: gem\ndescription: d\n---\n");
+        skill_md(&home.join(".claude/plugins/cache/p/runpod/1/skills/discovery"), "---\nname: discovery\ndescription: d\n---\n");
+        skill_md(&home.join("repo/.agents/skills/local"), "---\nname: local\ndescription: d\n---\n");
         let canon = |p: PathBuf| fs::canonicalize(p).unwrap();
 
         let report = sync_in(&home, &[]).unwrap();
