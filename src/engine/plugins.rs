@@ -80,6 +80,12 @@ pub fn remove(id: &str) -> Result<(), String> {
 /// Turns the installed extension `id` on or off. Blocking. Gemini extensions are switched in the
 /// user scope, which a workspace override can still beat. Pi packages have no off switch;
 /// turning one on is a no-op and turning one off is an error.
+/// Whether `harness`'s CLI can turn an installed extension off and on again. Pi packages and OpenCode
+/// plugins can only be removed, so no switch is offered for them.
+pub fn can_toggle(harness: &str) -> bool {
+    matches!(harness, "claude" | "gemini")
+}
+
 pub fn set_enabled(id: &str, enabled: bool) -> Result<(), String> {
     let (harness, spec) = split_id(id)?;
     let spec = safe_spec(spec)?;
@@ -425,6 +431,12 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> Drain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_claude_and_gemini_extensions_toggle() {
+        assert!(can_toggle("claude") && can_toggle("gemini"));
+        assert!(!can_toggle("pi") && !can_toggle("opencode"));
+    }
 
     #[test]
     fn pi_packages_come_from_the_indented_source_lines() {
