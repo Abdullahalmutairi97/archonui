@@ -386,6 +386,86 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// Everything the user can see in git: index bytes, HEAD, refs other than snapshots, status.
+    fn repo_state(dir: &Path) -> (Vec<u8>, Vec<u8>, String, String) {
+        let refs = git(dir, &["for-each-ref", "--format=%(refname) %(objectname)"])
+            .lines()
+            .filter(|l| !l.starts_with("refs/archon/"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (
+            fs::read(dir.join(".git/index")).unwrap(),
+            fs::read(dir.join(".git/HEAD")).unwrap(),
+            refs,
+            // No optional locks: status would otherwise refresh the real index itself.
+            git(dir, &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+        )
+    }
+
+    #[test]
+    fn dirty_detached_repo_is_left_byte_identical() {
+        if !git_available() {
+            return;
+        }
+        let base = root("dirty");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        fs::write(proj.join("gone.txt"), "x\n").unwrap();
+        git(&proj, &["add", "gone.txt"]);
+        git(&proj, &["commit", "-q", "-m", "two"]);
+        git(&proj, &["checkout", "-q", "--detach"]);
+        fs::write(proj.join("staged.txt"), "staged\n").unwrap();
+        git(&proj, &["add", "staged.txt"]);
+        fs::write(proj.join("tracked.txt"), "edited\n").unwrap();
+        fs::remove_file(proj.join("gone.txt")).unwrap();
+        fs::write(proj.join("with space é.txt"), "u\n").unwrap();
+        fs::write(proj.join("new\nline.txt"), "n\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("tracked.txt", proj.join("link")).unwrap();
+        let before = repo_state(&proj);
+
+        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        assert_eq!(repo_state(&proj), before);
+        let files = snapshot_files(&proj, &c);
+        for f in ["staged.txt", "tracked.txt", "\"new\\nline.txt\""] {
+            assert!(files.iter().any(|x| x == f), "{f} in {files:?}");
+        }
+        assert!(files.iter().any(|x| x.starts_with("\"with space")), "{files:?}");
+        assert!(!files.iter().any(|x| x == "gone.txt"), "{files:?}");
+        let spec = format!("{c}:tracked.txt");
+        assert_eq!(git(&proj, &["cat-file", "-p", spec.as_str()]), "edited");
+
+        let _ = fs::remove_file(proj.join("with space é.txt"));
+        assert!(take_in(&proj, "n1", &snaps, false).unwrap().is_some());
+        assert_eq!(repo_state(&proj).0, before.0);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn repo_without_commits_is_left_alone() {
+        if !git_available() {
+            return;
+        }
+        let base = root("unborn");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        fs::create_dir_all(&proj).unwrap();
+        git(&proj, &["init", "-q"]);
+        fs::write(proj.join("a.txt"), "a\n").unwrap();
+        let status = git(&proj, &["--no-optional-locks", "status", "--porcelain"]);
+        let head = fs::read(proj.join(".git/HEAD")).unwrap();
+
+        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        assert_eq!(snapshot_files(&proj, &c), vec!["a.txt".to_string()]);
+        assert!(!proj.join(".git/index").exists());
+        assert_eq!(fs::read(proj.join(".git/HEAD")).unwrap(), head);
+        assert_eq!(git(&proj, &["--no-optional-locks", "status", "--porcelain"]), status);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn full_bundle_restores_working_files() {
         if !git_available() {
