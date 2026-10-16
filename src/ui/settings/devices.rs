@@ -173,9 +173,7 @@ impl Shell {
     /// What the cloud holds: each project copy, with a button that opens it in a new folder here.
     fn cloud_section(&mut self, weak: &gpui::WeakEntity<Shell>, _cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        if self.remote.cloud_projects.is_none() {
-            self.refresh_cloud_list();
-        }
+        self.ask_cloud_list_once();
         let mut rows: Vec<SettingRow> = Vec::new();
         let names: Vec<(String, String)> = self.state.settings.sync.devices.iter().map(|d| (d.id.clone(), d.name.clone())).collect();
         for p in self.remote.cloud_projects.clone().unwrap_or_default() {
