@@ -55,6 +55,8 @@ pub struct RemoteUi {
     epoch: u64,
     /// The cloud copy, when this device is the one marked as cloud.
     cloud: Option<Store>,
+    /// Cloud requests from other devices, answered in order off the UI thread. Started with the first one.
+    cloud_jobs: Option<smol::channel::Sender<(Store, Hub, Request)>>,
     /// Project id -> the latest snapshot commit the cloud confirmed, so later copies send only changes.
     pushed: HashMap<String, String>,
     /// A copy to the cloud is being prepared.
@@ -103,6 +105,7 @@ impl Shell {
             }
         } else {
             self.remote.cloud = None;
+            self.remote.cloud_jobs = None;
         }
         if self.remote.hub.is_none() {
             self.start_hub(&me, cx);
@@ -191,6 +194,7 @@ impl Shell {
         r.clients.clear();
         r.subscribed.clear();
         r.cloud = None;
+        r.cloud_jobs = None;
         r.pushed.clear();
         r.cloud_projects = None;
         r.open_new = None;
@@ -245,6 +249,12 @@ impl Shell {
                 return;
             }
         }
+        if host::is_cloud(&req.msg) {
+            if let Some(store) = self.remote.cloud.clone() {
+                self.cloud_job(store, hub, req, cx);
+                return;
+            }
+        }
         let subscribed = match &req.msg {
             ClientMsg::Subscribe { session } => Some(session.clone()),
             _ => None,
@@ -256,6 +266,22 @@ impl Shell {
             self.send_waiting_approvals(&hub, conn, &session);
         }
         cx.notify();
+    }
+
+    /// Answers a cloud request off the UI thread: storing a project runs git, which can take a while.
+    fn cloud_job(&mut self, store: Store, hub: Hub, req: Request, cx: &mut Context<Self>) {
+        let jobs = self.remote.cloud_jobs.get_or_insert_with(|| {
+            let (tx, rx) = smol::channel::unbounded::<(Store, Hub, Request)>();
+            cx.background_executor()
+                .spawn(async move {
+                    while let Ok((store, hub, req)) = rx.recv().await {
+                        host::handle_cloud(Some(&store), &hub, req);
+                    }
+                })
+                .detach();
+            tx
+        });
+        let _ = jobs.try_send((store, hub, req));
     }
 
     /// Tells connection `conn` which approvals of this device's chat `session` are waiting, when it subscribes.
@@ -777,15 +803,21 @@ impl Shell {
 
     /// Asks the cloud for a project's latest copy from `device`; it is restored when it arrives.
     pub(super) fn open_from_cloud(&mut self, project: &str, device: &str, cx: &mut Context<Self>) {
-        if let Some(store) = &self.remote.cloud {
-            // This device is the cloud: read the copy straight from the store.
-            match store.get_project(project, device) {
-                Ok((commit, bytes)) => {
-                    let bundle = STANDARD.encode(bytes);
-                    self.restore_project(project, device, &commit, &bundle, cx);
-                }
-                Err(e) => self.toast(e, cx),
-            }
+        if let Some(store) = self.remote.cloud.clone() {
+            // This device is the cloud: read the copy straight from the store, off the UI thread.
+            let (project, device) = (project.to_string(), device.to_string());
+            cx.spawn(async move |this, cx| {
+                let (p, d) = (project.clone(), device.clone());
+                let got = cx.background_executor().spawn(async move { store.get_project(&p, &d) }).await;
+                let _ = this.update(cx, |this, cx| match got {
+                    Ok((commit, bytes)) => {
+                        let bundle = STANDARD.encode(bytes);
+                        this.restore_project(&project, &device, &commit, &bundle, cx);
+                    }
+                    Err(e) => this.toast(e, cx),
+                });
+            })
+            .detach();
         } else if let Some(cloud) = self.cloud_client() {
             let _ = cloud.send(&ClientMsg::GetProject { project: project.to_string(), device: device.to_string() });
         } else {
@@ -901,7 +933,7 @@ mod tests {
         assert_eq!(next_step(&SyncSettings::default(), Some(&me)), Step::Off);
         assert_eq!(next_step(&SyncSettings { enabled: true, ..Default::default() }, None), Step::FindThisDevice);
         let ui = RemoteUi::default();
-        assert!(ui.hub.is_none() && ui.clients.is_empty() && ui.cloud.is_none() && !ui.ticking);
+        assert!(ui.hub.is_none() && ui.clients.is_empty() && ui.cloud.is_none() && ui.cloud_jobs.is_none() && !ui.ticking);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
