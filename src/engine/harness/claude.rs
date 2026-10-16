@@ -140,13 +140,21 @@ impl Harness for Claude {
             .collect();
         let all = r["models"].as_array().map_or(&[][..], Vec::as_slice);
         let (default_model, default_efforts) = default_model(all, configured_model(cwd).as_deref());
+        // Per-model settings are keyed by the full id, e.g. "claude-opus-5-5" for "opus".
+        let resolved = default_model.as_deref().map(|alias| {
+            all.iter()
+                .find(|m| m["value"] == alias)
+                .and_then(|m| m["resolvedModel"].as_str())
+                .unwrap_or(alias)
+                .to_string()
+        });
         Capabilities {
             commands: list(&v, "/response/response/commands", "argumentHint"),
             models,
             default_model,
             default_efforts,
             // Claude Code does not report its default effort, so use the one set in its settings.
-            default_effort: settings_effort(),
+            default_effort: settings_effort(cwd, resolved.as_deref()),
         }
     }
 
@@ -159,17 +167,18 @@ impl Harness for Claude {
     }
 }
 
-/// The `effortLevel` in `~/.claude/settings.json`, which Claude Code uses when no `--effort` is passed.
-fn settings_effort() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let text = std::fs::read_to_string(Path::new(&home).join(".claude/settings.json")).ok()?;
-    effort_from_settings(&text)
+/// The effort Claude Code uses when no `--effort` is passed: the first settings file (as in
+/// `configured_model`) that sets one for `model` or overall.
+fn settings_effort(cwd: &Path, model: Option<&str>) -> Option<String> {
+    settings_files(cwd).into_iter().find_map(|f| effort_from_settings(&std::fs::read_to_string(f).ok()?, model))
 }
 
-/// The `effortLevel` in Claude Code's settings JSON, when it names a level as a string.
-fn effort_from_settings(text: &str) -> Option<String> {
+/// A settings file's `modelSettings.<model>.effortLevel`, else its top-level `effortLevel`, when
+/// it names a level as a string.
+fn effort_from_settings(text: &str, model: Option<&str>) -> Option<String> {
     let settings: Value = serde_json::from_str(text).ok()?;
-    settings["effortLevel"].as_str().map(String::from)
+    let per_model = model.and_then(|m| settings["modelSettings"][m]["effortLevel"].as_str());
+    per_model.or(settings["effortLevel"].as_str()).map(String::from)
 }
 
 /// The default model's alias and efforts from the `initialize` list. Its "default" entry is the
@@ -199,12 +208,13 @@ fn configured_model(cwd: &Path) -> Option<String> {
     if let Some(m) = std::env::var("ANTHROPIC_MODEL").ok().filter(|m| !m.is_empty()) {
         return Some(m);
     }
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let files = [cwd.join(".claude/settings.local.json"), cwd.join(".claude/settings.json")];
-    files
-        .into_iter()
-        .chain(home.map(|h| h.join(".claude/settings.json")))
-        .find_map(|f| model_from_settings(&std::fs::read_to_string(f).ok()?))
+    settings_files(cwd).into_iter().find_map(|f| model_from_settings(&std::fs::read_to_string(f).ok()?))
+}
+
+/// Claude Code's settings files, most specific first: the project's local, project, then user settings.
+fn settings_files(cwd: &Path) -> Vec<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(|h| Path::new(&h).join(".claude/settings.json"));
+    [cwd.join(".claude/settings.local.json"), cwd.join(".claude/settings.json")].into_iter().chain(home).collect()
 }
 
 /// The `model` key of a Claude Code settings file.
@@ -400,10 +410,18 @@ mod tests {
 
     #[test]
     fn claude_default_effort_comes_from_its_settings() {
-        assert_eq!(effort_from_settings(r#"{"effortLevel":"high"}"#), Some("high".into()));
-        assert_eq!(effort_from_settings(r#"{"effortLevel":3}"#), None);
-        assert_eq!(effort_from_settings("{}"), None);
-        assert_eq!(effort_from_settings("not json"), None);
+        assert_eq!(effort_from_settings(r#"{"effortLevel":"high"}"#, None), Some("high".into()));
+        assert_eq!(effort_from_settings(r#"{"effortLevel":3}"#, None), None);
+        assert_eq!(effort_from_settings("{}", None), None);
+        assert_eq!(effort_from_settings("not json", None), None);
+        // Claude Code keeps the effort per model too, keyed by the full model id.
+        let per_model = r#"{"effortLevel":"high","modelSettings":{"claude-opus-5-5":{"effortLevel":"medium"}}}"#;
+        assert_eq!(effort_from_settings(per_model, Some("claude-opus-5-5")), Some("medium".into()));
+        assert_eq!(effort_from_settings(per_model, Some("claude-sonnet-5-5")), Some("high".into()));
+        assert_eq!(effort_from_settings(per_model, None), Some("high".into()));
+        let only_per_model = r#"{"modelSettings":{"claude-opus-5-5":{"effortLevel":"medium"}}}"#;
+        assert_eq!(effort_from_settings(only_per_model, Some("claude-opus-5-5")), Some("medium".into()));
+        assert_eq!(effort_from_settings(only_per_model, Some("claude-sonnet-5-5")), None);
     }
 
     #[test]
