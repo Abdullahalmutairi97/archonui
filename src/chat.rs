@@ -184,8 +184,14 @@ impl ChatView {
                 }
                 let files = std::mem::take(&mut this.startup_files);
                 if !files.is_empty() {
+                    let before = this.current.clone();
                     this.new_chat_same_agent(cx);
-                    this.add_files(files, cx);
+                    // No installed agent means no new chat; the files must not land in an old one.
+                    if this.current != before {
+                        this.add_files(files, cx);
+                    } else {
+                        this.attach_note = Some("No agent is installed, so the files couldn't be attached.".into());
+                    }
                 }
                 cx.notify();
             })
