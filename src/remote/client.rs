@@ -324,6 +324,10 @@ fn stream_turn(client: &Client, id: &str) -> i32 {
                     None => 0,
                 };
             }
+            // This command line can't answer; say so rather than sit silent until the host times it out.
+            Ok(ClientEvent::Msg(HostMsg::Approval { session, tool, .. })) if session == id => {
+                eprintln!("· {tool} waits for approval; answer it in the app on a device following this chat");
+            }
             Ok(ClientEvent::Msg(HostMsg::Error { message })) => return fail(message),
             Ok(ClientEvent::Closed(reason)) => return fail(closed(reason)),
             Ok(_) => {}
