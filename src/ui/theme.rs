@@ -874,6 +874,28 @@ mod tests {
         resolve(&blood_moon(), &HashMap::new(), FontChoice::default())
     }
 
+
+    /// WCAG contrast ratio between two colours.
+    fn contrast(a: Rgba, b: Rgba) -> f32 {
+        let lum = |c: Rgba| {
+            let ch = |v: u8| {
+                let v = v as f32 / 255.;
+                if v <= 0.039_28 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
+        };
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn notes_on_the_deep_accent_read_better_in_the_body_colour() {
+        // The error notes in the Browser, Terminal and Ide tabs sit on `deep`.
+        for p in presets() {
+            assert!(contrast(p.fg, p.deep) > contrast(p.on, p.deep), "{}", p.id);
+            assert!(contrast(p.fg, p.deep) >= 3., "{}: fg on deep is {:.2}", p.id, contrast(p.fg, p.deep));
+        }
+    }
     #[test]
     fn parse_accepts_hex_and_rgba() {
         assert_eq!(Rgba::parse("#c81e2a"), Some(Rgba::hex(0xc81e2a)));
