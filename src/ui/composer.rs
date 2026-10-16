@@ -491,6 +491,15 @@ impl Shell {
             self.toast("The agent for this chat isn't installed", cx);
             return false;
         }
+        // An effort the model does not take (kept from another model or a saved default) is dropped
+        // for the agent's default rather than sent.
+        if let Some(s) = self.state.session(id) {
+            let accepted = s.effort.as_deref().and_then(|e| self.caps_for(&agent)?.accepts_effort(s.model.as_deref(), e));
+            if accepted == Some(false) {
+                let (model, mode) = (s.model.clone(), s.mode);
+                self.state.set_options(id, model, None, mode);
+            }
+        }
         let Some(events) = self.state.send(id, text, &self.agents) else { return false };
         self.follow_turn(id, events, cx);
         cx.notify();

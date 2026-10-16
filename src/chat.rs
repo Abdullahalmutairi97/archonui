@@ -787,6 +787,13 @@ impl ChatView {
         if session.agent_session.is_none() && agent.harness.preassign_session() {
             session.agent_session = Some(store::new_id());
         }
+        // An effort the model does not take is dropped for the agent's default rather than sent.
+        let caps = self.caps.get(session.agent.as_str()).and_then(Option::as_ref);
+        if let Some(e) = session.effort.as_deref() {
+            if caps.and_then(|c| c.accepts_effort(session.model.as_deref(), e)) == Some(false) {
+                session.effort = None;
+            }
+        }
         self.input.clear();
         // The first message titles the chat, even one that had a terminal ("Terminal").
         if session.messages.is_empty() {
