@@ -546,7 +546,9 @@ impl Shell {
         } else {
             fs::metadata(&path).map(|m| human_size(m.len())).unwrap_or_default()
         };
-        line.child(div().w(px(48.)).flex_none().text_right().text_size(px(11.)).text_color(muted).child(meta))
+        // At least the old 48px so short sizes still line up, but wide enough that `14 items` or `183.6 KB`
+        // stay on one line.
+        line.child(div().min_w(px(48.)).flex_none().whitespace_nowrap().text_right().text_size(px(11.)).text_color(muted).child(meta))
             .into_any_element()
     }
 
