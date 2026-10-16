@@ -161,7 +161,8 @@ fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-fn read_jsonc(path: &Path) -> Option<Value> {
+/// `path` as JSON with comments and trailing commas allowed, as Gemini and OpenCode write it.
+pub(crate) fn read_jsonc(path: &Path) -> Option<Value> {
     serde_json::from_str(&strip_jsonc(&fs::read_to_string(path).ok()?)).ok()
 }
 
@@ -270,12 +271,17 @@ fn enabled_entries(servers: &[McpServer], typed: bool) -> serde_json::Map<String
 }
 
 fn mcp_file(name: &str, map: serde_json::Map<String, Value>) -> (PathBuf, String) {
-    (crate::store::dir().with_file_name("mcp").join(name), json!({"mcpServers": map}).to_string())
+    (file_path(name), json!({"mcpServers": map}).to_string())
+}
+
+/// `name` in the `mcp` folder beside the sessions folder, where the files a turn hands its harness live.
+pub(crate) fn file_path(name: &str) -> PathBuf {
+    crate::store::dir().with_file_name("mcp").join(name)
 }
 
 /// The per-chat `--mcp-config` file Claude reads, so a deleted chat can remove it.
 pub fn session_file(session: &str) -> PathBuf {
-    crate::store::dir().with_file_name("mcp").join(format!("claude-{session}.json"))
+    file_path(&format!("claude-{session}.json"))
 }
 
 /// Starts or calls the server and asks for its tools. Blocking, with a 10 s limit. A disabled

@@ -3,8 +3,10 @@
 //! config and holds on `exec resume` (where `-s` is not accepted). The sandbox
 //! setting uses the same flag in Auto, so resumed turns get it too.
 
-use super::{planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, TurnInput};
-use crate::app::settings::{McpServer, McpTransport};
+use super::{
+    planned, prompt_arg, scoped, signed_in, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, ToolSupport, TurnInput,
+};
+use crate::app::settings::{McpServer, McpTransport, Permission};
 use crate::engine::{
     attach::{Delivery, Kind},
     discover::{run_json, short, Capabilities, ModelInfo},
@@ -67,6 +69,7 @@ impl Harness for Codex {
         }
         let mcp = self.mcp_args(input.tools.mcp);
         a.extend(mcp.args);
+        a.extend(tool_overrides(&input.tools, config_skills()).into_iter().flat_map(|o| ["-c".to_string(), o]));
         if let Some(model) = input.model {
             a.extend(strs(&["--model", model]));
         }
@@ -99,6 +102,12 @@ impl Harness for Codex {
             .flat_map(|o| ["-c".to_string(), o])
             .collect();
         Plan { args, env: env.into_iter().collect(), ..Default::default() }
+    }
+
+    /// Codex's config can only switch off its shell and web search tools. A disabled skill is
+    /// switched off by folder. `codex exec` cannot ask, so Ask is not applied.
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport { mcp: true, permissions: [false, false, false, true, false, true, false], ask: false, skill_toggles: true }
     }
 
     /// Models come from the catalog, limited to the ones its own picker lists;
@@ -144,6 +153,55 @@ impl Harness for Codex {
     fn auth_status(&self) -> AuthStatus {
         signed_in(&["OPENAI_API_KEY"], &[".codex/auth.json"])
     }
+}
+
+/// `-c` overrides (Codex's config reference) for the tools switched off and the disabled skills:
+/// `features.shell_tool` for Run, `web_search` for Web search, and `skills.config` entries with
+/// `enabled = false`. An override replaces the whole `skills.config` list, so `user_skills` (the
+/// user's own entries) are kept in front.
+fn tool_overrides(tools: &ToolSettings, user_skills: Vec<toml::Value>) -> Vec<String> {
+    let mut out = Vec::new();
+    if tools.permissions.run == Permission::Off {
+        out.push("features.shell_tool=false".to_string());
+    }
+    if tools.permissions.web == Permission::Off {
+        out.push("web_search=\"disabled\"".to_string());
+    }
+    let disabled: Vec<toml::Value> = tools
+        .skills
+        .iter()
+        .filter(|s| tools.disabled_skills.contains(&s.id))
+        .map(|skill| {
+            let mut entry = toml::Table::new();
+            entry.insert("path".into(), toml::Value::String(skill.path.display().to_string()));
+            entry.insert("enabled".into(), toml::Value::Boolean(false));
+            toml::Value::Table(entry)
+        })
+        .collect();
+    if !disabled.is_empty() {
+        let entries = user_skills.into_iter().chain(disabled).collect();
+        out.push(format!("skills.config={}", toml::Value::Array(entries)));
+    }
+    out
+}
+
+/// The `skills.config` entries in `~/.codex/config.toml`.
+fn config_skills() -> Vec<toml::Value> {
+    let Some(text) = codex_home().and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok()) else {
+        return Vec::new();
+    };
+    skills_in(&text)
+}
+
+/// The `skills.config` entries of TOML `text`.
+fn skills_in(text: &str) -> Vec<toml::Value> {
+    let Ok(table) = text.parse::<toml::Table>() else { return Vec::new() };
+    table
+        .get("skills")
+        .and_then(|s| s.get("config"))
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// The `mcp_servers.<name>` settings for `s`, as `key = value` TOML. Secret
@@ -238,10 +296,12 @@ fn toml_table(map: &BTreeMap<String, String>) -> String {
 
 /// A top-level `key = "..."` in `~/.codex/config.toml`.
 fn config_value(key: &str) -> Option<String> {
-    let home = env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|h| Path::new(&h).join(".codex")))?;
-    top_level_string(&std::fs::read_to_string(home.join("config.toml")).ok()?, key)
+    top_level_string(&std::fs::read_to_string(codex_home()?.join("config.toml")).ok()?, key)
+}
+
+/// `$CODEX_HOME`, else `~/.codex`.
+fn codex_home() -> Option<PathBuf> {
+    env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| env::var_os("HOME").map(|h| Path::new(&h).join(".codex")))
 }
 
 /// The string value of top-level `key` in TOML `text`. Parsed as TOML, so a trailing
@@ -261,5 +321,36 @@ mod tests {
         assert_eq!(top_level_string(text, "model").as_deref(), Some("gpt-5"));
         assert_eq!(top_level_string(text, "model_reasoning_effort").as_deref(), Some("high"));
         assert_eq!(top_level_string("[x]\nmodel = \"m\"\n", "model"), None, "keys inside tables are not top-level");
+    }
+
+    #[test]
+    fn off_tools_and_disabled_skills_become_overrides() {
+        use crate::app::settings::Permissions;
+        use crate::engine::skills::Skill;
+        let skills = [Skill {
+            id: "/s/review".into(),
+            name: "review".into(),
+            description: String::new(),
+            command: "/review".into(),
+            source: "Personal".into(),
+            path: PathBuf::from("/s/review"),
+        }];
+        let off = ["/s/review".to_string()];
+        let tools = ToolSettings {
+            skills: &skills,
+            disabled_skills: &off,
+            permissions: Permissions { run: Permission::Off, web: Permission::Off, read: Permission::Off, ..Permissions::default() },
+            ..Default::default()
+        };
+        let user = skills_in("[[skills.config]]\npath = \"/u/mine\"\nenabled = false\n");
+        let o = tool_overrides(&tools, user);
+        assert_eq!(o[0], "features.shell_tool=false");
+        assert_eq!(o[1], "web_search=\"disabled\"");
+        // The user's own entries stay, since the override replaces the list.
+        let list: toml::Table = format!("x = {}", o[2].strip_prefix("skills.config=").unwrap()).parse().unwrap();
+        let list = list["x"].as_array().unwrap();
+        assert_eq!(list[0]["path"].as_str(), Some("/u/mine"));
+        assert_eq!((list[1]["path"].as_str(), list[1]["enabled"].as_bool()), (Some("/s/review"), Some(false)));
+        assert!(tool_overrides(&ToolSettings::default(), Vec::new()).is_empty());
     }
 }

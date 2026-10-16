@@ -16,7 +16,7 @@ use super::{
     session::{spawn, Event},
     skills::Skill,
 };
-use crate::app::settings::{McpServer, Permissions};
+use crate::app::settings::{McpServer, Permission, Permissions};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -106,6 +106,28 @@ pub struct ToolSettings<'a> {
     pub approval: Option<Route<'a>>,
 }
 
+/// Which tool settings a harness really applies, so the settings page can say which ones do nothing.
+/// Not read until the settings page shows it.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToolSupport {
+    /// ArchonUI's enabled MCP servers reach the agent.
+    pub mcp: bool,
+    /// One per built-in tool row, in the settings page's order: read, edit, grep, run, browser, web,
+    /// fetch. `true` when setting the row to Off really removes the tool.
+    pub permissions: [bool; 7],
+    /// The harness can stop and ask before each use of a tool set to Ask.
+    pub ask: bool,
+    /// Switching a skill off stops this harness from loading it.
+    pub skill_toggles: bool,
+}
+
+/// `p` as one level per built-in tool row, in `ToolSupport::permissions` order.
+#[allow(dead_code)]
+pub fn permission_rows(p: Permissions) -> [Permission; 7] {
+    [p.read, p.edit, p.grep, p.run, p.browser, p.web, p.fetch]
+}
+
 /// Everything one turn needs from the chat.
 pub struct TurnInput<'a> {
     /// Folder the agent runs in.
@@ -162,6 +184,11 @@ pub trait Harness: Send + Sync {
     /// without MCP config returns nothing, so its own MCP settings still apply.
     fn mcp_args(&self, _servers: &[McpServer]) -> Plan {
         Plan::default()
+    }
+    /// Which tool settings `plan` applies. The default applies none.
+    #[allow(dead_code)]
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport::default()
     }
     /// What the CLI offers, from its own listings. Blocking; missing pieces
     /// come back empty.
@@ -568,10 +595,53 @@ mod tests {
         assert!(doc["mcpServers"].get("pg").is_none(), "disabled servers are not passed");
         assert!(claude.files[0].0.ends_with("mcp/claude.json"));
 
+        // Pi gets an extension that registers the enabled servers; `--mcp-config` is not a Pi flag.
         let pi = harness("pi").unwrap().plan(&turn);
-        let doc: serde_json::Value = serde_json::from_str(&pi.files[0].1).unwrap();
-        assert_eq!(doc["mcpServers"]["docs"]["url"], "https://d.test/mcp");
-        assert!(doc["mcpServers"]["docs"].get("type").is_none());
+        assert!(has_pair(&pi.args, "--extension", &pi.files[0].0.display().to_string()), "{:?}", pi.args);
+        assert!(!pi.args.iter().any(|a| a == "--mcp-config"));
+        assert!(pi.files[0].1.contains(r#""docs":{"url":"https://d.test/mcp","headers":{"Authorization":"Bearer t"}}"#), "{}", pi.files[0].1);
+        assert!(!pi.files[0].1.contains("psql"), "disabled servers are not passed");
+    }
+
+    /// One setting at a time: (permission row switched Off, server enabled, skill disabled).
+    fn plan_for(h: &dyn Harness, row: Option<usize>, server: bool, skill_off: bool) -> (Vec<String>, Vec<(String, String)>, Vec<String>) {
+        let servers = [McpServer {
+            id: "t".into(),
+            name: "t".into(),
+            transport: McpTransport::Stdio { command: "t-mcp".into(), args: vec![], env: BTreeMap::new() },
+            enabled: true,
+        }];
+        let skills = [skill("/s/review", "review")];
+        let off = ["/s/review".to_string()];
+        let mut levels = [Permission::Allow; 7];
+        if let Some(i) = row {
+            levels[i] = Permission::Off;
+        }
+        let [read, edit, grep, run, browser, web, fetch] = levels;
+        let tools = ToolSettings {
+            mcp: if server { &servers } else { &[] },
+            skills: &skills,
+            disabled_skills: if skill_off { &off } else { &[] },
+            permissions: Permissions { read, edit, grep, run, browser, web, fetch },
+            ..Default::default()
+        };
+        assert_eq!(permission_rows(tools.permissions), levels);
+        let plan = h.plan(&TurnInput { tools, ..input(Mode::Auto, None) });
+        (plan.args, plan.env, plan.files.into_iter().map(|(_, text)| text).collect())
+    }
+
+    #[test]
+    fn each_harness_reports_the_tool_settings_it_applies() {
+        for h in HARNESSES {
+            let support = h.tool_support();
+            let base = plan_for(*h, None, false, false);
+            for (i, applied) in support.permissions.into_iter().enumerate() {
+                assert_eq!(plan_for(*h, Some(i), false, false) != base, applied, "{} row {i}", h.id());
+            }
+            assert_eq!(plan_for(*h, None, true, false) != base, support.mcp, "{} mcp", h.id());
+            assert_eq!(plan_for(*h, None, false, true) != base, support.skill_toggles, "{} skills", h.id());
+            assert!(!support.ask, "{}: no harness can ask while it runs headless", h.id());
+        }
     }
 
     #[test]

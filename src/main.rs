@@ -127,7 +127,18 @@ fn headless(args: &[String]) -> bool {
             let mut rest = &args[1..];
             let config = app::persist::Paths::current().config;
             let settings = app::persist::load(&config, &store::settings_path()).settings;
+            // The same tool settings a chat gets, so a headless turn exercises them too.
+            let skills = engine::skills::discover(&working_dir());
+            let disabled_skills: Vec<String> = skills
+                .iter()
+                .filter(|s| settings.skills_enabled.get(&s.id) == Some(&false))
+                .map(|s| s.id.clone())
+                .collect();
             let tools = engine::ToolSettings {
+                mcp: &settings.mcp_servers,
+                skills: &skills,
+                disabled_skills: &disabled_skills,
+                permissions: settings.permissions,
                 max_steps: Some(settings.max_steps),
                 sandbox: settings.sandbox,
                 ask_network: settings.ask_network,

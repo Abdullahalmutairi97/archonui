@@ -174,11 +174,15 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
     thread::spawn(move || {
         // Bytes, not `lines()`: a line that isn't UTF-8 must not stop the drain, or the pipe fills.
         for bytes in BufReader::new(stderr).split(b'\n').map_while(Result::ok) {
+            let line = String::from_utf8_lossy(&bytes).trim_end_matches('\r').to_string();
+            if benign(&line) {
+                continue;
+            }
             let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
             if tail.len() == 12 {
                 tail.pop_front();
             }
-            tail.push_back(String::from_utf8_lossy(&bytes).trim_end_matches('\r').to_string());
+            tail.push_back(line);
         }
         let _ = stderr_tx.send(());
     });
@@ -222,6 +226,12 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
     });
 
     Ok(Turn { events: rx, group })
+}
+
+/// A stderr line that says nothing about a failure, so it is kept out of the error a failed turn
+/// shows. Pi prints this one on the first turn of every chat, because ArchonUI picks the session id.
+fn benign(line: &str) -> bool {
+    line.starts_with("Warning: No project session found with id ")
 }
 
 /// Writes `text` to `path`, creating its folder, readable by this user only.
@@ -322,6 +332,16 @@ mod tests {
         // Once reaped, cancelling again sends nothing.
         assert!(!turn.group.signal(0));
         turn.cancel();
+    }
+
+    #[test]
+    fn a_failure_shows_the_real_error_not_pis_session_warning() {
+        let turn = run_shell(
+            "echo \"Warning: No project session found with id 'archonui-1'; creating a new session with that id.\" >&2; \
+             echo 'Error: Unknown option: --x' >&2; exit 1",
+        );
+        let result = finished_within(&turn, 5).expect("the turn finished");
+        assert_eq!(result, Err("exit status: 1\nError: Unknown option: --x".to_string()));
     }
 
     #[test]

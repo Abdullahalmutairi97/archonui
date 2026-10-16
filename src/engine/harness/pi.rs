@@ -1,7 +1,7 @@
 //! Pi: `pi -p` with inlined `@file` arguments. Pi has no permission system,
 //! so Plan and Ask narrow the tool list instead.
 
-use super::{chat_note, prompt_arg, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, TurnInput, PLAN_PREAMBLE};
+use super::{chat_note, prompt_arg, strs, AuthStatus, Harness, Mode, Plan, ToolSettings, ToolSupport, TurnInput, PLAN_PREAMBLE};
 use crate::app::settings::{McpServer, Permission, Permissions};
 use crate::engine::{
     attach::{Delivery, Kind},
@@ -11,7 +11,11 @@ use crate::engine::{
     skills::Skill,
 };
 use serde_json::Value;
-use std::{env, path::Path, process::Command};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 pub struct Pi;
 
@@ -48,7 +52,8 @@ impl Harness for Pi {
     /// so only images and real text files go that way.
     fn plan(&self, input: &TurnInput) -> Plan {
         let files = Delivery::split(input.files, |a| a.kind == Kind::Image || super::small_text(a));
-        let mcp = self.mcp_args(input.tools.mcp);
+        // Plan and Ask turn MCP off with `--no-mcp`, so they register no servers.
+        let mcp = if input.mode == Mode::Auto { self.mcp_args(input.tools.mcp) } else { Plan::default() };
         let mut a = strs(&["-p", "--mode", "json"]);
         if let Some(model) = input.model {
             a.extend(strs(&["--model", model]));
@@ -77,15 +82,24 @@ impl Harness for Pi {
         Plan { args: a, files: mcp.files, ..Default::default() }
     }
 
-    /// `--mcp-config` (from the pi-mcp-adapter extension) with the enabled servers in a file.
-    /// Pi's own MCP config is read as well, so an imported server cannot be switched off here.
+    /// `--extension` with a generated extension that registers the enabled servers. Pi 1.3 has MCP
+    /// built in, with no flag for a config file. Pi's own `mcp.json` is read as well and wins on a
+    /// name clash, so a server imported from there cannot be switched off here.
     fn mcp_args(&self, servers: &[McpServer]) -> Plan {
-        match mcp::config_file("pi.json", servers, false) {
-            Some((path, text)) => {
-                Plan { args: strs(&["--mcp-config", &path.display().to_string()]), files: vec![(path, text)], ..Default::default() }
-            }
+        match extension_file(servers) {
+            Some((path, text)) => Plan {
+                args: strs(&["--extension", &path.display().to_string()]),
+                files: vec![(path, text)],
+                ..Default::default()
+            },
             None => Plan::default(),
         }
+    }
+
+    /// Off removes Pi's read, edit and shell tools; it has no browser or web tools. Disabled skills
+    /// are left out of the skills it loads.
+    fn tool_support(&self) -> ToolSupport {
+        ToolSupport { mcp: true, permissions: [true, true, true, true, false, false, false], ask: false, skill_toggles: true }
     }
 
     fn discover(&self, path: &Path, cwd: &Path) -> Capabilities {
@@ -150,6 +164,51 @@ impl Harness for Pi {
         let Some(home) = env::var_os("HOME") else { return AuthStatus::Missing };
         auth_in(&Path::new(&home).join(".pi/agent"))
     }
+}
+
+/// The extension `extension_file` writes; `SERVERS` becomes the servers as a JSON object.
+const EXTENSION: &str = r#"// Written by ArchonUI for one Pi turn: the MCP servers enabled in its settings.
+const servers = SERVERS;
+export default function (pi) {
+  for (const [name, config] of Object.entries(servers)) {
+    try {
+      pi.registerMcpServer(name, config);
+    } catch (e) {
+      console.error(`ArchonUI: MCP server ${name}: ${e.message}`);
+    }
+  }
+}
+"#;
+
+/// A Pi extension (an ES module) that registers the enabled `servers` with `pi.registerMcpServer`,
+/// as (path, text). Written 0600 each turn beside the other server files, so tokens stay out of
+/// argv. A server Pi rejects is reported on stderr and the rest still register. `None` when no
+/// server is enabled.
+fn extension_file(servers: &[McpServer]) -> Option<(PathBuf, String)> {
+    let mut taken: Vec<String> = Vec::new();
+    let mut map = serde_json::Map::new();
+    for s in servers.iter().filter(|s| s.enabled) {
+        let name = server_name(&s.name, &taken);
+        taken.push(name.replace('-', "_"));
+        map.insert(name, mcp::json_entry(s, false));
+    }
+    if map.is_empty() {
+        return None;
+    }
+    let text = EXTENSION.replacen("SERVERS", &Value::Object(map).to_string(), 1);
+    Some((mcp::file_path("pi-extension.js"), text))
+}
+
+/// `name` under Pi's rules: only letters, digits, `_` and `-`, and unique when `-` and `_` count as
+/// the same. Other characters become `_`; a clash with `taken` (already folded) gets `_2`, `_3`, ….
+fn server_name(name: &str, taken: &[String]) -> String {
+    let clean: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    let clean = if clean.is_empty() { "server".to_string() } else { clean };
+    let free = |n: &String| !taken.contains(&n.replace('-', "_"));
+    if free(&clean) {
+        return clean;
+    }
+    (2..).map(|n| format!("{clean}_{n}")).find(free).expect("a free name exists")
 }
 
 /// Pi reads any argument starting with `@` as a file to include, even after `--`, so a prompt
@@ -307,6 +366,53 @@ mod tests {
             project: None,
         };
         assert_eq!(Pi.plan(&input).args.last().map(String::as_str), Some(" @notes.md summarise"));
+    }
+
+    #[test]
+    fn server_names_follow_pis_rules() {
+        assert_eq!(server_name("my docs.v2", &[]), "my_docs_v2");
+        assert_eq!(server_name("", &[]), "server");
+        // `-` and `_` count as the same, so a clash gets a suffix.
+        assert_eq!(server_name("a-b", &["a_b".to_string()]), "a-b_2");
+        assert_eq!(server_name("a_b", &["a_b".to_string(), "a_b_2".to_string()]), "a_b_3");
+    }
+
+    #[test]
+    fn the_extension_registers_enabled_servers_in_auto_only() {
+        use crate::app::settings::McpTransport;
+        let server = |name: &str, enabled| McpServer {
+            id: name.into(),
+            name: name.into(),
+            transport: McpTransport::Stdio { command: "x-mcp".into(), args: vec!["-v".into()], env: Default::default() },
+            enabled,
+        };
+        let servers = [server("my docs", true), server("my_docs", true), server("off", false)];
+        let (_, text) = extension_file(&servers).unwrap();
+        let json = text.lines().find_map(|l| l.strip_prefix("const servers = ")).unwrap().trim_end_matches(';');
+        let map: Value = serde_json::from_str(json).unwrap();
+        let names: Vec<&String> = map.as_object().unwrap().keys().collect();
+        assert_eq!(names, ["my_docs", "my_docs_2"]);
+        assert_eq!(map["my_docs"]["args"][0], "-v");
+        assert!(text.contains("pi.registerMcpServer(name, config)"));
+        assert!(extension_file(&[server("off", false)]).is_none());
+
+        let input = |mode| TurnInput {
+            cwd: Path::new("/work"),
+            prompt: "do it",
+            session: None,
+            files: &[],
+            model: None,
+            effort: None,
+            mode,
+            tools: ToolSettings { mcp: &servers, ..Default::default() },
+            project: None,
+        };
+        assert!(Pi.plan(&input(Mode::Auto)).args.iter().any(|a| a == "--extension"));
+        for mode in [Mode::Plan, Mode::Ask] {
+            let plan = Pi.plan(&input(mode));
+            assert!(!plan.args.iter().any(|a| a == "--extension") && plan.files.is_empty(), "{mode:?}");
+            assert!(plan.args.iter().any(|a| a == "--no-mcp"), "{mode:?}");
+        }
     }
 
     #[test]

@@ -21,6 +21,9 @@ mod session;
 pub use detect::{detect, DetectedAgent};
 pub use discover::{discover, Capabilities, ModelInfo};
 pub use harness::{harness, Harness, Mode, ToolSettings};
+/// For the settings page, to show which tool settings each harness applies.
+#[allow(unused_imports)]
+pub use harness::{permission_rows, ToolSupport};
 /// For tests outside `engine` that build `Capabilities.commands` and `DetectedAgent`s.
 #[cfg(test)]
 #[allow(unused_imports)]
