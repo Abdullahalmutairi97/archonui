@@ -208,6 +208,10 @@ pub struct Session {
     /// messages, until it is deleted. A new chat is hidden until it has a message or this is set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub listed: bool,
+    /// The device this chat lives on, for chats shown from another device; `None` for this device's own.
+    /// Never saved: a remote chat is a live copy, not a file here.
+    #[serde(skip)]
+    pub origin: Option<String>,
     pub created: u64,
     /// Last activity, in seconds since the epoch. The sidebar sorts by it ("last used").
     pub updated: u64,
@@ -236,6 +240,7 @@ impl Session {
             terminal: false,
             draft: String::new(),
             listed: false,
+            origin: None,
             created: now,
             updated: now,
             messages: Vec::new(),
