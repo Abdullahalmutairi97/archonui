@@ -61,6 +61,8 @@ pub struct RemoteUi {
     pushed: HashMap<String, String>,
     /// A copy to the cloud is being prepared.
     backing_up: bool,
+    /// A reply ended while a copy was being prepared: copy again once it is sent.
+    backup_again: bool,
     /// What the cloud holds, for Settings → Devices; `None` until asked.
     pub(super) cloud_projects: Option<Vec<CloudProject>>,
     /// The cloud was asked what it holds over its current connection; the page doesn't ask again.
@@ -207,6 +209,7 @@ impl Shell {
         r.cloud = None;
         r.cloud_jobs = None;
         r.pushed.clear();
+        r.backup_again = false;
         r.cloud_projects = None;
         r.cloud_asked = false;
         r.cloud_for = None;
@@ -750,7 +753,11 @@ impl Shell {
     /// Copies this device's projects (working files, committed or not) and chats to the cloud.
     /// Only what changed since the cloud's last confirmation is sent. Runs off the UI thread.
     pub(super) fn backup(&mut self, cx: &mut Context<Self>) {
-        if self.remote.backing_up || !self.state.settings.sync.enabled {
+        if !self.state.settings.sync.enabled {
+            return;
+        }
+        if self.remote.backing_up {
+            self.remote.backup_again = true;
             return;
         }
         let Some(me) = self.remote.me.clone() else { return };
@@ -813,12 +820,15 @@ impl Shell {
                     out
                 })
                 .await;
-            let _ = this.update(cx, |this, _| {
+            let _ = this.update(cx, |this, cx| {
                 this.remote.backing_up = false;
                 if let Some(cloud) = this.cloud_client() {
                     for msg in &ready {
                         let _ = cloud.send(msg);
                     }
+                }
+                if std::mem::take(&mut this.remote.backup_again) {
+                    this.backup(cx);
                 }
             });
         })
