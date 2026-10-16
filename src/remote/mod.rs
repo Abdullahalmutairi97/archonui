@@ -14,6 +14,7 @@ pub mod client;
 pub mod hub;
 pub mod host;
 pub mod proto;
+pub mod snapshot;
 pub mod tailscale;
 
 use serde::{Deserialize, Serialize};
