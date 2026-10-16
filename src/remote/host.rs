@@ -177,6 +177,13 @@ pub fn handle(state: &mut AppState, agents: &[DetectedAgent], hub: &Hub, req: Re
                 hub.reply(conn, &HostMsg::Error { message: "No reply is running in that chat".into() });
             }
         }
+        ClientMsg::PutProject { .. }
+        | ClientMsg::PutChats { .. }
+        | ClientMsg::ListCloud
+        | ClientMsg::GetProject { .. }
+        | ClientMsg::GetChats { .. } => {
+            hub.reply(conn, &HostMsg::Error { message: "This device does not keep a cloud copy".into() })
+        }
         ClientMsg::Draft { session, text } => {
             if state.session(&session).is_none() {
                 hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
@@ -198,7 +205,14 @@ fn target(msg: &ClientMsg) -> Option<&str> {
         | ClientMsg::Prompt { session, .. }
         | ClientMsg::Cancel { session }
         | ClientMsg::Draft { session, .. } => Some(session),
-        ClientMsg::Hello { .. } | ClientMsg::ListSessions | ClientMsg::NewSession { .. } => None,
+        ClientMsg::Hello { .. }
+        | ClientMsg::ListSessions
+        | ClientMsg::NewSession { .. }
+        | ClientMsg::PutProject { .. }
+        | ClientMsg::PutChats { .. }
+        | ClientMsg::ListCloud
+        | ClientMsg::GetProject { .. }
+        | ClientMsg::GetChats { .. } => None,
     }
 }
 
