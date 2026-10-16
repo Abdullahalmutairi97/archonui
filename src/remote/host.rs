@@ -1,11 +1,15 @@
 //! The host side of sharing chats between devices: `archonui --serve` listens on this device's
 //! Tailscale address and lets other devices list chats, send prompts and follow their replies.
 //! The agents keep running here. A client only sends prompts and receives the streamed events.
-//! The messages are in `proto`.
+//! The messages are in `proto`, the sockets in `hub`.
+//!
+//! `handle` and `forward` hold the chat logic. They are plain functions, so the desktop window can
+//! call them from its own thread too.
 
 use super::{
-    proto::{self, ClientMsg, HostMsg, SessionSummary},
-    tailscale, SyncSettings,
+    hub::{Hub, Request},
+    proto::{ClientMsg, HostMsg, SessionSummary},
+    tailscale,
 };
 use crate::{
     app::{
@@ -16,73 +20,10 @@ use crate::{
     store::{self, Session},
 };
 use std::{
-    collections::HashMap,
     io,
-    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
-    sync::{mpsc, Arc, Mutex, MutexGuard},
+    net::{IpAddr, SocketAddr},
     thread,
-    time::Duration,
 };
-
-/// How long a new connection may take to send its WebSocket handshake.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How often a connection checks its queue while the client is quiet.
-const POLL: Duration = Duration::from_millis(50);
-
-/// What every connection shares. Locked briefly, and never across a socket write.
-struct Hub {
-    state: AppState,
-    /// Agents found on this device when the host started.
-    agents: Vec<DetectedAgent>,
-    /// The host name sent in `Welcome`.
-    device: String,
-    /// Connection ids subscribed to each chat.
-    subs: HashMap<String, Vec<u64>>,
-    /// The outgoing queue of each open connection, by connection id.
-    conns: HashMap<u64, mpsc::Sender<String>>,
-    next_conn: u64,
-}
-
-type Shared = Arc<Mutex<Hub>>;
-
-fn lock(shared: &Shared) -> MutexGuard<'_, Hub> {
-    shared.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-impl Hub {
-    /// Queues `msg` for every connection subscribed to `session`, except `except`. Connections whose
-    /// queue is gone are unsubscribed.
-    fn broadcast(&mut self, session: &str, msg: &HostMsg, except: Option<u64>) {
-        let text = proto::encode(msg);
-        let Some(ids) = self.subs.get(session) else { return };
-        let mut gone = Vec::new();
-        for id in ids.iter().copied().filter(|id| Some(*id) != except) {
-            let sent = self.conns.get(&id).is_some_and(|tx| tx.send(text.clone()).is_ok());
-            if !sent {
-                gone.push(id);
-            }
-        }
-        if let Some(ids) = self.subs.get_mut(session) {
-            ids.retain(|id| !gone.contains(id));
-        }
-    }
-
-    /// Forgets a connection that has closed.
-    fn disconnect(&mut self, conn: u64) {
-        self.conns.remove(&conn);
-        for ids in self.subs.values_mut() {
-            ids.retain(|id| *id != conn);
-        }
-        self.subs.retain(|_, ids| !ids.is_empty());
-    }
-}
-
-/// Saves the chats that changed, and prints the files that could not be written.
-fn flush(hub: &mut Hub) {
-    for e in hub.state.flush_sessions() {
-        eprintln!("archonui host: {e}");
-    }
-}
 
 /// Serves this device's chats on `bind` until the process ends. Loads the settings and chats itself.
 pub fn serve(bind: SocketAddr) -> io::Result<()> {
@@ -159,15 +100,6 @@ fn host_name(tailnet: &Result<tailscale::Tailnet, String>) -> String {
         .unwrap_or_else(|| "host".into())
 }
 
-/// Whether a peer at `ip` may connect. Loopback always may, for local testing. Anyone else must be
-/// a Tailscale address, and when the user picked devices, one of them.
-fn peer_allowed(ip: IpAddr, sync: &SyncSettings, tailscale_peer: bool) -> bool {
-    if ip.is_loopback() {
-        return true;
-    }
-    tailscale_peer && (sync.devices.is_empty() || sync.allows(&ip.to_string()))
-}
-
 /// The list entry for chat `s`.
 fn summary(s: &Session, busy: bool) -> SessionSummary {
     SessionSummary {
@@ -182,295 +114,199 @@ fn summary(s: &Session, busy: bool) -> SessionSummary {
     }
 }
 
-fn listen(bind: SocketAddr, device: String, state: AppState) -> io::Result<()> {
-    let listener = TcpListener::bind(bind)?;
-    let harness_settings = store::Settings { harnesses: state.settings.harnesses.clone(), ..Default::default() };
-    let agents = engine::detect(&harness_settings);
-    let shared: Shared = Arc::new(Mutex::new(Hub {
-        state,
-        agents,
-        device,
-        subs: HashMap::new(),
-        conns: HashMap::new(),
-        next_conn: 1,
-    }));
-    eprintln!("archonui host listening on {bind}");
-    for stream in listener.incoming() {
-        let stream = match stream {
-            Ok(stream) => stream,
-            Err(e) => {
-                eprintln!("archonui host: could not accept a connection: {e}");
-                continue;
-            }
-        };
-        let Ok(ip) = stream.peer_addr().map(|a| a.ip()) else { continue };
-        let allowed = peer_allowed(ip, &lock(&shared).state.settings.sync, tailscale::is_tailscale_addr(&ip));
-        if !allowed {
-            eprintln!("archonui host: refused a connection from {ip}");
-            continue;
-        }
-        let shared = Arc::clone(&shared);
-        thread::spawn(move || connection(stream, shared));
+/// Saves the chats that changed, and prints the files that could not be written.
+fn flush(state: &mut AppState) {
+    for e in state.flush_sessions() {
+        eprintln!("archonui host: {e}");
     }
-    Ok(())
 }
 
-/// Runs one client connection until it closes: the handshake, then each message in and each queued
-/// message out, in order.
-fn connection(stream: TcpStream, shared: Shared) {
-    if stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() {
-        return;
+/// Handles one client request. Replies and broadcasts go out through `hub`. When a prompt starts a
+/// turn, returns the chat id and the turn's events, for the caller to follow.
+pub fn handle(state: &mut AppState, agents: &[DetectedAgent], hub: &Hub, req: Request) -> Option<(String, smol::channel::Receiver<Event>)> {
+    let conn = req.conn;
+    let mut turn = None;
+    // Chats shown here from another device are not this host's to share.
+    if let Some(id) = target(&req.msg).filter(|id| state.is_remote(id).is_some()) {
+        hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {id} on this device") });
+        return None;
     }
-    let mut ws = match tungstenite::accept(stream) {
-        Ok(ws) => ws,
-        Err(e) => {
-            eprintln!("archonui host: handshake failed: {e}");
-            return;
-        }
-    };
-    if ws.get_ref().set_read_timeout(Some(POLL)).is_err() {
-        return;
-    }
-    let (tx, rx) = mpsc::channel::<String>();
-    let conn = {
-        let mut hub = lock(&shared);
-        let id = hub.next_conn;
-        hub.next_conn += 1;
-        hub.conns.insert(id, tx.clone());
-        id
-    };
-    let mut hello = false;
-    let mut closing = false;
-    'conn: loop {
-        while let Ok(text) = rx.try_recv() {
-            if ws.send(tungstenite::Message::text(text)).is_err() {
-                break 'conn;
-            }
-        }
-        if closing {
-            break;
-        }
-        match ws.read() {
-            Ok(tungstenite::Message::Text(text)) => {
-                closing = handle(&shared, conn, &tx, &mut hello, text.as_str()) == Next::Close;
-            }
-            Ok(tungstenite::Message::Close(_)) => break,
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {}
-            Err(_) => break,
-        }
-    }
-    let _ = ws.close(None);
-    lock(&shared).disconnect(conn);
-}
-
-/// Whether a connection goes on after one message.
-#[derive(Debug, PartialEq, Eq)]
-enum Next {
-    Continue,
-    Close,
-}
-
-/// Queues `msg` for this connection's writer.
-fn queue(me: &mpsc::Sender<String>, msg: &HostMsg) {
-    let _ = me.send(proto::encode(msg));
-}
-
-/// Handles one client message. Replies are queued on `me`, so they go out in order with events.
-fn handle(shared: &Shared, conn: u64, me: &mpsc::Sender<String>, hello: &mut bool, text: &str) -> Next {
-    let msg = match proto::decode::<ClientMsg>(text) {
-        Ok(msg) => msg,
-        Err(message) => {
-            queue(me, &HostMsg::Error { message });
-            return if *hello { Next::Continue } else { Next::Close };
-        }
-    };
-    if !*hello {
-        return match msg {
-            ClientMsg::Hello { version, .. } if version == proto::VERSION => {
-                *hello = true;
-                let device = lock(shared).device.clone();
-                queue(me, &HostMsg::Welcome { device, version: proto::VERSION });
-                Next::Continue
-            }
-            ClientMsg::Hello { version, .. } => {
-                queue(
-                    me,
-                    &HostMsg::Error { message: format!("Protocol version {version} does not match this host's {}", proto::VERSION) },
-                );
-                Next::Close
-            }
-            _ => {
-                queue(me, &HostMsg::Error { message: "Say hello first".into() });
-                Next::Close
-            }
-        };
-    }
-    let mut hub = lock(shared);
-    match msg {
-        ClientMsg::Hello { .. } => queue(me, &HostMsg::Error { message: "Already said hello".into() }),
+    match req.msg {
+        ClientMsg::Hello { .. } => hub.reply(conn, &HostMsg::Error { message: "Already said hello".into() }),
         ClientMsg::ListSessions => {
-            let mut list: Vec<&Session> = hub.state.sessions().iter().filter(|s| s.visible()).collect();
+            let mut list: Vec<&Session> = state.sessions().iter().filter(|s| s.visible() && s.origin.is_none()).collect();
             list.sort_by(|a, b| b.updated.cmp(&a.updated));
-            let sessions = list.into_iter().map(|s| summary(s, hub.state.busy(&s.id))).collect();
-            queue(me, &HostMsg::Sessions { sessions });
+            let sessions = list.into_iter().map(|s| summary(s, state.busy(&s.id))).collect();
+            hub.reply(conn, &HostMsg::Sessions { sessions });
         }
         ClientMsg::Subscribe { session } => {
-            let busy = hub.state.busy(&session);
-            match hub.state.session(&session).map(serde_json::to_value) {
+            let busy = state.busy(&session);
+            match state.session(&session).map(serde_json::to_value) {
                 Some(Ok(value)) => {
-                    let ids = hub.subs.entry(session).or_default();
-                    if !ids.contains(&conn) {
-                        ids.push(conn);
-                    }
-                    queue(me, &HostMsg::Snapshot { session: value, busy });
+                    hub.subscribe(conn, &session);
+                    hub.reply(conn, &HostMsg::Snapshot { session: value, busy });
                 }
-                Some(Err(e)) => queue(me, &HostMsg::Error { message: format!("Could not send the chat: {e}") }),
-                None => queue(me, &HostMsg::Error { message: format!("There is no chat {session} on this device") }),
+                Some(Err(e)) => hub.reply(conn, &HostMsg::Error { message: format!("Could not send the chat: {e}") }),
+                None => hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") }),
             }
         }
-        ClientMsg::Unsubscribe { session } => {
-            if let Some(ids) = hub.subs.get_mut(&session) {
-                ids.retain(|id| *id != conn);
-            }
-        }
+        ClientMsg::Unsubscribe { session } => hub.unsubscribe(conn, &session),
         ClientMsg::NewSession { agent, cwd, project } => {
-            if !hub.agents.iter().any(|a| a.enabled && a.harness.id() == agent.as_str()) {
+            if !agents.iter().any(|a| a.enabled && a.harness.id() == agent.as_str()) {
                 let message = format!("{} is not set up on this device", engine::agent_name(&agent));
-                queue(me, &HostMsg::Error { message });
+                hub.reply(conn, &HostMsg::Error { message });
             } else {
-                let id = hub.state.new_session(&agent, cwd, Placement::Focused);
+                let id = state.new_session(&agent, cwd, Placement::Focused);
                 if project.is_some() {
-                    hub.state.move_to_project(&id, project);
+                    state.move_to_project(&id, project);
                 }
-                flush(&mut hub);
-                if let Some(s) = hub.state.session(&id) {
-                    let entry = summary(s, false);
-                    queue(me, &HostMsg::Created { session: entry });
+                flush(state);
+                if let Some(s) = state.session(&id) {
+                    hub.reply(conn, &HostMsg::Created { session: summary(s, false) });
                 }
             }
         }
         ClientMsg::Prompt { session, text, mode, model, effort } => {
-            if let Err(message) = start_prompt(&mut hub, shared, &session, &text, mode, model, effort) {
-                queue(me, &HostMsg::Error { message });
+            match start_prompt(state, agents, hub, &session, &text, mode, model, effort) {
+                Ok(started) => turn = started,
+                Err(message) => hub.reply(conn, &HostMsg::Error { message }),
             }
         }
         ClientMsg::Cancel { session } => {
-            if !hub.state.stop(&session) {
-                queue(me, &HostMsg::Error { message: "No reply is running in that chat".into() });
+            if !state.stop(&session) {
+                hub.reply(conn, &HostMsg::Error { message: "No reply is running in that chat".into() });
             }
         }
         ClientMsg::Draft { session, text } => {
-            if hub.state.session(&session).is_none() {
-                queue(me, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
+            if state.session(&session).is_none() {
+                hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
             } else {
-                hub.state.set_draft(&session, &text);
-                flush(&mut hub);
+                state.set_draft(&session, &text);
+                flush(state);
                 hub.broadcast(&session, &HostMsg::Draft { session: session.clone(), text }, Some(conn));
             }
         }
     }
-    Next::Continue
+    turn
+}
+
+/// The chat a message is about, if any.
+fn target(msg: &ClientMsg) -> Option<&str> {
+    match msg {
+        ClientMsg::Subscribe { session }
+        | ClientMsg::Unsubscribe { session }
+        | ClientMsg::Prompt { session, .. }
+        | ClientMsg::Cancel { session }
+        | ClientMsg::Draft { session, .. } => Some(session),
+        ClientMsg::Hello { .. } | ClientMsg::ListSessions | ClientMsg::NewSession { .. } => None,
+    }
 }
 
 /// Starts a turn in `session` with `text`, first applying the options the client sent. Errors are
 /// for the client who asked. A turn that cannot start is reported to the chat's subscribers instead.
 fn start_prompt(
-    hub: &mut Hub,
-    shared: &Shared,
+    state: &mut AppState,
+    agents: &[DetectedAgent],
+    hub: &Hub,
     session: &str,
     text: &str,
     mode: Option<Mode>,
     model: Option<String>,
     effort: Option<String>,
-) -> Result<(), String> {
-    let (cur_mode, cur_model, cur_effort) = match hub.state.session(session) {
+) -> Result<Option<(String, smol::channel::Receiver<Event>)>, String> {
+    let (cur_mode, cur_model, cur_effort) = match state.session(session) {
         Some(s) => (s.mode, s.model.clone(), s.effort.clone()),
         None => return Err(format!("There is no chat {session} on this device")),
     };
-    if hub.state.busy(session) {
+    if state.busy(session) {
         return Err("A reply is already running".into());
     }
     if text.trim().is_empty() {
         return Err("The prompt is empty".into());
     }
     if mode.is_some() || model.is_some() || effort.is_some() {
-        hub.state.set_options(session, model.or(cur_model), effort.or(cur_effort), mode.unwrap_or(cur_mode));
+        state.set_options(session, model.or(cur_model), effort.or(cur_effort), mode.unwrap_or(cur_mode));
     }
-    let Some(rx) = hub.state.send(session, text, &hub.agents) else {
+    let Some(rx) = state.send(session, text, agents) else {
         // `send` has put the reason in the chat when it could.
-        flush(hub);
+        flush(state);
         let error = Some("Could not start the agent".to_string());
         hub.broadcast(session, &HostMsg::Finished { session: session.to_string(), error }, None);
-        return Ok(());
+        return Ok(None);
     };
-    flush(hub);
+    flush(state);
     hub.broadcast(session, &HostMsg::Started { session: session.to_string(), text: text.to_string() }, None);
-    let shared = Arc::clone(shared);
-    let id = session.to_string();
-    thread::spawn(move || pump(shared, id, rx));
-    Ok(())
+    Ok(Some((session.to_string(), rx)))
 }
 
-/// Folds one turn's events into its chat and forwards them to the chat's subscribers, until the
-/// turn's channel closes.
-fn pump(shared: Shared, session: String, rx: smol::channel::Receiver<Event>) {
-    while let Ok(ev) = smol::block_on(rx.recv()) {
-        let mut guard = lock(&shared);
-        let hub: &mut Hub = &mut guard;
-        match ev {
-            Event::Out(out) => {
-                let msg = HostMsg::Event { session: session.clone(), out: out.clone() };
-                hub.state.apply(&session, Event::Out(out));
-                hub.broadcast(&session, &msg, None);
-            }
-            Event::Finished(result) => {
-                let error = result.as_ref().err().cloned();
-                hub.state.apply(&session, Event::Finished(result));
-                flush(hub);
-                hub.broadcast(&session, &HostMsg::Finished { session: session.clone(), error }, None);
-            }
+/// Folds one event of chat `session`'s turn into the chat, and forwards it to the chat's subscribers.
+/// Call it for each event, in order, until the turn finishes.
+pub fn forward(state: &mut AppState, hub: &Hub, session: &str, ev: Event) {
+    match ev {
+        Event::Out(out) => {
+            let msg = HostMsg::Event { session: session.to_string(), out: out.clone() };
+            state.apply(session, Event::Out(out));
+            hub.broadcast(session, &msg, None);
+        }
+        Event::Finished(result) => {
+            let error = result.as_ref().err().cloned();
+            state.apply(session, Event::Finished(result));
+            flush(state);
+            hub.broadcast(session, &HostMsg::Finished { session: session.to_string(), error }, None);
         }
     }
+}
+
+/// What the headless owner thread handles: a client request, or an event of a running turn.
+enum Work {
+    Req(Request),
+    Turn(String, Event),
+}
+
+/// Pushes each event of one turn into the owner's queue, until the turn's channel closes.
+fn follow(id: String, turn: smol::channel::Receiver<Event>, work: smol::channel::Sender<Work>) {
+    thread::spawn(move || {
+        while let Ok(ev) = smol::block_on(turn.recv()) {
+            if work.send_blocking(Work::Turn(id.clone(), ev)).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// Serves `state`'s chats on `bind`. One thread owns the chats and the agents: it takes requests
+/// and turn events in turn, so nothing needs a lock.
+fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<()> {
+    let (hub, requests) = Hub::start(bind, device, state.settings.sync.clone())?;
+    let harness_settings = store::Settings { harnesses: state.settings.harnesses.clone(), ..Default::default() };
+    let agents = engine::detect(&harness_settings);
+    eprintln!("archonui host listening on {bind}");
+    let (work_tx, work_rx) = smol::channel::unbounded::<Work>();
+    let from_requests = work_tx.clone();
+    thread::spawn(move || {
+        while let Ok(req) = smol::block_on(requests.recv()) {
+            if from_requests.send_blocking(Work::Req(req)).is_err() {
+                break;
+            }
+        }
+    });
+    while let Ok(work) = smol::block_on(work_rx.recv()) {
+        match work {
+            Work::Req(req) => {
+                if let Some((id, turn)) = handle(&mut state, &agents, &hub, req) {
+                    follow(id, turn, work_tx.clone());
+                }
+            }
+            Work::Turn(id, ev) => forward(&mut state, &hub, &id, ev),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::Device;
-    use std::{net::Ipv4Addr, path::PathBuf};
-
-    fn device(addr: &str) -> Device {
-        Device { id: "n1".into(), name: "pc".into(), dns_name: String::new(), addr: addr.into() }
-    }
-
-    #[test]
-    fn loopback_is_always_allowed() {
-        let none = SyncSettings::default();
-        let picked = SyncSettings { enabled: true, devices: vec![device("100.1.2.3")], ..Default::default() };
-        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        assert!(peer_allowed(lo, &none, false));
-        assert!(peer_allowed(lo, &picked, false));
-        assert!(peer_allowed(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), &picked, false));
-    }
-
-    #[test]
-    fn non_tailscale_peers_are_refused() {
-        let none = SyncSettings::default();
-        let ip: IpAddr = "192.168.1.5".parse().unwrap();
-        assert!(!peer_allowed(ip, &none, false));
-    }
-
-    #[test]
-    fn tailscale_peers_are_allowed_only_when_picked() {
-        let open = SyncSettings::default();
-        let picked = SyncSettings { enabled: true, devices: vec![device("100.1.2.3")], ..Default::default() };
-        let listed: IpAddr = "100.1.2.3".parse().unwrap();
-        let other: IpAddr = "100.9.9.9".parse().unwrap();
-        assert!(peer_allowed(other, &open, true), "no devices picked: any tailnet peer may connect");
-        assert!(peer_allowed(listed, &picked, true));
-        assert!(!peer_allowed(other, &picked, true));
-    }
+    use std::path::PathBuf;
 
     #[test]
     fn summary_copies_the_chat_list_fields() {
