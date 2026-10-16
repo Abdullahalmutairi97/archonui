@@ -25,6 +25,7 @@ use std::{
     collections::HashMap,
     io,
     net::{IpAddr, SocketAddr},
+    path::{Path, PathBuf},
     thread,
     time::Duration,
 };
@@ -184,19 +185,23 @@ pub fn handle(
             } else {
                 agent
             };
+            let home = std::env::var_os("HOME").map(PathBuf::from);
             let cwd = if cwd.as_os_str().is_empty() {
                 state
                     .settings
                     .default_folder
                     .clone()
                     .filter(|p| p.is_dir())
-                    .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
-                    .unwrap_or_else(|| std::path::PathBuf::from("/"))
+                    .or_else(|| home.clone())
+                    .unwrap_or_else(|| PathBuf::from("/"))
             } else {
-                cwd
+                host_folder(cwd, home.as_deref())
             };
             if !agents.iter().any(|a| a.enabled && a.harness.id() == agent.as_str()) {
                 let message = format!("{} is not set up on this device", engine::agent_name(&agent));
+                hub.reply(conn, &HostMsg::Error { message });
+            } else if !cwd.is_dir() {
+                let message = format!("There is no folder {} on this device", cwd.display());
                 hub.reply(conn, &HostMsg::Error { message });
             } else {
                 let id = state.new_session(&agent, cwd, Placement::Focused);
@@ -550,10 +555,28 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
     Ok(())
 }
 
+/// A folder asked for by another device, with a leading `~` meaning this device's home: the asking
+/// device's shell can't know it.
+fn host_folder(cwd: PathBuf, home: Option<&Path>) -> PathBuf {
+    match (cwd.strip_prefix("~"), home) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => cwd,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+
+    #[test]
+    fn a_leading_tilde_is_this_devices_home() {
+        let home = Path::new("/home/me");
+        assert_eq!(host_folder(PathBuf::from("~"), Some(home)), PathBuf::from("/home/me"));
+        assert_eq!(host_folder(PathBuf::from("~/code/x"), Some(home)), PathBuf::from("/home/me/code/x"));
+        assert_eq!(host_folder(PathBuf::from("/srv/x"), Some(home)), PathBuf::from("/srv/x"));
+        assert_eq!(host_folder(PathBuf::from("~other/x"), Some(home)), PathBuf::from("~other/x"));
+        assert_eq!(host_folder(PathBuf::from("~"), None), PathBuf::from("~"));
+    }
 
     #[test]
     fn summary_copies_the_chat_list_fields() {

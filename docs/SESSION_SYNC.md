@@ -77,7 +77,7 @@ new <agent> <folder> <prompt>`.
 ## Testing checklist
 
 1. Minipc: `archonui --serve --bind "$(tailscale ip -4):7420"`.
-2. PC: `archonui --remote minipc new claude ~ "say hi"` streams a reply.
+2. PC: `archonui --remote minipc new claude "~" "say hi"` streams a reply.
 3. PC app: Devices → sharing on → tick the minipc → its chats appear, labelled.
 4. Type in one: the reply streams; Esc stops it on the minipc.
 5. Mark the minipc as cloud; within a reply or five minutes, Devices → Cloud copy lists your projects.
