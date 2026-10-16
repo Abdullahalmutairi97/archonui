@@ -42,8 +42,8 @@ impl Client {
     /// `Welcome`, then starts the IO thread.
     pub fn connect(addr: &str, port: u16, this_device: &str) -> Result<Client, String> {
         let url = format!("ws://{addr}:{port}");
-        let (mut ws, _) =
-            tungstenite::connect(url.as_str()).map_err(|e| format!("cannot connect to {addr}:{port}: {e}"))?;
+        let (mut ws, _) = tungstenite::client::connect_with_config(url.as_str(), Some(super::proto::ws_config()), 3)
+            .map_err(|e| format!("cannot connect to {addr}:{port}: {e}"))?;
         let hello = encode(&ClientMsg::Hello { device: this_device.to_string(), version: VERSION });
         ws.send(Message::Text(hello.into())).map_err(|e| format!("cannot send Hello: {e}"))?;
         set_read_timeout(&ws, Some(WELCOME_TIMEOUT))?;
