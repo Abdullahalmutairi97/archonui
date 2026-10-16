@@ -236,7 +236,7 @@ fn seed_user_settings(data: &Path) {
         return;
     }
     if let Ok(text) = serde_json::to_string_pretty(&serde_json::Value::Object(settings)) {
-        let _ = fs::write(&path, text);
+        let _ = crate::app::persist::write_atomic(&path, text.as_bytes());
     }
 }
 
@@ -494,6 +494,10 @@ mod tests {
         assert_eq!(kept["editor.fontSize"], 14);
         assert_eq!(kept["workbench.startupEditor"], "none");
         assert_eq!(kept["workbench.secondarySideBar.defaultVisibility"], "hidden");
+        // The rewrite goes through a temp file that is renamed over the settings, leaving nothing behind.
+        let user_dir = user_settings(&dir).parent().unwrap().to_path_buf();
+        let entries: Vec<_> = fs::read_dir(&user_dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(entries, [OsStr::new("settings.json")]);
 
         // A file that isn't the JSON object code-server writes is left alone.
         fs::write(user_settings(&dir), "// not json").unwrap();
