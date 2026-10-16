@@ -5,6 +5,7 @@ mod engine;
 mod git;
 mod ide;
 mod preview;
+mod remote;
 mod store;
 mod terminal;
 mod thumbs;
