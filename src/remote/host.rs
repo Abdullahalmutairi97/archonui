@@ -19,7 +19,7 @@ use crate::{
         state::{AppState, Placement},
     },
     engine::{self, approve, attach::Attachment, DetectedAgent, Event, Mode},
-    store::{self, Session},
+    store::{self, Role, Session},
 };
 use std::{
     collections::HashMap,
@@ -319,8 +319,8 @@ fn start_prompt(
     effort: Option<String>,
     files: Vec<RemoteFile>,
 ) -> Result<Option<(String, smol::channel::Receiver<Event>)>, String> {
-    let (cur_mode, cur_model, cur_effort) = match state.session(session) {
-        Some(s) => (s.mode, s.model.clone(), s.effort.clone()),
+    let (cur_mode, cur_model, cur_effort, agent) = match state.session(session) {
+        Some(s) => (s.mode, s.model.clone(), s.effort.clone(), s.agent.clone()),
         None => return Err(format!("There is no chat {session} on this device")),
     };
     if state.busy(session) {
@@ -329,6 +329,11 @@ fn start_prompt(
     if text.trim().is_empty() && files.is_empty() {
         return Err("The prompt is empty".into());
     }
+    // Checked before the files are saved, so they don't wait for the chat's next prompt.
+    if !agents.iter().any(|a| a.harness.id() == agent) {
+        return Err(format!("{} is not set up on this device", engine::agent_name(&agent)));
+    }
+    let before = state.session(session).map_or(0, |s| s.messages.len());
     let attachments = save_files(session, files)?;
     if !attachments.is_empty() {
         state.add_pending(session, attachments);
@@ -337,15 +342,24 @@ fn start_prompt(
         state.set_options(session, model.or(cur_model), effort.or(cur_effort), mode.unwrap_or(cur_mode));
     }
     let Some(rx) = state.send(session, text, agents) else {
-        // `send` has put the reason in the chat when it could.
+        // `send` has put the reason in the chat; clients get the same words.
+        let error = Some(start_error(state, session, before));
         flush(state);
-        let error = Some("Could not start the agent".to_string());
         hub.broadcast(session, &HostMsg::Finished { session: session.to_string(), error }, None);
         return Ok(None);
     };
     flush(state);
     hub.broadcast(session, &HostMsg::Started { session: session.to_string(), text: text.to_string() }, None);
     Ok(Some((session.to_string(), rx)))
+}
+
+/// Why `send` did not start a turn in `session`: the last error it added after message `before`.
+fn start_error(state: &AppState, session: &str, before: usize) -> String {
+    state
+        .session(session)
+        .and_then(|s| s.messages.get(before..))
+        .and_then(|added| added.iter().rev().find(|m| m.role == Role::Error))
+        .map_or_else(|| "Could not start the agent".to_string(), |m| m.text.clone())
 }
 
 /// Saves files sent with a prompt into the chat's attachments here. Refuses too many or too large.
@@ -593,5 +607,25 @@ mod tests {
         assert_eq!(entry.updated, 42);
         assert!(entry.busy);
         assert_eq!(entry.messages, 0);
+    }
+
+    fn state() -> AppState {
+        use crate::app::{settings::AppSettings, workspace::Workspace};
+        AppState::new(Vec::new(), Vec::new(), Workspace::default(), AppSettings::default())
+    }
+
+    fn pi_at(path: &str) -> DetectedAgent {
+        let pi = engine::harness("pi").unwrap();
+        DetectedAgent { harness: pi, path: path.into(), version: String::new(), enabled: true, auth: pi.auth_status() }
+    }
+
+    #[test]
+    fn a_turn_that_cannot_start_reports_the_reason() {
+        let mut app = state();
+        let id = app.new_session("pi", std::env::temp_dir(), Placement::Focused);
+        let agents = [pi_at("/nonexistent/archonui-test-pi")];
+        assert!(app.send(&id, "hello", &agents).is_none());
+        let error = start_error(&app, &id, 0);
+        assert!(error.starts_with("Could not start Pi:"), "{error}");
     }
 }
