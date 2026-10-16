@@ -11,6 +11,7 @@ mod models;
 mod skills;
 mod tools;
 
+pub(crate) use controls::key_label;
 pub(crate) use models::long_context_model;
 
 use super::{

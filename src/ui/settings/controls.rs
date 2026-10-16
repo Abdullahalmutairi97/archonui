@@ -160,7 +160,7 @@ pub(super) fn slider_control(
 }
 
 /// The display label for a keystroke in the GPUI form (`ctrl-shift-w`): `Ctrl ⇧ W`, `⇧ Tab`, `Ctrl ⇧ ←`.
-pub(super) fn key_label(spec: &str) -> String {
+pub(crate) fn key_label(spec: &str) -> String {
     // Peel modifiers off the front, so a key that is itself `-` (`ctrl--`) isn't lost to a split on dashes.
     let mut rest = spec;
     let mut out: Vec<String> = Vec::new();
