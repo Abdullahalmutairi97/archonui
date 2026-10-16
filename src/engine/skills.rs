@@ -466,9 +466,10 @@ fn link_named(
     names.extend(slug(source).map(|s| format!("{s}-{name}")));
     for candidate in &names {
         let path = dir.join(candidate);
+        // Already linked to the same folder: nothing to do.
+        let same = || fs::canonicalize(&path).is_ok_and(|c| c == target);
         if reserved.contains(&candidate.as_str()) || fs::symlink_metadata(&path).is_ok() {
-            // Already linked to the same folder: nothing to do.
-            if fs::canonicalize(&path).is_ok_and(|c| c == target) {
+            if same() {
                 return Ok(());
             }
             continue;
@@ -477,9 +478,19 @@ fn link_named(
         if target.starts_with(&path) {
             break;
         }
-        symlink_dir(target, &path)?;
-        report.linked.push(format!("{name} → {}", tilde(home, &path)));
-        return Ok(());
+        match symlink_dir(target, &path) {
+            Ok(()) => {
+                report.linked.push(format!("{name} → {}", tilde(home, &path)));
+                return Ok(());
+            }
+            // Something else (another sync, `sync-skills`, an agent) took the name meanwhile.
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                if same() {
+                    return Ok(());
+                }
+            }
+            Err(e) => return Err(e),
+        }
     }
     let taken: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
     report.skipped.push(format!("{name}: {} already has {}", tilde(home, dir), taken.join(" and ")));
@@ -537,8 +548,12 @@ fn prune(home: &Path, dir: &Path, pruned: &mut Vec<String>) -> io::Result<()> {
         .collect();
     dead.sort();
     for path in dead {
-        fs::remove_file(&path)?;
-        pruned.push(tilde(home, &path));
+        match fs::remove_file(&path) {
+            Ok(()) => pruned.push(tilde(home, &path)),
+            // Removed meanwhile by another sync.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
     }
     Ok(())
 }
@@ -1100,6 +1115,30 @@ mod tests {
             assert!(fs::symlink_metadata(&link).is_ok(), "{link:?} was removed");
         }
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn two_syncs_at_once_both_succeed() {
+        for round in 0..20 {
+            let home = scratch(&format!("race-{round}"));
+            for n in 0..20 {
+                skill_md(&home.join(format!(".agents/skills/hub-{n}")), &format!("---\nname: hub-{n}\n---\n"));
+                skill_md(&home.join(format!(".gemini/skills/gem-{n}")), &format!("---\nname: gem-{n}\n---\n"));
+            }
+            ln(&home.join(".agents/skills/gone"), &home.join(".claude/skills/dead"));
+            let runs: Vec<_> = (0..2)
+                .map(|_| {
+                    let home = home.clone();
+                    std::thread::spawn(move || sync_in(&home, &[]))
+                })
+                .collect();
+            let reports: Vec<SyncReport> = runs.into_iter().map(|t| t.join().unwrap().unwrap()).collect();
+            // Each link is made, and each dead link removed, by exactly one of them.
+            assert_eq!(reports.iter().map(|r| r.linked.len()).sum::<usize>(), 60, "{reports:?}");
+            assert_eq!(reports.iter().map(|r| r.pruned.len()).sum::<usize>(), 1, "{reports:?}");
+            assert_eq!(sync_in(&home, &[]).unwrap(), SyncReport::default());
+            let _ = fs::remove_dir_all(&home);
+        }
     }
 
     #[test]
