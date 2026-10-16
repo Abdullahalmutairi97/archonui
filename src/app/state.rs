@@ -562,6 +562,8 @@ impl AppState {
             Event::Out(Out::Final(text)) => {
                 if let Some(m) = s.reply_mut().filter(|m| m.text.trim().is_empty()) {
                     m.text = text;
+                    // The recorded offset was into the whitespace that was just replaced.
+                    live.final_start = None;
                 }
             }
             Event::Out(Out::Status(st)) => {
@@ -629,7 +631,7 @@ impl AppState {
                     m.thought_secs = thought.map(|t| t.as_secs() as u32);
                     m.took_secs = elapsed.map(|t| t.as_secs() as u32);
                     // Progress notes come first only when there is text before the final answer.
-                    m.final_at = final_start.filter(|&i| i < m.text.len() && !m.text[..i].trim().is_empty());
+                    m.final_at = final_start.filter(|&i| i < m.text.len() && m.text.get(..i).is_some_and(|p| !p.trim().is_empty()));
                     m.usage = usage;
                 }
                 let had_reply = s.reply_mut().is_some_and(|m| !m.text.is_empty());
@@ -1169,6 +1171,23 @@ mod tests {
         }
         app.apply(&id, Event::Finished(Ok(())));
         assert_eq!(app.session(&id).unwrap().messages[1].final_at, None);
+    }
+
+    #[test]
+    fn a_final_answer_that_replaces_whitespace_does_not_split_a_char() {
+        let mut app = state();
+        let id = app.new_session("claude", "/tmp".into(), Placement::Focused);
+        let s = app.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        s.push(Role::User, "hi");
+        s.push(Role::Agent, "");
+        let tool = |n: &str| Event::Out(Out::ToolStart { id: n.into(), kind: ToolKind::Run, target: "ls".into() });
+        let text = |t: &str| Event::Out(Out::Text(t.into()));
+        for ev in [tool("a"), text("\n\n"), tool("b"), text("\n"), Event::Out(Out::Final("héllo".into())), Event::Finished(Ok(()))] {
+            app.apply(&id, ev);
+        }
+        let m = &app.session(&id).unwrap().messages[1];
+        assert_eq!(m.text, "héllo");
+        assert_eq!(m.final_at, None);
     }
 
     #[test]
