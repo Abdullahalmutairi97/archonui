@@ -55,22 +55,37 @@ fn redact_url(url: &str) -> String {
     }
 }
 
-/// Blanks the value of command-line arguments that look like secrets: `--api-key=abc` and `--token abc`.
+/// Blanks the value of command-line arguments that look like secrets: `--api-key=abc`, `--token abc`
+/// and `--header "Authorization: Bearer x"`.
 fn redact_args(args: &mut [String]) {
     let secret = |a: &str| {
         let a = a.to_ascii_lowercase();
         ["token", "key", "secret", "password", "passwd", "auth", "bearer"].iter().any(|w| a.contains(w))
     };
+    // `--header "Authorization: Bearer x"` and curl's `-H`, whose values can carry any credential.
+    let header = |flag: &str| flag == "-H" || flag.eq_ignore_ascii_case("--header") || flag.eq_ignore_ascii_case("--headers");
+    let leaks = |a: &str| {
+        let a = a.to_ascii_lowercase();
+        a.contains("authorization:") || a.contains("bearer ")
+    };
+    // An auth scheme given as its own argument, so the token follows it: `--authorization Bearer x`.
+    let scheme = |a: &str| ["bearer", "basic", "token"].iter().any(|w| a.eq_ignore_ascii_case(w));
     let mut hide_next = false;
     for arg in args.iter_mut() {
         if std::mem::take(&mut hide_next) {
+            hide_next = scheme(arg);
             *arg = "<redacted>".into();
         } else if arg.starts_with('-') {
             match arg.split_once('=') {
-                Some((flag, _)) if secret(flag) => *arg = format!("{flag}=<redacted>"),
-                None if secret(arg) => hide_next = true,
+                // curl's attached form, `-HAuthorization: Bearer x`.
+                _ if arg.len() > 2 && arg.starts_with("-H") => *arg = "-H<redacted>".into(),
+                Some((flag, _)) if secret(flag) || header(flag) => *arg = format!("{flag}=<redacted>"),
+                None if secret(arg) || header(arg) => hide_next = true,
+                _ if leaks(arg) => *arg = "<redacted>".into(),
                 _ => {}
             }
+        } else if leaks(arg) {
+            *arg = "<redacted>".into();
         }
     }
 }
@@ -427,6 +442,32 @@ mod tests {
         assert_eq!(redact_url("https://u:p@h.test:8080/mcp?key=abc#x"), "https://h.test:8080/mcp");
         assert_eq!(redact_url("https://h.test?token=1"), "https://h.test");
         assert_eq!(redact_url("https://h.test/a/b"), "https://h.test/a/b");
+    }
+
+    #[test]
+    fn header_style_arguments_lose_their_credentials() {
+        let mut args = [
+            "--header",
+            "Authorization: Bearer sk-123",
+            "-H",
+            "Authorization: Bearer x",
+            "--header=Authorization: Bearer x",
+            "Authorization: Bearer y",
+            "--port=1",
+        ]
+        .map(String::from)
+        .to_vec();
+        redact_args(&mut args);
+        assert_eq!(
+            args,
+            ["--header", "<redacted>", "-H", "<redacted>", "--header=<redacted>", "<redacted>", "--port=1"]
+        );
+
+        let mut args = ["-HAuthorization: Bearer z", "--authorization", "Bearer", "sk-1", "--no-headers", "--port", "1"]
+            .map(String::from)
+            .to_vec();
+        redact_args(&mut args);
+        assert_eq!(args, ["-H<redacted>", "--authorization", "<redacted>", "<redacted>", "--no-headers", "--port", "1"]);
     }
 
     #[test]
