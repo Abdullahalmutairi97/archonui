@@ -567,10 +567,12 @@ mod tests {
         assert!(doc["mcpServers"].get("pg").is_none(), "disabled servers are not passed");
         assert!(claude.files[0].0.ends_with("mcp/claude.json"));
 
+        // Pi gets an extension that registers the enabled servers; `--mcp-config` is not a Pi flag.
         let pi = harness("pi").unwrap().plan(&turn);
-        let doc: serde_json::Value = serde_json::from_str(&pi.files[0].1).unwrap();
-        assert_eq!(doc["mcpServers"]["docs"]["url"], "https://d.test/mcp");
-        assert!(doc["mcpServers"]["docs"].get("type").is_none());
+        assert!(has_pair(&pi.args, "--extension", &pi.files[0].0.display().to_string()), "{:?}", pi.args);
+        assert!(!pi.args.iter().any(|a| a == "--mcp-config"));
+        assert!(pi.files[0].1.contains(r#""docs":{"url":"https://d.test/mcp","headers":{"Authorization":"Bearer t"}}"#), "{}", pi.files[0].1);
+        assert!(!pi.files[0].1.contains("psql"), "disabled servers are not passed");
     }
 
     #[test]
