@@ -13,7 +13,7 @@ use std::{
     env, fs,
     io::{self, BufRead, BufReader, Write},
     os::unix::{
-        fs::{DirBuilderExt, PermissionsExt},
+        fs::{DirBuilderExt, MetadataExt, PermissionsExt},
         io::AsRawFd,
         net::{UnixListener, UnixStream},
     },
@@ -150,19 +150,81 @@ fn token_ok(given: &str) -> bool {
     given.len() == expected.len() && given.iter().zip(expected).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
 }
 
+/// Size of Linux's `sockaddr_un::sun_path`. A socket path must be shorter, to leave room for the NUL.
+const SUN_PATH: usize = 108;
+/// Where the socket goes when the usual path is too long for `SUN_PATH`.
+const SHORT_ROOT: &str = "/tmp";
+
 /// This process's approval socket. It lives in an owner-only directory: `$XDG_RUNTIME_DIR/archonui`,
-/// else `approvals` inside the sessions folder. Never a world-writable directory.
+/// else `approvals` inside the sessions folder. When that path is too long for a socket, a private
+/// `/tmp/archonui-<uid>` instead. The directory is always this user's and owner-only.
 pub fn socket() -> &'static Path {
-    static SOCKET: OnceLock<PathBuf> = OnceLock::new();
+    &placed().0
+}
+
+/// Why the socket could not go somewhere short, when its usual path is too long. `listen` then fails.
+pub fn socket_problem() -> Option<&'static str> {
+    placed().1.as_deref()
+}
+
+/// What to tell the user when `listen` on `socket()` failed with `e`.
+pub fn listen_failed(e: &io::Error) -> String {
+    match socket_problem() {
+        Some(problem) => format!("Tool approvals are unavailable: {problem}"),
+        None => format!("Tool approvals are unavailable: could not listen on {}: {e}", socket().display()),
+    }
+}
+
+/// The socket's path, and the problem with it, if any. Worked out once per process.
+fn placed() -> &'static (PathBuf, Option<String>) {
+    static SOCKET: OnceLock<(PathBuf, Option<String>)> = OnceLock::new();
     SOCKET.get_or_init(|| {
         let dir = socket_dir(env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from), crate::store::dir());
-        dir.join(format!("archonui-{}.sock", process::id()))
+        place_socket(dir, Path::new(SHORT_ROOT), process::id())
     })
 }
 
 /// The directory for the socket, given the runtime dir (usually set) and the sessions folder.
 fn socket_dir(runtime: Option<PathBuf>, sessions: PathBuf) -> PathBuf {
     runtime.map_or_else(|| sessions.join("approvals"), |dir| dir.join("archonui"))
+}
+
+/// The socket for process `pid` in `dir`, or in this user's private directory under `short_root`
+/// when that path is too long to bind. With the reason, when the short directory can't be used.
+fn place_socket(dir: PathBuf, short_root: &Path, pid: u32) -> (PathBuf, Option<String>) {
+    let name = format!("archonui-{pid}.sock");
+    let path = dir.join(&name);
+    if fits_socket(&path) {
+        return (path, None);
+    }
+    let short = short_root.join(format!("archonui-{}", unsafe { libc::geteuid() }));
+    let problem = match private_dir(&short) {
+        Ok(()) if fits_socket(&short.join(&name)) => return (short.join(name), None),
+        Ok(()) => format!("{} and {} are both too long for a socket", path.display(), short.display()),
+        Err(e) => format!("{} is too long for a socket, and {}: {e}", path.display(), short.display()),
+    };
+    (path, Some(problem))
+}
+
+/// Whether `path` is short enough to bind as a Unix socket.
+fn fits_socket(path: &Path) -> bool {
+    path.as_os_str().len() < SUN_PATH
+}
+
+/// Makes `dir` a 0700 directory of this user, or refuses one that is a link, someone else's, or open
+/// to others. Used in a shared directory like `/tmp`, where another user could have made it first.
+fn private_dir(dir: &Path) -> io::Result<()> {
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let meta = fs::symlink_metadata(dir)?;
+    let uid = unsafe { libc::geteuid() };
+    if !meta.file_type().is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "it is not a private directory of this user"));
+    }
+    Ok(())
 }
 
 /// True when the peer runs as this user. The 0700 socket directory already keeps other users out;
@@ -669,6 +731,67 @@ mod tests {
         let mode = fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the socket is owner-only");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_short_enough_socket_path_is_kept() {
+        let root = scratch("short-root");
+        let dir = PathBuf::from("/run/user/1000/archonui");
+        assert_eq!(place_socket(dir.clone(), &root, 42), (dir.join("archonui-42.sock"), None));
+        assert!(fs::read_dir(&root).unwrap().next().is_none(), "nothing is made in the short root");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A runtime dir too long for `sun_path` would make `listen` fail; the socket moves to a private
+    /// directory under the short root instead, and listening there works.
+    #[test]
+    fn a_too_long_socket_path_moves_to_a_private_short_dir() {
+        let root = env::temp_dir().join(format!("au-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let long = root.join("r".repeat(120)).join("archonui");
+        let (requests, _incoming) = smol::channel::unbounded();
+        let err = listen(&long.join("archonui-7.sock"), requests.clone(), Allowances::default(), Duration::from_millis(50)).unwrap_err();
+        assert!(err.to_string().contains("SUN_LEN"), "{err}");
+
+        let (socket, problem) = place_socket(long, &root, 7);
+        assert_eq!(problem, None);
+        let short = root.join(format!("archonui-{}", unsafe { libc::geteuid() }));
+        assert_eq!(socket, short.join("archonui-7.sock"));
+        let meta = fs::symlink_metadata(&short).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o700, "the short dir is owner-only");
+        assert_eq!(meta.uid(), unsafe { libc::geteuid() });
+        listen(&socket, requests, Allowances::default(), Duration::from_millis(50)).unwrap();
+        assert_eq!(fs::metadata(&socket).unwrap().permissions().mode() & 0o777, 0o600);
+        // A second run reuses the directory it made.
+        assert_eq!(place_socket(root.join("r".repeat(120)), &root, 8).0, short.join("archonui-8.sock"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Someone could make the short dir first in a shared `/tmp`: one open to others, or a link, is refused.
+    #[test]
+    fn a_short_dir_that_is_not_private_is_refused() {
+        let root = env::temp_dir().join(format!("au-bad-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let short = root.join(format!("archonui-{}", unsafe { libc::geteuid() }));
+        let long = root.join("r".repeat(120));
+        fs::create_dir(&short).unwrap();
+        fs::set_permissions(&short, fs::Permissions::from_mode(0o777)).unwrap();
+        let (socket, problem) = place_socket(long.clone(), &root, 7);
+        assert_eq!(socket, long.join("archonui-7.sock"), "the long path stays, so listen fails");
+        assert!(problem.is_some_and(|p| p.contains("not a private directory")));
+        assert_eq!(fs::metadata(&short).unwrap().permissions().mode() & 0o777, 0o777, "left as found");
+
+        fs::remove_dir(&short).unwrap();
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &short).unwrap();
+        let (socket, problem) = place_socket(long.clone(), &root, 7);
+        assert_eq!(socket, long.join("archonui-7.sock"));
+        assert!(problem.is_some(), "a link is refused even to a private dir");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

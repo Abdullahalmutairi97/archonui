@@ -143,6 +143,9 @@ impl Shell {
         let (l, r) = this.target_widths();
         this.left_w = Animator::new(l, anim::SIDEBAR_COLLAPSE);
         this.right_w = Animator::new(r, anim::PANEL_COLLAPSE);
+        if let Some(message) = this.approvals.listen_error.take() {
+            this.toast(message, cx);
+        }
         this.rescan(cx);
         this.dev_open(cx);
         this.refresh_remote(cx);

@@ -809,7 +809,7 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
     let allowances = approve::Allowances::default();
     let (approval_tx, approval_rx) = smol::channel::unbounded::<approve::Request>();
     if let Err(e) = approve::listen(approve::socket(), approval_tx, allowances.clone(), approve::TIMEOUT) {
-        eprintln!("archonui host: could not listen for approvals: {e}");
+        eprintln!("archonui host: {}", approve::listen_failed(&e));
     }
     let from_approvals = work_tx.clone();
     thread::spawn(move || {
