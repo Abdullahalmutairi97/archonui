@@ -956,6 +956,8 @@ impl Shell {
         self.remote.backing_up = true;
         let device = me.id;
         let secrets = self.state.settings.sync.copy_secrets;
+        // The copies are made against what this cloud confirmed; another one would refuse them.
+        let cloud = self.state.settings.sync.cloud.clone();
         cx.spawn(async move |this, cx| {
             let ready = cx
                 .background_executor()
@@ -995,7 +997,10 @@ impl Shell {
             let _ = this.update(cx, |this, cx| {
                 this.remote.backing_up = false;
                 let mut sent = Vec::new();
-                if let Some(cloud) = this.cloud_client() {
+                if this.state.settings.sync.cloud != cloud {
+                    // Made for a cloud since replaced: copy again, whole, to the new one.
+                    this.remote.backup_again = true;
+                } else if let Some(cloud) = this.cloud_client() {
                     for msg in &ready {
                         if let (Ok(()), ClientMsg::PutProject { project, .. }) = (cloud.send(msg), msg) {
                             sent.push(project.clone());
