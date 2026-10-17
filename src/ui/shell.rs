@@ -324,11 +324,11 @@ impl Shell {
         .detach();
     }
 
-    /// The wallpaper to draw: the user's pick for this theme, else the theme's own, through the
-    /// background filter if one is on.
+    /// The wallpaper to draw: the user's pick, else the theme's own, through the background filter if
+    /// one is on.
     pub(super) fn wallpaper_source(&self) -> WallpaperSource {
         let settings = &self.state.settings;
-        let base = match settings.wallpapers.get(theme_key(&settings.theme)) {
+        let base = match &settings.wallpaper {
             Some(path) if path.is_file() => WallpaperSource::File(path.clone()),
             _ => WallpaperSource::theme(&self.theme),
         };

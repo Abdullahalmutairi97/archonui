@@ -60,7 +60,10 @@ pub struct AppSettings {
     pub background: BackgroundStyle,
     /// Copies of the wallpapers the user added, in the data dir.
     pub user_wallpapers: Vec<PathBuf>,
-    /// Per theme (`theme_key`): the wallpaper picked instead of the theme's own.
+    /// The wallpaper picked instead of the theme's own. It stays when the theme changes.
+    pub wallpaper: Option<PathBuf>,
+    /// Before 0.2.6, a wallpaper per theme (`theme_key`). `normalize` moves one into `wallpaper`.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub wallpapers: HashMap<String, PathBuf>,
     /// Gap between tiles, px.
     pub gaps: f32,
@@ -163,6 +166,7 @@ impl Default for AppSettings {
             fonts: HashMap::new(),
             background: BackgroundStyle::default(),
             user_wallpapers: Vec::new(),
+            wallpaper: None,
             wallpapers: HashMap::new(),
             gaps: 14.,
             radius: 9.,
@@ -230,6 +234,12 @@ impl AppSettings {
         self.ui_scale = fit(self.ui_scale, UI_SCALE, d.ui_scale);
         self.terminal_font_size = fit(self.terminal_font_size, TERMINAL_SIZE, d.terminal_font_size);
         self.max_steps = self.max_steps.clamp(MAX_STEPS.0, MAX_STEPS.1);
+        // A per-theme wallpaper from an older file: the current theme's, else the first by theme name.
+        let mut old = std::mem::take(&mut self.wallpapers);
+        if self.wallpaper.is_none() {
+            let first = old.keys().min().cloned();
+            self.wallpaper = old.remove(theme_key(&self.theme)).or_else(|| first.and_then(|k| old.remove(&k)));
+        }
         // Effort is passed to the CLI verbatim, so an older title-case value goes back to its id.
         for defaults in self.harness_defaults.values_mut() {
             if let Some(effort) = defaults.effort.as_mut() {
@@ -508,6 +518,18 @@ fn canonical(keystroke: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_per_theme_wallpaper_becomes_the_one_wallpaper() {
+        let mut s: AppSettings = serde_json::from_str(r#"{"theme":"hermes","wallpapers":{"claude-code":"/a.jpg","hermes":"/b.jpg"}}"#).unwrap();
+        s.normalize();
+        assert_eq!(s.wallpaper.as_deref(), Some(std::path::Path::new("/b.jpg")), "the current theme's pick wins");
+        assert!(s.wallpapers.is_empty());
+        let mut other: AppSettings = serde_json::from_str(r#"{"theme":"nord","wallpapers":{"claude-code":"/a.jpg"}}"#).unwrap();
+        other.normalize();
+        assert_eq!(other.wallpaper.as_deref(), Some(std::path::Path::new("/a.jpg")), "else another theme's");
+        assert!(!serde_json::to_string(&other).unwrap().contains(r#""wallpapers""#));
+    }
 
     #[test]
     fn defaults_match_the_spec() {
