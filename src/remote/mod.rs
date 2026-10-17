@@ -25,6 +25,21 @@ use serde::{Deserialize, Serialize};
 /// Port a host listens on, on its Tailscale address only.
 pub const DEFAULT_PORT: u16 = 7420;
 
+/// This machine's name: `HOSTNAME` when exported, else the kernel's host name. Shells set
+/// `HOSTNAME` without exporting it, so the variable alone is usually missing.
+pub fn local_host_name() -> Option<String> {
+    if let Some(name) = std::env::var("HOSTNAME").ok().filter(|n| !n.is_empty()) {
+        return Some(name);
+    }
+    let mut buf = [0u8; 256];
+    // SAFETY: `gethostname` writes at most `buf.len()` bytes into `buf`.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    Some(String::from_utf8_lossy(&buf[..len]).into_owned()).filter(|n| !n.is_empty())
+}
+
 /// A device on the tailnet, as saved in settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
@@ -85,6 +100,11 @@ mod tests {
         assert!(!s.enabled);
         assert_eq!(s.port, DEFAULT_PORT);
         assert!(!s.allows("100.1.2.3"));
+    }
+
+    #[test]
+    fn this_machine_has_a_name() {
+        assert!(local_host_name().is_some_and(|n| !n.is_empty() && !n.contains('\0')));
     }
 
     #[test]

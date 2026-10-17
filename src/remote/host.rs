@@ -129,14 +129,14 @@ fn bind_error(addr: SocketAddr, e: &io::Error) -> String {
     }
 }
 
-/// The name a host shows its clients: this device's Tailscale host name, else `HOSTNAME`, else "host".
+/// The name a host shows its clients: this device's Tailscale host name, else its own host name, else "host".
 fn host_name(tailnet: &Result<tailscale::Tailnet, String>) -> String {
     tailnet
         .as_ref()
         .map(|t| t.me.name.clone())
         .ok()
         .filter(|n| !n.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok().filter(|n| !n.is_empty()))
+        .or_else(super::local_host_name)
         .unwrap_or_else(|| "host".into())
 }
 
