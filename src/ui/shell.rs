@@ -440,7 +440,9 @@ impl Render for Shell {
         // A chat left with an unsent draft joins the sidebar; save it so it survives a crash. An empty
         // chat whose tile is gone is deleted.
         let listed = self.state.list_left_drafts(false);
-        if self.state.drop_abandoned() || listed {
+        let dropped = self.state.drop_abandoned();
+        self.share_deleted_all(&dropped);
+        if !dropped.is_empty() || listed {
             self.flush_sessions(cx);
         }
         // rem-based sizes (`p_2`, `text_sm`…) follow the interface scale like `px` does.
