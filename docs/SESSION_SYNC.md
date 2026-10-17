@@ -66,9 +66,10 @@ resolve (MagicDNS off), it is looked up in `tailscale status` by host name.
 - **Remote chats** are kept in `AppState` with `Session::origin` set to their device. They are never
   saved here; `remote_started`/`remote_event`/`remote_finished` mirror the host's turn.
 - **Snapshots** use a temporary index (`GIT_INDEX_FILE`) and `commit-tree` onto
-  `refs/archon/wip/<device>`, so HEAD, the index, branches and files are never touched. `.gitignore`
+  `refs/archon/snap/<project>/<device>` (one per project, so worktrees and subfolders of one
+  repository don't share it), so HEAD, the index, branches and files are never touched. `.gitignore`
   is respected. A folder that isn't a repository gets a private git dir outside it. Copies to the
-  cloud are incremental git bundles.
+  cloud are incremental git bundles of `refs/archon/wip/<device>`, the name the cloud stores.
 
 ## Security
 

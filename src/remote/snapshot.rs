@@ -16,29 +16,36 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::store;
 
-/// Ref that holds this device's snapshots of a project.
+/// The ref a bundle carries a device's snapshot in, and the cloud keeps it under.
 pub fn wip_ref(device: &str) -> String {
     format!("refs/archon/wip/{device}")
 }
 
-/// Snapshots the working files of `dir` as a commit on `wip_ref(device)`. Returns the new commit
-/// id, or None when nothing changed since the last snapshot. Secret-looking files are left out
-/// unless `secrets` is true.
-pub fn take(dir: &Path, device: &str, secrets: bool) -> Result<Option<String>, String> {
-    take_in(dir, device, &snapshots_dir(), secrets)
+/// The ref in the project's repository that holds this device's snapshots of `project`. One per
+/// project, because two projects can share a repository (two worktrees of it, or two subfolders)
+/// and refs are shared by its worktrees.
+fn local_ref(project: &str, device: &str) -> String {
+    format!("refs/archon/snap/{project}/{device}")
 }
 
-/// A git bundle of `wip_ref(device)` holding only what `since` lacks. A full bundle when `since`
-/// is None or unknown here. Empty when `since` is already the current snapshot.
-pub fn bundle(dir: &Path, device: &str, since: Option<&str>) -> Result<Vec<u8>, String> {
-    bundle_in(dir, device, since, &snapshots_dir())
+/// Snapshots the working files of `dir`, the project `project`, as a commit on its local ref.
+/// Returns the new commit id, or None when nothing changed since the last snapshot. Secret-looking
+/// files are left out unless `secrets` is true.
+pub fn take(dir: &Path, project: &str, device: &str, secrets: bool) -> Result<Option<String>, String> {
+    take_in(dir, project, device, &snapshots_dir(), secrets)
+}
+
+/// A git bundle of the latest snapshot, as `wip_ref(device)`, holding only what `since` lacks. A
+/// full bundle when `since` is None or unknown here. Empty when `since` is already the current snapshot.
+pub fn bundle(dir: &Path, project: &str, device: &str, since: Option<&str>) -> Result<Vec<u8>, String> {
+    bundle_in(dir, project, device, since, &snapshots_dir())
 }
 
 /// The commit of this device's latest snapshot of `dir`, if any.
-pub fn current(dir: &Path, device: &str) -> Option<String> {
-    check_device(device).ok()?;
+pub fn current(dir: &Path, project: &str, device: &str) -> Option<String> {
+    check_ids(project, device).ok()?;
     let repo = Repo::open(dir, &snapshots_dir()).ok()?;
-    run(repo.git().args(["rev-parse", "--verify", "-q", wip_ref(device).as_str()])).ok()
+    run(repo.git().args(["rev-parse", "--verify", "-q", local_ref(project, device).as_str()])).ok()
 }
 
 /// Writes the files of `commit` (from a full bundle) into `dest`, which must not exist or be empty.
@@ -68,20 +75,24 @@ pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
     result
 }
 
-fn take_in(dir: &Path, device: &str, snapshots: &Path, secrets: bool) -> Result<Option<String>, String> {
-    check_device(device)?;
+fn take_in(dir: &Path, project: &str, device: &str, snapshots: &Path, secrets: bool) -> Result<Option<String>, String> {
+    check_ids(project, device)?;
     let repo = Repo::open(dir, snapshots)?;
     let index = temp_path("index")?;
-    let result = take_with(&repo, device, &index, secrets);
+    let result = take_with(&repo, &local_ref(project, device), &index, secrets);
     let _ = fs::remove_file(&index);
+    if result.is_ok() {
+        // Older versions kept one ref per device, shared by every project in the repository. The
+        // snapshots now live under `local_ref`, so that one is only left over.
+        let _ = run(repo.git().args(["update-ref", "-d", wip_ref(device).as_str()]));
+    }
     result
 }
 
 /// The snapshot itself, built in a temporary index so the real one is never touched. The temporary
 /// index starts as a copy of the real one, so git skips files whose stats have not changed instead
 /// of reading every file again.
-fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<Option<String>, String> {
-    let r = wip_ref(device);
+fn take_with(repo: &Repo, r: &str, index: &Path, secrets: bool) -> Result<Option<String>, String> {
     let has_head = succeeds(repo.git().args(["rev-parse", "--verify", "-q", "HEAD"]));
     let seed = repo.index_path()?;
     let seeded = match copy_index(&seed, index) {
@@ -107,7 +118,7 @@ fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<O
     }
     let tree = write_tree(repo, index)?;
 
-    let prev = run(repo.git().args(["rev-parse", "--verify", "-q", r.as_str()])).ok();
+    let prev = run(repo.git().args(["rev-parse", "--verify", "-q", r])).ok();
     if let Some(p) = &prev {
         let spec = format!("{p}^{{tree}}");
         if run(repo.git().args(["rev-parse", spec.as_str()]))? == tree {
@@ -133,7 +144,7 @@ fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<O
         .env("GIT_COMMITTER_NAME", "ArchonUI")
         .env("GIT_COMMITTER_EMAIL", "archonui@localhost");
     let id = run(&mut commit)?;
-    run(repo.git().args(["update-ref", r.as_str(), id.as_str()]))?;
+    run(repo.git().args(["update-ref", r, id.as_str()]))?;
     Ok(Some(id))
 }
 
@@ -152,10 +163,10 @@ fn write_tree(repo: &Repo, index: &Path) -> Result<String, String> {
     }
 }
 
-fn bundle_in(dir: &Path, device: &str, since: Option<&str>, snapshots: &Path) -> Result<Vec<u8>, String> {
-    check_device(device)?;
+fn bundle_in(dir: &Path, project: &str, device: &str, since: Option<&str>, snapshots: &Path) -> Result<Vec<u8>, String> {
+    check_ids(project, device)?;
     let repo = Repo::open(dir, snapshots)?;
-    let r = wip_ref(device);
+    let r = local_ref(project, device);
     let cur = run(repo.git().args(["rev-parse", "--verify", "-q", r.as_str()]))
         .map_err(|_| format!("no snapshot of this project for {device} yet"))?;
     let base = since.filter(|s| {
@@ -170,12 +181,39 @@ fn bundle_in(dir: &Path, device: &str, since: Option<&str>, snapshots: &Path) ->
 
     let file = temp_path("bundle")?;
     let out = match create_bundle(&repo, &r, base, &file) {
-        Ok(true) => fs::read(&file).map_err(|e| format!("read bundle: {e}")),
+        Ok(true) => fs::read(&file).map_err(|e| format!("read bundle: {e}")).and_then(|b| rename_ref(&b, &r, &wip_ref(device))),
         Ok(false) => Ok(Vec::new()),
         Err(e) => Err(e),
     };
     let _ = fs::remove_file(&file);
     out
+}
+
+/// Renames ref `from` to `to` in a bundle's header, so the cloud gets the one ref per device it
+/// expects whatever the snapshot was called here. The header is the lines before the first empty
+/// one (gitformat-bundle(5)); a ref line is "<id> <name>". The pack after it is left as is.
+fn rename_ref(bundle: &[u8], from: &str, to: &str) -> Result<Vec<u8>, String> {
+    let end = bundle.windows(2).position(|w| w == b"\n\n").ok_or("git made a bundle without a header")? + 1;
+    let (header, pack) = bundle.split_at(end);
+    let mut out = Vec::with_capacity(bundle.len() + to.len());
+    let mut renamed = false;
+    for line in header.split_inclusive(|b| *b == b'\n') {
+        let is_ref = !matches!(line.first(), Some(b'#' | b'-' | b'@'));
+        match line.iter().position(|b| *b == b' ') {
+            Some(space) if is_ref && &line[space + 1..] == format!("{from}\n").as_bytes() => {
+                out.extend_from_slice(&line[..=space]);
+                out.extend_from_slice(to.as_bytes());
+                out.push(b'\n');
+                renamed = true;
+            }
+            _ => out.extend_from_slice(line),
+        }
+    }
+    if !renamed {
+        return Err(format!("the bundle lacks {from}"));
+    }
+    out.extend_from_slice(pack);
+    Ok(out)
 }
 
 /// Writes a bundle of `r` (minus `base`) to `file`. False when there was nothing to bundle.
@@ -410,13 +448,15 @@ fn snapshots_dir() -> PathBuf {
     }
 }
 
-/// Device ids become part of a ref name, so only plain characters are allowed.
-fn check_device(device: &str) -> Result<(), String> {
-    let ok = !device.is_empty() && device.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    if ok {
-        Ok(())
-    } else {
+/// Project and device ids become part of a ref name, so only plain characters are allowed.
+fn check_ids(project: &str, device: &str) -> Result<(), String> {
+    let plain = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !plain(project) {
+        Err(format!("bad project id: {project:?}"))
+    } else if !plain(device) {
         Err(format!("bad device id: {device:?}"))
+    } else {
+        Ok(())
     }
 }
 
@@ -499,13 +539,13 @@ mod tests {
         let head = git(&proj, &["rev-parse", "HEAD"]);
         let status_before = git(&proj, &["status", "--porcelain"]);
 
-        let c1 = take_in(&proj, "n1", &snaps, false).unwrap().expect("first snapshot");
+        let c1 = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("first snapshot");
         assert_eq!(git(&proj, &["status", "--porcelain"]), status_before);
         assert_eq!(git(&proj, &["rev-parse", "HEAD"]), head);
-        assert_eq!(take_in(&proj, "n1", &snaps, false).unwrap(), None);
+        assert_eq!(take_in(&proj, "p1", "n1", &snaps, false).unwrap(), None);
 
         fs::write(proj.join("tracked.txt"), "two\n").unwrap();
-        let c2 = take_in(&proj, "n1", &snaps, false).unwrap().expect("second snapshot");
+        let c2 = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("second snapshot");
         assert_ne!(c1, c2);
         let parent = format!("{c2}^");
         assert_eq!(git(&proj, &["rev-parse", parent.as_str()]), c1);
@@ -552,7 +592,7 @@ mod tests {
         std::os::unix::fs::symlink("tracked.txt", proj.join("link")).unwrap();
         let before = repo_state(&proj);
 
-        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         assert_eq!(repo_state(&proj), before);
         let files = snapshot_files(&proj, &c);
         for f in ["staged.txt", "tracked.txt", "\"new\\nline.txt\""] {
@@ -564,7 +604,7 @@ mod tests {
         assert_eq!(git(&proj, &["cat-file", "-p", spec.as_str()]), "edited");
 
         let _ = fs::remove_file(proj.join("with space é.txt"));
-        assert!(take_in(&proj, "n1", &snaps, false).unwrap().is_some());
+        assert!(take_in(&proj, "p1", "n1", &snaps, false).unwrap().is_some());
         assert_eq!(repo_state(&proj).0, before.0);
 
         let _ = fs::remove_dir_all(&base);
@@ -584,7 +624,7 @@ mod tests {
         let status = git(&proj, &["--no-optional-locks", "status", "--porcelain"]);
         let head = fs::read(proj.join(".git/HEAD")).unwrap();
 
-        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         assert_eq!(snapshot_files(&proj, &c), vec!["a.txt".to_string()]);
         assert!(!proj.join(".git/index").exists());
         assert_eq!(fs::read(proj.join(".git/HEAD")).unwrap(), head);
@@ -620,10 +660,10 @@ mod tests {
         let runs = || fs::read_to_string(&log).map(|s| s.lines().count()).unwrap_or(0);
         let _ = fs::remove_file(&log);
 
-        take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         assert_eq!(runs(), 0);
         fs::write(proj.join("f3.txt"), "changed\n").unwrap();
-        take_in(&proj, "n1", &snaps, false).unwrap().expect("second snapshot");
+        take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("second snapshot");
         // Only the changed file is read (git may run the filter on it twice), not all 21.
         assert!(runs() <= 2, "{} files read again", runs());
         assert_eq!(fs::read(proj.join(".git/index")).unwrap(), index);
@@ -651,11 +691,11 @@ mod tests {
         let when = fs::metadata(&file).unwrap().modified().unwrap();
         let set_time = |p: &Path| fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(when).unwrap();
         set_time(&proj.join(".git/index"));
-        take_in(&proj, "n1", &snaps, false).unwrap().expect("first snapshot");
+        take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("first snapshot");
 
         fs::write(&file, "two\n").unwrap();
         set_time(&file);
-        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("the change is seen");
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("the change is seen");
         let spec = format!("{c}:tracked.txt");
         assert_eq!(git(&proj, &["cat-file", "-p", spec.as_str()]), "two");
 
@@ -676,7 +716,7 @@ mod tests {
         }
         // Past the racy-git window, so the saved index's stats are trusted.
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        take_in(&folder, "n1", &snaps, false).unwrap().expect("first snapshot");
+        take_in(&folder, "p1", "n1", &snaps, false).unwrap().expect("first snapshot");
         let private = fs::read_dir(&snaps).unwrap().flatten().next().unwrap().path();
         let log = base.join("clean.log");
         let filter = format!("sh -c 'echo x >> \"{}\"; cat'", log.display());
@@ -686,7 +726,7 @@ mod tests {
         let runs = || fs::read_to_string(&log).map(|s| s.lines().count()).unwrap_or(0);
 
         fs::write(folder.join("f3.txt"), "changed\n").unwrap();
-        take_in(&folder, "n1", &snaps, false).unwrap().expect("second snapshot");
+        take_in(&folder, "p1", "n1", &snaps, false).unwrap().expect("second snapshot");
         assert!(runs() <= 2, "{} files read again", runs());
         assert!(!folder.join(".git").exists());
 
@@ -705,11 +745,11 @@ mod tests {
         fs::write(proj.join("notes.txt"), "draft\n").unwrap();
         fs::create_dir_all(proj.join("target")).unwrap();
         fs::write(proj.join("target/x"), "built\n").unwrap();
-        take_in(&proj, "n1", &snaps, false).unwrap();
+        take_in(&proj, "p1", "n1", &snaps, false).unwrap();
         fs::write(proj.join("tracked.txt"), "two\n").unwrap();
-        let c2 = take_in(&proj, "n1", &snaps, false).unwrap().expect("second snapshot");
+        let c2 = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("second snapshot");
 
-        let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
+        let full = bundle_in(&proj, "p1", "n1", None, &snaps).unwrap();
         assert!(!full.is_empty());
         let dest = base.join("restored");
         restore(&full, &c2, &dest).unwrap();
@@ -732,17 +772,17 @@ mod tests {
         let proj = base.join("proj");
         let snaps = base.join("snaps");
         init_repo(&proj);
-        let c1 = take_in(&proj, "n1", &snaps, false).unwrap().expect("first snapshot");
+        let c1 = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("first snapshot");
         fs::write(proj.join("tracked.txt"), "two\n").unwrap();
-        let c2 = take_in(&proj, "n1", &snaps, false).unwrap().expect("second snapshot");
+        let c2 = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("second snapshot");
 
-        let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
-        let inc = bundle_in(&proj, "n1", Some(c1.as_str()), &snaps).unwrap();
+        let full = bundle_in(&proj, "p1", "n1", None, &snaps).unwrap();
+        let inc = bundle_in(&proj, "p1", "n1", Some(c1.as_str()), &snaps).unwrap();
         assert!(!inc.is_empty());
         assert!(inc.len() <= full.len());
-        assert!(bundle_in(&proj, "n1", Some(c2.as_str()), &snaps).unwrap().is_empty());
+        assert!(bundle_in(&proj, "p1", "n1", Some(c2.as_str()), &snaps).unwrap().is_empty());
         // An id this repository does not know gives a full bundle.
-        assert!(!bundle_in(&proj, "n1", Some("abcdef0123456789"), &snaps).unwrap().is_empty());
+        assert!(!bundle_in(&proj, "p1", "n1", Some("abcdef0123456789"), &snaps).unwrap().is_empty());
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -760,11 +800,11 @@ mod tests {
         fs::write(folder.join("skip.log"), "log\n").unwrap();
         fs::write(folder.join(".gitignore"), "*.log\n").unwrap();
 
-        let c = take_in(&folder, "n1", &snaps, false).unwrap().expect("snapshot");
+        let c = take_in(&folder, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         assert!(!folder.join(".git").exists());
-        assert_eq!(take_in(&folder, "n1", &snaps, false).unwrap(), None);
+        assert_eq!(take_in(&folder, "p1", "n1", &snaps, false).unwrap(), None);
 
-        let full = bundle_in(&folder, "n1", None, &snaps).unwrap();
+        let full = bundle_in(&folder, "p1", "n1", None, &snaps).unwrap();
         let dest = base.join("restored");
         restore(&full, &c, &dest).unwrap();
         assert!(dest.join("a.txt").exists());
@@ -798,7 +838,7 @@ mod tests {
         add_secret_files(&proj);
         let status_before = git(&proj, &["status", "--porcelain"]);
 
-        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         let files = snapshot_files(&proj, &c);
         assert!(files.contains(&"tracked.txt".to_string()));
         assert!(files.contains(&".env.example".to_string()));
@@ -822,7 +862,7 @@ mod tests {
         init_repo(&proj);
         add_secret_files(&proj);
 
-        let c = take_in(&proj, "n1", &snaps, true).unwrap().expect("snapshot");
+        let c = take_in(&proj, "p1", "n1", &snaps, true).unwrap().expect("snapshot");
         let files = snapshot_files(&proj, &c);
         assert!(files.contains(&".env".to_string()));
         assert!(files.contains(&"keys/server.pem".to_string()));
@@ -847,7 +887,7 @@ mod tests {
         fs::write(odd.join(".env"), "KEY=1\n").unwrap();
         fs::write(odd.join("keep.txt"), "keep\n").unwrap();
 
-        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         let out = Command::new("git").arg("-C").arg(&proj).args(["ls-tree", "-r", "-z", "--name-only", c.as_str()]).output().unwrap();
         let files: Vec<&[u8]> = out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();
         assert!(files.contains(&&b"caf\xe9 dir/keep.txt"[..]), "{files:?}");
@@ -876,13 +916,13 @@ mod tests {
         let proj = base.join("proj");
         let snaps = base.join("snaps");
         init_repo(&proj);
-        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         let dest = base.join("dest");
 
         assert!(restore(b"not a bundle", &c, &dest).is_err());
         assert!(!dest.exists());
 
-        let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
+        let full = bundle_in(&proj, "p1", "n1", None, &snaps).unwrap();
         restore(&full, &c, &dest).unwrap();
         assert_eq!(fs::read_to_string(dest.join("tracked.txt")).unwrap(), "one\n");
 
@@ -918,14 +958,14 @@ mod tests {
         fs::write(repo.join("other.txt"), "not the project\n").unwrap();
         let before = repo_state(&repo);
 
-        let c = take_in(&sub, "n1", &snaps, false).unwrap().expect("snapshot");
+        let c = take_in(&sub, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         assert_eq!(repo_state(&repo), before);
         assert_eq!(snapshot_files(&repo, &c), vec!["draft.txt".to_string(), "src/main.rs".to_string()]);
         let parent = format!("{c}^");
         assert!(Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "-q", "--verify", parent.as_str()]).output().map(|o| !o.status.success()).unwrap());
-        assert_eq!(take_in(&sub, "n1", &snaps, false).unwrap(), None);
+        assert_eq!(take_in(&sub, "p1", "n1", &snaps, false).unwrap(), None);
 
-        let full = bundle_in(&sub, "n1", None, &snaps).unwrap();
+        let full = bundle_in(&sub, "p1", "n1", None, &snaps).unwrap();
         let dest = base.join("restored");
         restore(&full, &c, &dest).unwrap();
         let mut files: Vec<String> = git(&dest, &["ls-files"]).lines().map(str::to_string).collect();
@@ -938,7 +978,7 @@ mod tests {
 
         let empty = repo.join("empty");
         fs::create_dir_all(&empty).unwrap();
-        let e = take_in(&empty, "n1", &snaps, false).unwrap().expect("empty snapshot");
+        let e = take_in(&empty, "p1", "n1", &snaps, false).unwrap().expect("empty snapshot");
         assert!(snapshot_files(&repo, &e).is_empty());
 
         let _ = fs::remove_dir_all(&base);
@@ -967,16 +1007,73 @@ mod tests {
         fs::write(proj.join("main.rs"), "fn main() {}\n").unwrap();
         let before = repo_state(&home);
 
-        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
         assert_eq!(repo_state(&home), before);
         assert_eq!(git(&home, &["for-each-ref", "refs/archon/"]), "");
         assert!(!proj.join(".git").exists());
-        let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
+        let full = bundle_in(&proj, "p1", "n1", None, &snaps).unwrap();
         let dest = base.join("restored");
         restore(&full, &c, &dest).unwrap();
         assert_eq!(git(&dest, &["ls-files"]), "main.rs");
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Two worktrees of one repository added as two projects share its refs: each keeps its own
+    /// snapshot ref, so an unchanged round makes no commit, and the bundle still carries the one
+    /// ref per device the cloud stores.
+    #[test]
+    fn worktrees_of_one_repo_keep_separate_snapshots() {
+        if !git_available() {
+            return;
+        }
+        let base = root("worktrees");
+        let main = base.join("main");
+        let wt = base.join("wt");
+        let snaps = base.join("snaps");
+        init_repo(&main);
+        let wt_arg = wt.to_str().unwrap();
+        git(&main, &["worktree", "add", "-q", "-b", "side", wt_arg]);
+        fs::write(main.join("a.txt"), "main\n").unwrap();
+        fs::write(wt.join("b.txt"), "side\n").unwrap();
+        // A snapshot from before projects had their own ref.
+        let old = git(&main, &["rev-parse", "HEAD"]);
+        git(&main, &["update-ref", "refs/archon/wip/n1", old.as_str()]);
+
+        let a = take_in(&main, "pa", "n1", &snaps, false).unwrap().expect("main snapshot");
+        let b = take_in(&wt, "pb", "n1", &snaps, false).unwrap().expect("worktree snapshot");
+        assert_eq!(take_in(&main, "pa", "n1", &snaps, false).unwrap(), None);
+        assert_eq!(take_in(&wt, "pb", "n1", &snaps, false).unwrap(), None);
+        assert_eq!(current(&main, "pa", "n1").as_ref(), Some(&a));
+        assert_eq!(current(&wt, "pb", "n1").as_ref(), Some(&b));
+        assert_eq!(git(&main, &["rev-parse", "refs/archon/snap/pa/n1"]), a);
+        assert_eq!(git(&main, &["rev-parse", "refs/archon/snap/pb/n1"]), b);
+        assert_eq!(git(&main, &["for-each-ref", "--format=%(refname)", "refs/archon/wip/"]), "", "the old shared ref is gone");
+        assert!(snapshot_files(&main, &a).contains(&"a.txt".to_string()));
+        assert!(snapshot_files(&main, &b).contains(&"b.txt".to_string()));
+
+        let store = super::super::cloud::Store::open(base.join("cloud"));
+        for (dir, project, commit) in [(&main, "pa", &a), (&wt, "pb", &b)] {
+            let full = bundle_in(dir, project, "n1", None, &snaps).unwrap();
+            store.put_project(project, project, "n1", commit, &full).unwrap();
+            let (got, bytes) = store.get_project(project, "n1").unwrap();
+            assert_eq!(&got, commit);
+            let dest = base.join(format!("restored-{project}"));
+            restore(&bytes, commit, &dest).unwrap();
+        }
+        assert!(base.join("restored-pa/a.txt").exists() && !base.join("restored-pa/b.txt").exists());
+        assert!(base.join("restored-pb/b.txt").exists() && !base.join("restored-pb/a.txt").exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn bundle_refs_are_renamed_in_the_header_only() {
+        let bundle = b"# v2 git bundle\n-abc0 archonui snapshot\nabc1 refs/archon/snap/p/n1\n\nPACK\n\nrefs/archon/snap/p/n1";
+        let out = rename_ref(bundle, "refs/archon/snap/p/n1", "refs/archon/wip/n1").unwrap();
+        assert_eq!(&out[..], &b"# v2 git bundle\n-abc0 archonui snapshot\nabc1 refs/archon/wip/n1\n\nPACK\n\nrefs/archon/snap/p/n1"[..]);
+        assert!(rename_ref(bundle, "refs/archon/snap/q/n1", "refs/archon/wip/n1").is_err());
+        assert!(rename_ref(b"no header", "a", "b").is_err());
     }
 
     /// Set by `inherited_git_variables_are_ignored` for the child run of `git_env_child`.
@@ -989,8 +1086,8 @@ mod tests {
         let Some(base) = std::env::var_os(CHILD_BASE).map(PathBuf::from) else { return };
         let proj = base.join("proj");
         let snaps = base.join("snaps");
-        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
-        let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
+        let full = bundle_in(&proj, "p1", "n1", None, &snaps).unwrap();
         let store = super::super::cloud::Store::open(base.join("cloud"));
         store.put_project("p1", "proj", "n1", &c, &full).unwrap();
         assert_eq!(store.get_project("p1", "n1").unwrap().0, c);
