@@ -52,7 +52,11 @@ fn headless(args: &[String]) -> bool {
             env!("CARGO_PKG_VERSION")
         ),
         Some("--detect") => {
-            for a in engine::detect(&harness_settings()) {
+            let agents = engine::detect(&harness_settings());
+            if agents.is_empty() {
+                eprintln!("no agent found: install claude, codex, gemini, opencode or pi, or set its path in Settings");
+            }
+            for a in agents {
                 println!("{:<10} {:<12} {:<9} {}", a.harness.id(), a.version, a.auth.label(), a.path.display());
             }
         }
