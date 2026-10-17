@@ -764,11 +764,11 @@ impl Shell {
                 }
             };
             let cwd = self.default_folder();
-            if self.state.adopt_remote(id, cwd) {
+            let name = self.chat_device_name(&device);
+            if self.state.adopt_remote(id, cwd, &name) {
                 if let Some(other) = takeover {
                     self.switch_agent(id, other, cx);
                 }
-                let name = self.chat_device_name(&device);
                 self.toast(format!("{name} is away, so this chat continues here"), cx);
                 self.flush_sessions(cx);
                 return self.send_now(id, text, cx);

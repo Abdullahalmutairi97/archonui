@@ -198,6 +198,10 @@ pub struct Session {
     /// The chat switched agents and the new one hasn't been sent the conversation so far yet.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub handoff: bool,
+    /// The device (its name) this chat was continued from, while that handoff is still to be sent:
+    /// its files are there, and the agent is told so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_from: Option<String>,
     /// A terminal was opened for this chat, so the chat is kept even without messages.
     #[serde(default)]
     pub terminal: bool,
@@ -237,6 +241,7 @@ impl Session {
             effort: None,
             mode: Mode::default(),
             handoff: false,
+            handoff_from: None,
             terminal: false,
             draft: String::new(),
             listed: false,
