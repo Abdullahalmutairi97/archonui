@@ -898,7 +898,7 @@ impl Shell {
                 .spawn(async move {
                     let mut out = Vec::new();
                     for (id, name, path, pushed) in projects {
-                        let made = snapshot::take(&path, &device, secrets).map(|_| snapshot::current(&path, &device));
+                        let made = snapshot::take(&path, &id, &device, secrets).map(|_| snapshot::current(&path, &id, &device));
                         let commit = match made {
                             Ok(Some(commit)) => commit,
                             Ok(None) => continue,
@@ -910,7 +910,7 @@ impl Shell {
                         if pushed.as_deref() == Some(commit.as_str()) {
                             continue;
                         }
-                        match snapshot::bundle(&path, &device, pushed.as_deref()) {
+                        match snapshot::bundle(&path, &id, &device, pushed.as_deref()) {
                             // Sent anyway, it would only drop the connection to the cloud.
                             Ok(bytes) if !proto::fits(bytes.len().div_ceil(3) * 4) => {
                                 eprintln!("archonui: {name} is too big for the cloud copy ({} MB)", bytes.len() >> 20);
