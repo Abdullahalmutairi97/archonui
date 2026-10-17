@@ -9,6 +9,7 @@
 use super::{
     cloud::Store,
     hub::{Hub, Request},
+    lock,
     proto::{self, ClientMsg, HostMsg, RemoteFile, SessionSummary, MAX_REMOTE_FILES_BYTES},
     tailscale,
 };
@@ -35,8 +36,19 @@ const DENIED: &str = "The user denied this action.";
 
 /// Serves this device's chats on `bind` until the process ends. Loads the settings and chats itself.
 pub fn serve(bind: SocketAddr) -> io::Result<()> {
+    let _chats = lock_chats().map_err(|e| io::Error::new(io::ErrorKind::WouldBlock, e))?;
     let device = host_name(&tailscale::discover());
     listen(bind, device, AppState::load(&Paths::current()))
+}
+
+/// Takes the chats folder for this host alone, or says why it can't.
+fn lock_chats() -> Result<lock::Lock, String> {
+    let dir = store::dir();
+    match lock::try_lock(&dir, true) {
+        Ok(Some(lock)) => Ok(lock),
+        Ok(None) => Err(lock::busy_message(&dir, true)),
+        Err(e) => Err(format!("cannot use the chats folder {}: {e}", dir.display())),
+    }
 }
 
 /// `archonui --serve [--bind ADDR:PORT]`. Without `--bind` the host listens on this device's
@@ -65,6 +77,14 @@ pub fn run(args: &[String]) -> i32 {
             }
         }
     }
+    // Before loading: loading may already write the chats.
+    let _chats = match lock_chats() {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("archonui host: {e}");
+            return 1;
+        }
+    };
     let state = AppState::load(&Paths::current());
     let tailnet = tailscale::discover();
     let addr = match bind {
