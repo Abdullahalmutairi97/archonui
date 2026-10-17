@@ -386,7 +386,7 @@ fn incoming(
     let msg = match proto::decode::<ClientMsg>(text) {
         Ok(msg) => msg,
         Err(message) => {
-            queue(me, &HostMsg::Error { message });
+            queue(me, &HostMsg::error(&proto::About::of_raw(text), message));
             return if *hello { Next::Continue } else { Next::Close };
         }
     };
@@ -401,18 +401,18 @@ fn incoming(
             ClientMsg::Hello { version, .. } => {
                 queue(
                     me,
-                    &HostMsg::Error { message: format!("Protocol version {version} does not match this host's {}", proto::VERSION) },
+                    &HostMsg::error(&proto::About::of(&msg), format!("Protocol version {version} does not match this host's {}", proto::VERSION)),
                 );
                 Next::Close
             }
             _ => {
-                queue(me, &HostMsg::Error { message: "Say hello first".into() });
+                queue(me, &HostMsg::error(&proto::About::of(&msg), "Say hello first"));
                 Next::Close
             }
         };
     }
     match msg {
-        ClientMsg::Hello { .. } => queue(me, &HostMsg::Error { message: "Already said hello".into() }),
+        msg @ ClientMsg::Hello { .. } => queue(me, &HostMsg::error(&proto::About::of(&msg), "Already said hello")),
         msg => {
             if requests.send_blocking(Request { conn, msg }).is_err() {
                 return Next::Close;

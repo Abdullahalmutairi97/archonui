@@ -70,6 +70,9 @@ resolve (MagicDNS off), it is looked up in `tailscale status` by host name.
   repository don't share it), so HEAD, the index, branches and files are never touched. `.gitignore`
   is respected. A folder that isn't a repository gets a private git dir outside it. Copies to the
   cloud are incremental git bundles of `refs/archon/wip/<device>`, the name the cloud stores.
+- **Errors** name the request they answer (`about`: its `type`, and the project for `put_project`), so
+  only a failed copy resets that project's copy. From a host older than `about`, any error from the
+  cloud while copies are on their way still counts as a failed copy.
 
 ## Security
 

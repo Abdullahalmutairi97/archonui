@@ -117,7 +117,7 @@ fn read_welcome(ws: &mut Socket) -> Result<String, String> {
         return match decode::<HostMsg>(text.as_str())? {
             HostMsg::Welcome { device, version } if version == VERSION => Ok(device),
             HostMsg::Welcome { version, .. } => Err(format!("host speaks protocol {version}, this client {VERSION}")),
-            HostMsg::Error { message } => Err(message),
+            HostMsg::Error { message, .. } => Err(message),
             _ => Err("the host did not send Welcome".into()),
         };
     }
@@ -280,7 +280,7 @@ fn closed(reason: Option<String>) -> String {
 fn await_reply<T>(client: &Client, mut pick: impl FnMut(HostMsg) -> Option<T>) -> Result<T, String> {
     loop {
         match smol::block_on(client.events.recv()) {
-            Ok(ClientEvent::Msg(HostMsg::Error { message })) => return Err(message),
+            Ok(ClientEvent::Msg(HostMsg::Error { message, .. })) => return Err(message),
             Ok(ClientEvent::Msg(msg)) => {
                 if let Some(value) = pick(msg) {
                     return Ok(value);
@@ -402,7 +402,7 @@ fn stream_turn(client: &Client, id: &str) -> i32 {
             Ok(ClientEvent::Msg(HostMsg::Approval { session, tool, .. })) if session == id => {
                 eprintln!("· {tool} waits for approval; answer it in the app on a device following this chat");
             }
-            Ok(ClientEvent::Msg(HostMsg::Error { message })) => return fail(message),
+            Ok(ClientEvent::Msg(HostMsg::Error { message, .. })) => return fail(message),
             Ok(ClientEvent::Closed(reason)) => return fail(closed(reason)),
             Ok(_) => {}
             Err(_) => return fail(closed(None)),
