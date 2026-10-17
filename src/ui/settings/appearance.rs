@@ -389,7 +389,6 @@ impl Shell {
                         // The open colour editor belongs to the theme it was opened on.
                         this.settings.picker = None;
                         this.state.settings.fonts.remove(theme_key(&id));
-                        this.state.settings.wallpapers.remove(theme_key(&id));
                         this.refresh_theme(cx);
                     }))
                     .child(thumb)
@@ -417,7 +416,7 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(heading("THEME", Some("Picking a theme also resets fonts and wallpaper."), &theme))
+            .child(heading("THEME", Some("Picking a theme also resets fonts."), &theme))
             .child(grid)
             .into_any_element()
     }
@@ -452,7 +451,7 @@ impl Shell {
             None,
         );
         let images = self.wallpaper_grid(cx);
-        let image_row = SettingRow::new("Image", "Your uploads stay in the backgrounds folder for every theme.", &theme).below(images);
+        let image_row = SettingRow::new("Image", "Your pick stays when you change theme. Uploads are kept in the backgrounds folder.", &theme).below(images);
         let filter_row = segmented_row(
             "bg-filter",
             "Filter",
@@ -488,7 +487,7 @@ impl Shell {
     /// upload tile.
     fn wallpaper_grid(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let picked = self.state.settings.wallpapers.get(theme_key(&self.state.settings.theme)).filter(|p| p.is_file()).cloned();
+        let picked = self.state.settings.wallpaper.clone().filter(|p| p.is_file());
         let backgrounds = self.backgrounds();
         let mut grid = div().flex().flex_wrap().gap(px(8.));
         let cell = |id: ElementId, active: bool| {
@@ -508,8 +507,7 @@ impl Shell {
         grid = grid.child(
             cell("wall-theme".into(), picked.is_none())
                 .on_click(cx.listener(|this, _, _, cx| {
-                    let key = theme_key(&this.state.settings.theme).to_string();
-                    this.state.settings.wallpapers.remove(&key);
+                    this.state.settings.wallpaper = None;
                     this.refresh_theme(cx);
                 }))
                 .child(match own {
@@ -535,8 +533,7 @@ impl Shell {
             grid = grid.child(
                 cell(("wall", i).into(), active)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let key = theme_key(&this.state.settings.theme).to_string();
-                        this.state.settings.wallpapers.insert(key, path.clone());
+                        this.state.settings.wallpaper = Some(path.clone());
                         this.refresh_theme(cx);
                     }))
                     .child(img(thumb).size_full().object_fit(ObjectFit::Cover)),
@@ -564,8 +561,7 @@ impl Shell {
         grid.into_any_element()
     }
 
-    /// Copies an uploaded image into the backgrounds folder, where it stays for every theme, and makes it
-    /// this theme's background.
+    /// Copies an uploaded image into the backgrounds folder and makes it the background for every theme.
     fn pick_wall_file(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
         let dir = self.backgrounds_dir();
@@ -575,8 +571,7 @@ impl Shell {
             let copied = cx.background_executor().spawn(async move { copy_asset(&dir, &src) }).await;
             let _ = this.update(cx, |this, cx| match copied {
                 Ok(path) => {
-                    let key = theme_key(&this.state.settings.theme).to_string();
-                    this.state.settings.wallpapers.insert(key, path);
+                    this.state.settings.wallpaper = Some(path);
                     this.refresh_theme(cx);
                 }
                 Err(e) => this.toast(format!("Wallpaper not added: {e}"), cx),
