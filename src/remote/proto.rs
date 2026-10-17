@@ -181,6 +181,16 @@ fn known_out<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Out>, D::Error> {
     Ok(Out::deserialize(value).ok())
 }
 
+/// The `Error` a host sends for a `ClientMsg::Unknown`: a request from a newer client.
+pub const UNKNOWN_REQUEST: &str = "This device's archonUI does not know that request; update it to match the other device";
+
+/// Whether `message`, from a host's `Error`, means the host is too old to know the request. Hosts
+/// from before `ClientMsg::Unknown` answered with the decode error, e.g.
+/// "bad message: unknown variant `rename`, expected one of ...".
+pub fn is_unknown_request(message: &str) -> bool {
+    message == UNKNOWN_REQUEST || message.starts_with("bad message: unknown variant `")
+}
+
 pub fn encode<T: Serialize>(msg: &T) -> String {
     serde_json::to_string(msg).expect("protocol messages always serialize")
 }
@@ -256,6 +266,20 @@ mod tests {
         // A known message that is broken is still an error.
         assert!(decode::<HostMsg>(r#"{"type":"event","out":{"type":"text","data":"x"}}"#).is_err());
         assert!(decode::<ClientMsg>(r#"{"type":"prompt","session":"s"}"#).is_err());
+    }
+
+    #[test]
+    fn an_older_host_refusing_a_request_is_recognised() {
+        // Word for word what hosts at 0dce615 (no `Unknown` yet) and d30ae41 answer a `rename`.
+        let first = "bad message: unknown variant `rename`, expected one of `hello`, `list_sessions`, `subscribe`, `unsubscribe`, `new_session`, `prompt`, `cancel`, `draft`, `put_project`, `put_chats`, `list_cloud`, `get_project`, `get_chats`, `answer` at line 1 column 16";
+        let later = "This device's archonUI does not know that request; update it to match the other device";
+        assert!(is_unknown_request(first));
+        assert!(is_unknown_request(later));
+        assert!(is_unknown_request(UNKNOWN_REQUEST));
+        // Other failures are not the host being too old.
+        assert!(!is_unknown_request("bad message: missing field `session` at line 1 column 17"));
+        assert!(!is_unknown_request("There is no chat s1 on this device"));
+        assert!(!is_unknown_request("git fetch: fatal: bad object"));
     }
 
     #[test]
