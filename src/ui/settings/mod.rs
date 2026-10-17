@@ -195,7 +195,8 @@ pub struct SettingsUi {
     /// Whether the Appearance page's custom colour swatches are shown.
     pub(super) colours_open: bool,
     /// The font slot the Appearance page's font chips set.
-    pub(super) font_slot: FontSlot,
+    /// The font slot whose list is open on Appearance, if any.
+    pub(super) font_open: Option<FontSlot>,
     /// Discovered skills; `None` until the first search finishes.
     pub(super) skills: Option<Vec<Skill>>,
     /// The latest skills search. An older one finishing late (say, one started before a sync) is dropped
@@ -696,8 +697,8 @@ fn name_config() -> TextInputConfig {
     TextInputConfig {
         placeholder: "archonui".into(),
         max_len: Some(18),
-        font_size: px(20.),
-        line_height: px(26.),
+        font_size: px(15.),
+        line_height: px(20.),
         ..Default::default()
     }
 }
