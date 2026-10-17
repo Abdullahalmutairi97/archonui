@@ -380,7 +380,9 @@ impl Shell {
                     &weak,
                     &theme,
                     |this, cx| {
-                        let cleared = this.state.clear_history().len();
+                        let cleared = this.state.clear_history();
+                        this.share_deleted_all(&cleared);
+                        let cleared = cleared.len();
                         this.save(cx);
                         this.toast(format!("Cleared {cleared} sessions"), cx);
                     },

@@ -1024,11 +1024,11 @@ mod tests {
         assert_eq!(app.workspace.layout.focus.as_deref(), Some(mine.as_str()));
         assert_eq!(app.workspace.layout.tiles, vec![mine.clone()]);
         // The window drops empty chats on each render; this one waits for the asking device's prompt.
-        assert!(!app.drop_abandoned());
+        assert!(app.drop_abandoned().is_empty());
         assert!(app.session(&new).is_some());
         // Once a turn ran in it, it is an ordinary chat.
         assert!(app.send(&new, "hello", &agents).is_none());
-        assert!(!app.drop_abandoned());
+        assert!(app.drop_abandoned().is_empty());
         assert!(app.session(&new).is_some_and(|s| s.visible()));
     }
 

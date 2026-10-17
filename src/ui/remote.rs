@@ -828,6 +828,13 @@ impl Shell {
         }
     }
 
+    /// `share_deleted` for each of `ids`. Nothing while sharing is off.
+    pub(super) fn share_deleted_all(&self, ids: &[String]) {
+        for id in ids {
+            self.share_deleted(id);
+        }
+    }
+
     /// Stops the reply in chat `id`: here for this device's chats, on its device for a remote one.
     pub(super) fn stop_chat(&mut self, id: &str) -> bool {
         match self.state.is_remote(id).map(str::to_string) {
