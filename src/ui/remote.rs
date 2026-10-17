@@ -664,6 +664,11 @@ impl Shell {
             HostMsg::ApprovalDone { session, request } => {
                 self.drop_forwarded(|f| f.device == device && f.session == session && f.request == request);
             }
+            // A host older than the request (rename or delete, say). Not a failed copy: the cloud knows those.
+            HostMsg::Error { message } if proto::is_unknown_request(&message) => {
+                let name = self.chat_device_name(device);
+                self.toast(format!("{name} runs an older archonUI that can't do that; update it there"), cx);
+            }
             // A copy the cloud couldn't apply: send those projects whole next time.
             HostMsg::Error { message } if self.state.settings.sync.is_cloud(device) && !self.remote.sending.is_empty() => {
                 if let Some(text) = self.remote.copy_failed(message) {

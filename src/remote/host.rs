@@ -340,8 +340,7 @@ pub fn handle(
         // An answer the owner did not match to a waiting request.
         ClientMsg::Answer { .. } => hub.reply(conn, &HostMsg::Error { message: "Nothing is waiting for that answer".into() }),
         ClientMsg::Unknown => {
-            let message = "This device's archonUI does not know that request; update it to match the other device".into();
-            hub.reply(conn, &HostMsg::Error { message });
+            hub.reply(conn, &HostMsg::Error { message: proto::UNKNOWN_REQUEST.into() });
         }
     }
     turn
