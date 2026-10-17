@@ -239,7 +239,7 @@ fn connection(stream: TcpStream, ip: IpAddr, hub: Hub, requests: smol::channel::
     if stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() || stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err() {
         return;
     }
-    let mut ws = match tungstenite::accept_with_config(stream, Some(proto::ws_config())) {
+    let mut ws = match tungstenite::accept_hdr_with_config(stream, refuse_browsers, Some(proto::ws_config())) {
         Ok(ws) => ws,
         Err(e) => {
             eprintln!("archonui host: handshake failed: {e}");
@@ -278,6 +278,20 @@ fn connection(stream: TcpStream, ip: IpAddr, hub: Hub, requests: smol::channel::
     }
     let _ = ws.close(None);
     hub.disconnect(conn);
+}
+
+/// Refuses a handshake that carries an `Origin` header. Browsers always send one and archonui clients
+/// never do, so a web page can't open a socket to this host and run prompts (DNS rebinding included).
+fn refuse_browsers(
+    request: &tungstenite::handshake::server::Request,
+    response: tungstenite::handshake::server::Response,
+) -> Result<tungstenite::handshake::server::Response, tungstenite::handshake::server::ErrorResponse> {
+    if !request.headers().contains_key(tungstenite::http::header::ORIGIN) {
+        return Ok(response);
+    }
+    let mut refused = tungstenite::handshake::server::ErrorResponse::new(Some("Browsers may not connect".into()));
+    *refused.status_mut() = tungstenite::http::StatusCode::FORBIDDEN;
+    Err(refused)
 }
 
 /// Whether a connection goes on after one message.
@@ -349,6 +363,27 @@ mod tests {
 
     fn device(addr: &str) -> Device {
         Device { id: "n1".into(), name: "pc".into(), dns_name: String::new(), addr: addr.into() }
+    }
+
+    #[test]
+    fn browsers_are_refused() {
+        use tungstenite::handshake::server::{Request as HttpRequest, Response};
+        let plain = HttpRequest::builder().uri("/").body(()).unwrap();
+        assert!(refuse_browsers(&plain, Response::new(())).is_ok(), "archonui clients send no Origin");
+        let page = HttpRequest::builder().uri("/").header("Origin", "https://evil.example").body(()).unwrap();
+        let refused = refuse_browsers(&page, Response::new(())).unwrap_err();
+        assert_eq!(refused.status(), tungstenite::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn a_browser_handshake_is_refused_on_the_socket() {
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "h".into(), SyncSettings::default()).unwrap();
+        let url = format!("ws://{}", hub.local_addr());
+        let mut page = tungstenite::client::IntoClientRequest::into_client_request(url.as_str()).unwrap();
+        page.headers_mut().insert("Origin", "http://localhost:3000".parse().unwrap());
+        assert!(tungstenite::connect(page).is_err(), "a web page on this machine gets no socket");
+        assert!(tungstenite::connect(url.as_str()).is_ok(), "the archonui client still connects");
+        hub.stop();
     }
 
     #[test]
