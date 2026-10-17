@@ -111,9 +111,21 @@ pub fn run(args: &[String]) -> i32 {
     match listen(addr, device, state) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("archonui host: {e}");
+            eprintln!("archonui host: {}", bind_error(addr, &e));
             1
         }
+    }
+}
+
+/// Why the host could not listen on `addr`, in words that say what to do.
+fn bind_error(addr: SocketAddr, e: &io::Error) -> String {
+    match e.kind() {
+        io::ErrorKind::AddrInUse => format!(
+            "cannot listen on {addr}: the port is in use, perhaps by the archonUI app with Devices sharing on or another --serve. Pass --bind ADDR:PORT with a free port."
+        ),
+        io::ErrorKind::AddrNotAvailable => format!("cannot listen on {addr}: this device has no such address"),
+        io::ErrorKind::PermissionDenied => format!("cannot listen on {addr}: permission denied (ports below 1024 need root)"),
+        _ => format!("cannot listen on {addr}: {e}"),
     }
 }
 
