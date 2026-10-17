@@ -62,10 +62,22 @@ new <agent> <folder> <prompt>`.
 ## Security
 
 - Hosts listen only on their Tailscale address and refuse anything outside the tailnet. When devices
-  are ticked, only those may connect. With sharing off, no tailnet device is accepted.
+  are ticked, only those may connect. With sharing off, no tailnet device is accepted. Unticking a
+  device, or turning sharing off, closes its open connections too.
 - Being on your tailnet is the trust boundary: a connected device can run prompts, and so tools, on
   the host. Only include your own devices.
-- Ids from the network are checked before they become paths or git refs.
+- Browsers are refused: a handshake with an `Origin` header gets 403, so a web page (DNS rebinding
+  included) can't reach `ws://127.0.0.1:7420` or the Tailscale address.
+- A connection from this machine itself (loopback, or its own Tailscale address) must come from the
+  same user as the host; its owner is read from `/proc/net/tcp`. Other accounts on a shared box, or on
+  the VPS where `--serve` runs as root, are refused. Connections from other devices skip this check.
+- At most 32 connections are open at once.
+- Only a connection following a chat can answer that chat's approvals.
+- Ids from the network are checked before they become paths or git refs. A chat from another device
+  never replaces one of this device's own chats, and that device's turn events, drafts and approvals
+  only reach the chats shown from it.
+- The cloud store and the snapshot temp files are owner-only (0700), so other accounts on the cloud
+  device can't read the copies.
 - Secret-looking files (`.env`, keys, certificates, credential files) are left out of the cloud copy
   unless Settings → Devices → "Copy secret files" is on. `.env.example` and the like are kept.
 
