@@ -2,7 +2,10 @@
 //! pointer, outside the sidebar's clip, and closes on a click elsewhere or on a choice.
 
 use super::{Menu, Shell, Target};
-use crate::ui::theme::Theme;
+use crate::ui::{
+    theme::Theme,
+    widgets::popover::{tooltip, TooltipColors},
+};
 use gpui::{
     anchored, deferred, div, prelude::*, AnyElement, App, ClickEvent, Context, ElementId, Pixels, Point,
     SharedString, Window,
@@ -81,9 +84,14 @@ impl Shell {
                         this.start_rename(Target::Session(id.clone()), window, cx);
                     }
                 })),
-                item("menu-move", "Move to project  ▸", &theme, cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.set_menu_view(MenuView::MoveTo, cx);
-                })),
+                // Project ids are this device's; the chat's own device files it in its projects.
+                if self.state.is_remote(&id).is_some() {
+                    disabled_item("menu-move", "Move to project  ▸", "This chat is on another device", &theme)
+                } else {
+                    item("menu-move", "Move to project  ▸", &theme, cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.set_menu_view(MenuView::MoveTo, cx);
+                    }))
+                },
                 item("menu-share", "Share…", &theme, cx.listener({
                     let id = id.clone();
                     move |this, _: &ClickEvent, _, cx| {
@@ -205,6 +213,21 @@ fn item(
         .cursor_pointer()
         .hover(move |s| s.bg(line2))
         .on_click(on_click)
+        .child(label.into())
+        .into_any_element()
+}
+
+/// A menu row that takes no clicks and shows `reason` as its tooltip, dimmed like a disabled button.
+fn disabled_item(id: impl Into<ElementId>, label: impl Into<SharedString>, reason: &'static str, theme: &Theme) -> AnyElement {
+    div()
+        .id(id)
+        .px(px(10.))
+        .py(px(7.))
+        .rounded(px(6.))
+        .text_size(px(13.))
+        .opacity(0.45)
+        .cursor_default()
+        .tooltip(tooltip(reason, TooltipColors::of(theme)))
         .child(label.into())
         .into_any_element()
 }
