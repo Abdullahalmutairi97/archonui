@@ -2,14 +2,18 @@
 
 use super::Device;
 use serde_json::Value;
-use std::io;
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Tailscale's command line, looked up on PATH.
 const BINARY: &str = "tailscale";
 /// The macOS app keeps its command line inside the bundle. Tried when `tailscale` is not on PATH.
 const MAC_BINARY: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+/// How long `tailscale status` may take. A stuck daemon must not hold up the app or `--serve`.
+const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One peer as Tailscale reports it.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,7 +32,7 @@ pub struct Tailnet {
 }
 
 /// Runs `tailscale status --json` and parses it. Errors with a short message when Tailscale is
-/// not installed, not running, or logged out.
+/// not installed, not running, logged out, or gives no answer within `TIMEOUT`.
 pub fn discover() -> Result<Tailnet, String> {
     let output = match status(BINARY) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => match status(MAC_BINARY) {
@@ -39,7 +43,10 @@ pub fn discover() -> Result<Tailnet, String> {
         },
         other => other,
     }
-    .map_err(|e| format!("Could not run Tailscale: {}", e))?;
+    .map_err(|e| match e.kind() {
+        io::ErrorKind::TimedOut => e.to_string(),
+        _ => format!("Could not run Tailscale: {}", e),
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -103,9 +110,44 @@ pub fn is_tailscale_addr(ip: &IpAddr) -> bool {
     }
 }
 
-/// Runs `<program> status --json` and returns its output.
+/// Runs `<program> status --json` and returns its output, or `TimedOut` after `TIMEOUT`.
 fn status(program: &str) -> io::Result<Output> {
-    Command::new(program).args(["status", "--json"]).output()
+    let mut cmd = Command::new(program);
+    cmd.args(["status", "--json"]);
+    output_within(cmd, TIMEOUT)
+}
+
+/// `Command::output`, but the command is killed and `TimedOut` returned once `timeout` has passed.
+/// The output is read while it runs, so a long one can't fill the pipe and stall it.
+fn output_within(mut cmd: Command, timeout: Duration) -> io::Result<Output> {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let stderr = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let secs = timeout.as_secs_f32();
+            return Err(io::Error::new(io::ErrorKind::TimedOut, format!("Tailscale did not answer within {secs} s")));
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    Ok(Output { status, stdout, stderr })
 }
 
 /// A string field of a JSON object, or "" when missing or not a string.
@@ -150,6 +192,27 @@ fn node_device(node: &Value) -> Option<Device> {
 mod tests {
     use super::*;
     use std::net::IpAddr;
+
+    #[test]
+    fn a_stuck_command_is_given_up_on() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let started = Instant::now();
+        let err = output_within(cmd, Duration::from_millis(200)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_long_output_is_read_whole() {
+        // More than a pipe holds, so the command would stall if nothing read it while it ran.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "head -c 300000 /dev/zero; echo oops >&2; exit 3"]);
+        let out = output_within(cmd, Duration::from_secs(20)).unwrap();
+        assert_eq!(out.stdout.len(), 300_000);
+        assert_eq!(out.stderr, b"oops\n");
+        assert_eq!(out.status.code(), Some(3));
+    }
 
     const FIXTURE: &str = r#"{
         "BackendState": "Running",
