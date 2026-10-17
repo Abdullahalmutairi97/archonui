@@ -181,9 +181,15 @@ impl Shell {
             let epoch = self.remote.epoch;
             cx.spawn(async move |this, cx| loop {
                 cx.background_executor().timer(LIST_EVERY).await;
-                let alive = this.update(cx, |this, _| {
+                let alive = this.update(cx, |this, cx| {
                     for client in this.remote.clients.values() {
                         let _ = client.send(&ClientMsg::ListSessions);
+                    }
+                    // Empty chats other devices asked for here and then left.
+                    if let Some(hub) = this.remote.hub.clone() {
+                        if !host::expire_requested(&mut this.state, &hub).is_empty() {
+                            this.save(cx);
+                        }
                     }
                     this.remote.epoch == epoch
                 });

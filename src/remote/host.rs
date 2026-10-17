@@ -276,7 +276,7 @@ pub fn handle(
                 // A folder the client named wins over the project open here, which would move the chat.
                 let current = if named { state.workspace.current_project.take() } else { None };
                 // Not in this window's tiles: the asking device opens it, and the user here keeps what they had open.
-                let id = state.new_session(&agent, cwd, Placement::Elsewhere);
+                let id = state.new_session(&agent, cwd, Placement::Elsewhere { conn });
                 if current.is_some() {
                     state.workspace.current_project = current;
                 }
@@ -353,6 +353,24 @@ fn tell_followers(hub: &Hub, conn: u64, session: &str, msg: &HostMsg) {
         hub.reply(conn, msg);
     }
     hub.broadcast(session, msg, None);
+}
+
+/// How long an empty chat another device asked for waits for a message before it is dropped.
+pub const REQUESTED_IDLE: Duration = Duration::from_secs(10 * 60);
+/// How often left requested chats are looked for.
+pub const SWEEP_EVERY: Duration = Duration::from_secs(20);
+
+/// Drops the empty chats other devices asked for and left (`AppState::expire_requested`), and
+/// tells their followers. Returns their ids.
+pub fn expire_requested(state: &mut AppState, hub: &Hub) -> Vec<String> {
+    let gone = state.expire_requested(|conn| hub.is_open(conn), REQUESTED_IDLE, std::time::Instant::now());
+    for id in &gone {
+        hub.broadcast(id, &HostMsg::Deleted { session: id.clone() }, None);
+    }
+    if !gone.is_empty() {
+        flush(state);
+    }
+    gone
 }
 
 /// Whether `msg` is about the cloud copy. Those need no chats and can be slow (they run git), so a
@@ -575,6 +593,8 @@ enum Work {
     Turn(String, Event),
     Approval(approve::Request),
     Expired(u64),
+    /// Time to drop requested chats that were left (`expire_requested`).
+    Sweep,
     /// Ctrl-C, `kill` or a closed terminal: stop the running turns, save the chats and end.
     Stop,
 }
@@ -785,6 +805,13 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
             }
         }
     });
+    let sweeper = work_tx.clone();
+    thread::spawn(move || loop {
+        thread::sleep(SWEEP_EVERY);
+        if sweeper.send_blocking(Work::Sweep).is_err() {
+            break;
+        }
+    });
     let mut approvals = Approvals::default();
     while let Ok(work) = smol::block_on(work_rx.recv()) {
         match work {
@@ -820,6 +847,9 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
                 }
             }
             Work::Expired(id) => approvals.settle(id, approve::Verdict::Deny("Timed out".into()), &hub),
+            Work::Sweep => {
+                expire_requested(&mut state, &hub);
+            }
             Work::Stop => {
                 stop(&mut state, &hub, &mut approvals, &work_rx);
                 break;
@@ -1030,6 +1060,38 @@ mod tests {
         assert!(app.send(&new, "hello", &agents).is_none());
         assert!(app.drop_abandoned().is_empty());
         assert!(app.session(&new).is_some_and(|s| s.visible()));
+    }
+
+    /// An empty chat a device asked for goes when that device's connection closes, and its followers are told.
+    #[test]
+    fn a_requested_chat_left_empty_goes_when_its_asker_disconnects() {
+        use super::super::client::Client;
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let port = hub.local_addr().port();
+        let asker = Client::connect("127.0.0.1", port, "a").unwrap();
+        let follower = Client::connect("127.0.0.1", port, "b").unwrap();
+        let mut app = state();
+        let agents = [pi_at("/nonexistent/archonui-test-pi")];
+        asker.send(&ClientMsg::NewSession { agent: "pi".into(), cwd: std::env::temp_dir(), project: None }).unwrap();
+        let req = next_request(&requests);
+        let asked_on = req.conn;
+        handle(&mut app, &agents, &hub, None, req);
+        let HostMsg::Created { session } = next_msg(&asker) else { panic!("expected Created") };
+        follower.send(&ClientMsg::Subscribe { session: session.id.clone() }).unwrap();
+        handle(&mut app, &agents, &hub, None, next_request(&requests));
+        assert!(matches!(next_msg(&follower), HostMsg::Snapshot { .. }));
+        // Still wanted while its asker is connected.
+        assert!(expire_requested(&mut app, &hub).is_empty());
+        assert!(app.session(&session.id).is_some());
+
+        drop(asker);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while hub.is_open(asked_on) && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(expire_requested(&mut app, &hub), [session.id.clone()]);
+        assert!(app.session(&session.id).is_none());
+        assert_eq!(next_msg(&follower), HostMsg::Deleted { session: session.id.clone() });
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::{
 };
 use smol::channel::Receiver;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -36,8 +36,16 @@ pub enum Placement {
     Split { area: Rect, gap: f32 },
     /// Show in the focused tile, replacing it.
     Focused,
-    /// No tile: another device asked for the chat. Kept while empty, until its first prompt.
-    Elsewhere,
+    /// No tile: another device asked for the chat over connection `conn`. Kept while empty, until its
+    /// first prompt, unless `AppState::expire_requested` finds it left.
+    Elsewhere { conn: u64 },
+}
+
+/// An empty chat another device asked for: the connection that asked, and when it last changed.
+#[derive(Clone, Copy, Debug)]
+struct Requested {
+    conn: u64,
+    since: Instant,
 }
 
 /// What the caller must do after `AppState::apply`.
@@ -109,7 +117,7 @@ pub struct AppState {
     /// Remote chats with a turn running on their device.
     remote_busy: BTreeSet<String>,
     /// Empty chats another device started here (`Placement::Elsewhere`), which `drop_abandoned` keeps.
-    requested: BTreeSet<String>,
+    requested: BTreeMap<String, Requested>,
 }
 
 impl AppState {
@@ -135,7 +143,7 @@ impl AppState {
             dirty: BTreeSet::new(),
             removed: Vec::new(),
             remote_busy: BTreeSet::new(),
-            requested: BTreeSet::new(),
+            requested: BTreeMap::new(),
         };
         let mut taken = Vec::new();
         for s in &mut state.sessions {
@@ -228,8 +236,8 @@ impl AppState {
                 }
             }
             Placement::Focused => self.workspace.layout.open_in_focused(&id),
-            Placement::Elsewhere => {
-                self.requested.insert(id.clone());
+            Placement::Elsewhere { conn } => {
+                self.requested.insert(id.clone(), Requested { conn, since: Instant::now() });
             }
         }
         id
@@ -482,6 +490,10 @@ impl AppState {
         if s.draft != text {
             s.draft = text.to_string();
             self.dirty.insert(id.to_string());
+            // Typing in a chat another device asked for keeps it from expiring.
+            if let Some(r) = self.requested.get_mut(id) {
+                r.since = Instant::now();
+            }
         }
     }
 
@@ -508,14 +520,33 @@ impl AppState {
     pub fn drop_abandoned(&mut self) -> Vec<String> {
         // Once it has a message, a chat another device asked for is like any other.
         let sessions = &self.sessions;
-        self.requested.retain(|id| sessions.iter().any(|s| &s.id == id && !s.visible()));
+        self.requested.retain(|id, _| sessions.iter().any(|s| &s.id == id && !s.visible()));
         let focus = self.workspace.layout.focus.as_deref();
         let doomed: Vec<String> = self
             .sessions
             .iter()
-            .filter(|s| !s.visible() && s.draft.trim().is_empty() && !self.requested.contains(&s.id))
+            .filter(|s| !s.visible() && s.draft.trim().is_empty() && !self.requested.contains_key(&s.id))
             .filter(|s| focus != Some(s.id.as_str()) && !self.busy(&s.id) && self.pending(&s.id).is_empty())
             .map(|s| s.id.clone())
+            .collect();
+        for id in &doomed {
+            self.delete_session(id);
+        }
+        doomed
+    }
+
+    /// Deletes the empty chats other devices asked for and then left: the asking connection closed
+    /// (`open` says false), or nothing was sent or typed in them for `idle` up to `now`. Chats that
+    /// got a message are ordinary chats and stay. Returns the ids that went.
+    pub fn expire_requested(&mut self, open: impl Fn(u64) -> bool, idle: Duration, now: Instant) -> Vec<String> {
+        let sessions = &self.sessions;
+        self.requested.retain(|id, _| sessions.iter().any(|s| &s.id == id && !s.visible()));
+        let doomed: Vec<String> = self
+            .requested
+            .iter()
+            .filter(|(id, _)| !self.busy(id) && !self.workspace.layout.contains(id))
+            .filter(|(_, r)| !open(r.conn) || now.saturating_duration_since(r.since) >= idle)
+            .map(|(id, _)| id.clone())
             .collect();
         for id in &doomed {
             self.delete_session(id);
@@ -1162,6 +1193,32 @@ mod tests {
         app.put_remote(theirs, "laptop", false);
         assert!(!app.move_to_project(&id, Some("p1".into())));
         assert!(app.session(&id).is_some_and(|s| s.project.is_none()));
+    }
+
+    #[test]
+    fn a_requested_chat_expires_when_left_idle_or_its_asker_goes() {
+        let mut app = state();
+        let idle = Duration::from_secs(600);
+        let asked = app.new_session("pi", "/tmp".into(), Placement::Elsewhere { conn: 7 });
+        let open = |conn: u64| conn == 7;
+        let now = Instant::now();
+        assert!(app.expire_requested(open, idle, now).is_empty());
+        // A draft typed in it counts as use.
+        app.set_draft(&asked, "half a prompt");
+        assert!(app.expire_requested(open, idle, now + Duration::from_secs(300)).is_empty());
+        assert_eq!(app.expire_requested(open, idle, Instant::now() + idle), [asked.clone()]);
+        assert!(app.session(&asked).is_none());
+
+        // Its asker's connection closing drops it at once.
+        let asked = app.new_session("pi", "/tmp".into(), Placement::Elsewhere { conn: 8 });
+        assert_eq!(app.expire_requested(open, idle, Instant::now()), [asked]);
+
+        // One that got a message is an ordinary chat, and a chat of this window is never touched.
+        let used = app.new_session("pi", "/tmp".into(), Placement::Elsewhere { conn: 9 });
+        app.sessions.iter_mut().find(|s| s.id == used).unwrap().push(Role::User, "hi");
+        let mine = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        assert!(app.expire_requested(|_| false, idle, Instant::now() + idle).is_empty());
+        assert!(app.session(&used).is_some() && app.session(&mine).is_some());
     }
 
     #[test]
