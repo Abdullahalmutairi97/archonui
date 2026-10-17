@@ -3,9 +3,12 @@
 //! files themselves are never changed.
 //!
 //! Folders that are not git repositories get a private git dir under the data folder instead,
-//! so nothing is written into the project.
+//! so nothing is written into the project. A snapshot never holds files above the project folder
+//! (see `Repo::open`).
 
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,7 +92,11 @@ fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<O
     if !seeded && has_head {
         run(indexed(repo, index).args(["read-tree", "HEAD"]))?;
     }
-    run(indexed(repo, index).args(["add", "-A"]))?;
+    match &repo.prefix {
+        None => run(indexed(repo, index).args(["add", "-A"]))?,
+        // Git runs in the project folder, so "." is just the subfolder.
+        Some(_) => run(indexed(repo, index).args(["add", "-A", "--", "."]))?,
+    };
     if repo.git_dir.is_some() {
         // A private git dir's index is ours: keep it so the next snapshot can skip unchanged files.
         // Only a speed-up, so a failed save is not an error.
@@ -98,7 +105,7 @@ fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<O
     if !secrets {
         drop_secrets(repo, index)?;
     }
-    let tree = run(indexed(repo, index).args(["write-tree"]))?;
+    let tree = write_tree(repo, index)?;
 
     let prev = run(repo.git().args(["rev-parse", "--verify", "-q", r.as_str()])).ok();
     if let Some(p) = &prev {
@@ -107,9 +114,10 @@ fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<O
             return Ok(None);
         }
     }
+    // A subfolder's snapshot starts its own history: HEAD's would carry the whole repository.
     let parent = match prev {
         Some(p) => Some(p),
-        None if has_head => Some(run(repo.git().args(["rev-parse", "HEAD"]))?),
+        None if has_head && repo.prefix.is_none() => Some(run(repo.git().args(["rev-parse", "HEAD"]))?),
         None => None,
     };
 
@@ -127,6 +135,21 @@ fn take_with(repo: &Repo, device: &str, index: &Path, secrets: bool) -> Result<O
     let id = run(&mut commit)?;
     run(repo.git().args(["update-ref", r.as_str(), id.as_str()]))?;
     Ok(Some(id))
+}
+
+/// The tree of the temporary index: the whole of it, or just the project's subfolder.
+fn write_tree(repo: &Repo, index: &Path) -> Result<String, String> {
+    let Some(prefix) = &repo.prefix else { return run(indexed(repo, index).args(["write-tree"])) };
+    let mut arg = OsString::from("--prefix=");
+    arg.push(prefix);
+    match run(indexed(repo, index).arg("write-tree").arg(&arg)) {
+        Ok(tree) => Ok(tree),
+        // A subfolder with nothing to keep has no tree of its own in the index.
+        Err(e) if run(indexed(repo, index).args(["ls-files", "--", "."]))?.is_empty() => {
+            run(repo.git().arg("mktree")).map_err(|_| e)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn bundle_in(dir: &Path, device: &str, since: Option<&str>, snapshots: &Path) -> Result<Vec<u8>, String> {
@@ -170,7 +193,7 @@ fn create_bundle(repo: &Repo, r: &str, base: Option<&str>, file: &Path) -> Resul
 }
 
 fn fetch_into(dest: &Path, bundle: &Path, commit: &str) -> Result<(), String> {
-    let repo = Repo { git_dir: None, work: dest.to_path_buf() };
+    let repo = Repo { git_dir: None, work: dest.to_path_buf(), prefix: None };
     run(repo.git().args(["init", "-q"]))?;
     run(repo.git().args(["symbolic-ref", "HEAD", "refs/heads/main"]))?;
     run(repo.git().arg("fetch").arg("-q").arg(bundle).arg("+refs/archon/wip/*:refs/archon/wip/*"))?;
@@ -185,12 +208,33 @@ struct Repo {
     git_dir: Option<PathBuf>,
     /// The project folder (the work tree).
     work: PathBuf,
+    /// The project folder's path in its repository, ending in `/`, when it is a subfolder of one.
+    prefix: Option<OsString>,
 }
 
 impl Repo {
+    /// Snapshots hold the project folder and nothing above it:
+    /// - the top of a repository: that repository's files.
+    /// - a subfolder of a repository: only that subfolder's files, as the snapshot's root, with no
+    ///   history from the repository (a copy restores as just the subfolder). The repository's
+    ///   ignore rules still apply.
+    /// - a folder its enclosing repository ignores (a home folder kept as a dotfiles repository
+    ///   that ignores `*`, say), or one in no repository: a private git dir outside the folder, so
+    ///   nothing is written to the enclosing repository.
     fn open(dir: &Path, snapshots: &Path) -> Result<Repo, String> {
-        if succeeds(git_cmd().arg("-C").arg(dir).args(["rev-parse", "--git-dir"])) {
-            return Ok(Repo { git_dir: None, work: dir.to_path_buf() });
+        let found = git_cmd().arg("-C").arg(dir).args(["rev-parse", "--show-prefix"]).stderr(Stdio::null()).output();
+        if let Some(out) = found.ok().filter(|o| o.status.success()) {
+            let mut prefix = out.stdout;
+            if prefix.last() == Some(&b'\n') {
+                prefix.pop();
+            }
+            if prefix.is_empty() {
+                return Ok(Repo { git_dir: None, work: dir.to_path_buf(), prefix: None });
+            }
+            if !succeeds(git_cmd().arg("-C").arg(dir).args(["check-ignore", "-q", "."])) {
+                let prefix = Some(OsString::from_vec(prefix));
+                return Ok(Repo { git_dir: None, work: dir.to_path_buf(), prefix });
+            }
         }
         let canon = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
         let name = format!("{:016x}.git", fnv1a(canon.to_string_lossy().as_bytes()));
@@ -199,7 +243,7 @@ impl Repo {
             fs::create_dir_all(snapshots).map_err(|e| format!("{}: {e}", snapshots.display()))?;
             run(git_cmd().arg("init").arg("-q").arg("--bare").arg(&git_dir))?;
         }
-        Ok(Repo { git_dir: Some(git_dir), work: dir.to_path_buf() })
+        Ok(Repo { git_dir: Some(git_dir), work: dir.to_path_buf(), prefix: None })
     }
 
     /// A git command for this project, run in the project folder without inherited repo variables.
@@ -852,6 +896,87 @@ mod tests {
         let dir = file.parent().unwrap();
         assert_eq!(dir, snapshots_dir().join("tmp"), "not the shared temp dir");
         assert_eq!(fs::metadata(dir).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn a_subfolder_of_a_repo_snapshots_only_itself() {
+        if !git_available() {
+            return;
+        }
+        let base = root("subfolder");
+        let repo = base.join("repo");
+        let snaps = base.join("snaps");
+        init_repo(&repo);
+        fs::write(repo.join(".gitignore"), "target/\n*.log\n").unwrap();
+        let sub = repo.join("packages/app");
+        fs::create_dir_all(sub.join("src")).unwrap();
+        fs::write(sub.join("src/main.rs"), "fn main() {}\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "app"]);
+        fs::write(sub.join("draft.txt"), "draft\n").unwrap();
+        fs::write(sub.join("build.log"), "log\n").unwrap();
+        fs::write(repo.join("other.txt"), "not the project\n").unwrap();
+        let before = repo_state(&repo);
+
+        let c = take_in(&sub, "n1", &snaps, false).unwrap().expect("snapshot");
+        assert_eq!(repo_state(&repo), before);
+        assert_eq!(snapshot_files(&repo, &c), vec!["draft.txt".to_string(), "src/main.rs".to_string()]);
+        let parent = format!("{c}^");
+        assert!(Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "-q", "--verify", parent.as_str()]).output().map(|o| !o.status.success()).unwrap());
+        assert_eq!(take_in(&sub, "n1", &snaps, false).unwrap(), None);
+
+        let full = bundle_in(&sub, "n1", None, &snaps).unwrap();
+        let dest = base.join("restored");
+        restore(&full, &c, &dest).unwrap();
+        let mut files: Vec<String> = git(&dest, &["ls-files"]).lines().map(str::to_string).collect();
+        files.sort();
+        assert_eq!(files, vec!["draft.txt".to_string(), "src/main.rs".to_string()]);
+        assert_eq!(fs::read_to_string(dest.join("draft.txt")).unwrap(), "draft\n");
+        assert!(!dest.join("tracked.txt").exists() && !dest.join("packages").exists());
+        // Only the subfolder's history travels, not the repository's.
+        assert_eq!(git(&dest, &["rev-list", "--count", "HEAD"]), "1");
+
+        let empty = repo.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let e = take_in(&empty, "n1", &snaps, false).unwrap().expect("empty snapshot");
+        assert!(snapshot_files(&repo, &e).is_empty());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A home folder kept as a dotfiles repository that ignores `*`: a project inside it is not
+    /// part of that repository, so it gets a private git dir and its files are all kept.
+    #[test]
+    fn a_folder_ignored_by_its_enclosing_repo_gets_a_private_git_dir() {
+        if !git_available() {
+            return;
+        }
+        let base = root("dotfiles");
+        let home = base.join("home");
+        let snaps = base.join("snaps");
+        fs::create_dir_all(&home).unwrap();
+        git(&home, &["init", "-q"]);
+        git(&home, &["config", "user.email", "t@example.com"]);
+        git(&home, &["config", "user.name", "t"]);
+        fs::write(home.join(".gitignore"), "*\n").unwrap();
+        fs::write(home.join(".bashrc"), "x\n").unwrap();
+        git(&home, &["add", "-f", ".gitignore", ".bashrc"]);
+        git(&home, &["commit", "-q", "-m", "dotfiles"]);
+        let proj = home.join("projects/app");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("main.rs"), "fn main() {}\n").unwrap();
+        let before = repo_state(&home);
+
+        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        assert_eq!(repo_state(&home), before);
+        assert_eq!(git(&home, &["for-each-ref", "refs/archon/"]), "");
+        assert!(!proj.join(".git").exists());
+        let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
+        let dest = base.join("restored");
+        restore(&full, &c, &dest).unwrap();
+        assert_eq!(git(&dest, &["ls-files"]), "main.rs");
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     /// Set by `inherited_git_variables_are_ignored` for the child run of `git_env_child`.
