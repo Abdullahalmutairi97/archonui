@@ -1,6 +1,7 @@
 //! The Devices page: share chats with other devices on the tailnet, and pick the cloud copy. Off by default.
 
 use super::controls::{act, button_row, caption, edit, section, toggle_row};
+use crate::remote::{Device, SyncSettings};
 use crate::ui::{
     shell::Shell,
     widgets::{
@@ -62,6 +63,7 @@ impl Shell {
             (false, Some(Ok(net))) => {
                 let me = net.me;
                 let me_id = me.id.clone();
+                let peer_ids: Vec<String> = net.peers.iter().map(|p| p.device.id.clone()).collect();
                 let me_cloud = sync.is_cloud(&me.id);
                 rows.push(
                     SettingRow::new(
@@ -100,14 +102,7 @@ impl Shell {
                             .on_change(edit(
                                 &weak,
                                 move |this: &mut Shell, on: bool, cx| {
-                                    let sync = &mut this.state.settings.sync;
-                                    sync.devices.retain(|d| d.id != include_device.id);
-                                    if on {
-                                        sync.devices.push(include_device.clone());
-                                    } else if sync.is_cloud(&include_device.id) {
-                                        // The cloud must be an included device, so removing it clears the cloud.
-                                        sync.cloud = None;
-                                    }
+                                    set_included(&mut this.state.settings.sync, &include_device, on);
                                     this.save(cx);
                                 },
                             )),
@@ -140,6 +135,23 @@ impl Shell {
                                     },
                                 )),
                             ),
+                    );
+                }
+                // Included devices Tailscale no longer lists (removed from the tailnet): still shown, so
+                // they can be unticked, or connection attempts would go on with no way to stop them.
+                for device in gone_devices(&sync, &me.id, &peer_ids) {
+                    let id = device.id.clone();
+                    let detail = if sync.is_cloud(&id) { "Not on your tailnet · the cloud" } else { "Not on your tailnet" };
+                    rows.push(
+                        SettingRow::new(device.name.clone(), detail, &theme).control(
+                            Toggle::new(SharedString::from(format!("device-include-{id}")), true, &theme).on_change(edit(
+                                &weak,
+                                move |this: &mut Shell, on: bool, cx| {
+                                    set_included(&mut this.state.settings.sync, &device, on);
+                                    this.save(cx);
+                                },
+                            )),
+                        ),
                     );
                 }
             }
@@ -244,5 +256,41 @@ impl Shell {
             });
         })
         .detach();
+    }
+}
+
+/// Ticks or unticks `device`. The cloud must be an included device, so unticking it clears the cloud.
+fn set_included(sync: &mut SyncSettings, device: &Device, on: bool) {
+    sync.devices.retain(|d| d.id != device.id);
+    if on {
+        sync.devices.push(device.clone());
+    } else if sync.is_cloud(&device.id) {
+        sync.cloud = None;
+    }
+}
+
+/// The included devices that are neither this device (`me`) nor among the peers Tailscale lists now.
+fn gone_devices(sync: &SyncSettings, me: &str, peers: &[String]) -> Vec<Device> {
+    sync.devices.iter().filter(|d| d.id != me && !peers.contains(&d.id)).cloned().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(id: &str) -> Device {
+        Device { id: id.into(), name: id.into(), dns_name: String::new(), addr: "100.64.0.9".into(), addr6: String::new() }
+    }
+
+    #[test]
+    fn a_device_that_left_the_tailnet_can_still_be_unticked() {
+        let mut sync = SyncSettings { enabled: true, devices: vec![device("pc"), device("vps")], cloud: Some("vps".into()), ..Default::default() };
+        // Only the pc is still on the tailnet.
+        let gone = gone_devices(&sync, "me", &["pc".to_string()]);
+        assert_eq!(gone, [device("vps")]);
+        set_included(&mut sync, &gone[0], false);
+        assert_eq!(sync.devices, [device("pc")]);
+        assert_eq!(sync.cloud, None, "the cloud went with it");
+        assert!(gone_devices(&sync, "me", &["pc".to_string()]).is_empty());
     }
 }
