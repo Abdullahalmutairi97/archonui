@@ -543,7 +543,15 @@ pub fn open_window(cx: &mut App, files: Vec<std::path::PathBuf>) {
             })
         },
     )
-    .expect("open window");
+    .unwrap_or_else(|e| window_failed(e));
+}
+
+/// Ends the app when no window can be opened, e.g. on a display without GPU support, with a
+/// clear message and exit code 1 rather than a panic.
+pub fn window_failed(e: impl std::fmt::Display) -> ! {
+    eprintln!("archonui: could not open a window: {e}");
+    eprintln!("archonUI needs a display with GPU support (Vulkan or Metal). `archonui --serve` runs without a window.");
+    std::process::exit(1);
 }
 
 #[cfg(test)]

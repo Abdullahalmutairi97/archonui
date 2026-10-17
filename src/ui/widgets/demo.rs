@@ -26,7 +26,7 @@ pub fn open_demo(cx: &mut App) {
     cx.open_window(WindowOptions::default(), move |window, cx| {
         cx.new(|cx| DemoView::new(theme, window, cx))
     })
-    .expect("open widget demo window");
+    .unwrap_or_else(|e| crate::ui::shell::window_failed(e));
 }
 
 struct DemoView {

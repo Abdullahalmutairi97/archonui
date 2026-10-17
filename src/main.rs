@@ -546,7 +546,7 @@ fn main() {
                 },
                 |_, cx| cx.new(|cx| chat::ChatView::new(working_dir(), files, cx)),
             )
-            .expect("open window");
+            .unwrap_or_else(|e| ui::shell::window_failed(e));
         window
             .update(cx, |view, window, cx| {
                 window.focus(&view.focus);
