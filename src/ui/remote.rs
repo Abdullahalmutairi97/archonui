@@ -935,10 +935,9 @@ impl Shell {
     /// Asks the cloud for the chats of every included device that isn't connected.
     fn ask_cloud_for_away_devices(&self) {
         let me = self.remote.me.as_ref().map(|d| d.id.as_str());
-        for d in &self.state.settings.sync.devices {
-            if Some(d.id.as_str()) != me && !self.remote.clients.contains_key(&d.id) {
-                self.ask_cloud_for_chats(&d.id);
-            }
+        let r = &self.remote;
+        for id in away_devices(&self.state.settings.sync, me, |id| r.clients.contains_key(id) || r.connecting.contains(id)) {
+            self.ask_cloud_for_chats(&id);
         }
     }
 
@@ -1150,6 +1149,14 @@ fn to_subscribe<'a>(
         .collect()
 }
 
+/// The included devices, other than `me`, to show from the cloud. One connected or still being
+/// connected to (`reached`) is left out: at start-up the cloud often answers first, and its copies
+/// would be taken for an away device's, so typing in one would continue it here while it is online.
+/// A connect that fails asks the cloud then.
+fn away_devices(sync: &crate::remote::SyncSettings, me: Option<&str>, reached: impl Fn(&str) -> bool) -> Vec<String> {
+    sync.devices.iter().filter(|d| Some(d.id.as_str()) != me && !reached(&d.id)).map(|d| d.id.clone()).collect()
+}
+
 /// The name of device `id`: an included device's, or this device's (`me`), whose projects the cloud
 /// holds too. The id itself when neither.
 fn device_name(sync: &crate::remote::SyncSettings, me: Option<&Device>, id: &str) -> String {
@@ -1233,6 +1240,14 @@ mod tests {
         let listed = ["new-chat", local_id.as_str(), adopted_id.as_str(), from_cloud_id.as_str(), other_id.as_str(), live_id.as_str()];
         let wanted = to_subscribe(&state, "pc", listed.into_iter(), &subscribed);
         assert_eq!(wanted, vec!["new-chat".to_string(), from_cloud_id], "new chats and cloud copies of pc's chats only");
+    }
+
+    #[test]
+    fn devices_being_connected_to_are_not_shown_from_the_cloud() {
+        let sync = SyncSettings { enabled: true, devices: vec![device("me"), device("pc"), device("laptop"), device("vps")], ..Default::default() };
+        // The vps is connected, the pc is still being connected to.
+        let away = away_devices(&sync, Some("me"), |id| id == "vps" || id == "pc");
+        assert_eq!(away, ["laptop"]);
     }
 
     #[test]
