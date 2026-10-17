@@ -41,7 +41,7 @@ impl Client {
     /// Connects to `ws://{addr}:{port}`, sends `Hello` as `this_device`, waits up to 5 s for
     /// `Welcome`, then starts the IO thread.
     pub fn connect(addr: &str, port: u16, this_device: &str) -> Result<Client, String> {
-        let url = format!("ws://{addr}:{port}");
+        let url = ws_url(addr, port);
         let (mut ws, _) = tungstenite::client::connect_with_config(url.as_str(), Some(super::proto::ws_config()), 3)
             .map_err(|e| format!("cannot connect to {addr}:{port}: {e}"))?;
         let hello = encode(&ClientMsg::Hello { device: this_device.to_string(), version: VERSION });
@@ -59,6 +59,15 @@ impl Client {
     /// Queues `msg` for the host.
     pub fn send(&self, msg: &ClientMsg) -> Result<(), String> {
         self.tx.send(encode(msg)).map_err(|_| "connection closed".to_string())
+    }
+}
+
+/// The URL of a host: `ws://addr:port`, with an IPv6 address in brackets.
+fn ws_url(addr: &str, port: u16) -> String {
+    if addr.contains(':') && !addr.starts_with('[') {
+        format!("ws://[{addr}]:{port}")
+    } else {
+        format!("ws://{addr}:{port}")
     }
 }
 
@@ -170,8 +179,14 @@ pub fn run(args: &[String]) -> i32 {
 }
 
 /// Splits `pc`, `pc:9000` or `100.1.2.3:81` into a host and a port. Without a port the
-/// default is used. A bare IPv6 address (several colons) is taken whole.
+/// default is used. A bare IPv6 address (several colons) is taken whole; `[fd7a::1]:81` has a port.
 fn parse_target(s: &str) -> (String, u16) {
+    if let Some(rest) = s.strip_prefix('[') {
+        if let Some((host, after)) = rest.split_once(']') {
+            let port = after.strip_prefix(':').and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT);
+            return (host.to_string(), port);
+        }
+    }
     if let Some((host, port)) = s.rsplit_once(':') {
         if !host.contains(':') {
             if let Ok(port) = port.parse() {
@@ -388,5 +403,27 @@ mod tests {
             ClientEvent::Msg(other) => panic!("unexpected {other:?}"),
             ClientEvent::Closed(e) => panic!("closed: {e:?}"),
         }
+    }
+
+    #[test]
+    fn ipv6_hosts_are_bracketed_in_the_url() {
+        assert_eq!(parse_target("fd7a:115c:a1e0::5"), ("fd7a:115c:a1e0::5".to_string(), DEFAULT_PORT));
+        assert_eq!(parse_target("[fd7a:115c:a1e0::5]:81"), ("fd7a:115c:a1e0::5".to_string(), 81));
+        assert_eq!(parse_target("[::1]"), ("::1".to_string(), DEFAULT_PORT));
+        assert_eq!(ws_url("fd7a:115c:a1e0::5", 7420), "ws://[fd7a:115c:a1e0::5]:7420");
+        assert_eq!(ws_url("100.1.2.3", 7420), "ws://100.1.2.3:7420");
+        assert_eq!(ws_url("pc", 81), "ws://pc:81");
+    }
+
+    #[test]
+    fn connects_over_ipv6() {
+        let Ok(listener) = std::net::TcpListener::bind("[::1]:0") else { return };
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let Ok((_hub, _requests)) = crate::remote::hub::Hub::start(format!("[::1]:{port}").parse().unwrap(), "host".into(), Default::default()) else {
+            return;
+        };
+        let client = Client::connect("::1", port, "me").unwrap();
+        assert_eq!(client.host, "host");
     }
 }
