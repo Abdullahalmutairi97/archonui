@@ -26,6 +26,8 @@ pub struct ApprovalUi {
     pub(super) queue: VecDeque<Pending>,
     next_id: u64,
     allowances: Allowances,
+    /// Why approvals could not listen at start, until the window shows it.
+    pub(super) listen_error: Option<String>,
 }
 
 pub(super) struct Pending {
@@ -37,9 +39,11 @@ pub(super) struct Pending {
 pub(super) fn start(cx: &mut Context<Shell>) -> ApprovalUi {
     let (requests, incoming) = smol::channel::unbounded();
     let allowances = Allowances::default();
-    if let Err(e) = approve::listen(approve::socket(), requests, allowances.clone(), approve::TIMEOUT) {
-        eprintln!("could not listen for approvals on {}: {e}", approve::socket().display());
-    }
+    let listen_error = approve::listen(approve::socket(), requests, allowances.clone(), approve::TIMEOUT).err().map(|e| {
+        let message = approve::listen_failed(&e);
+        eprintln!("archonui: {message}");
+        message
+    });
     cx.spawn(async move |this, cx| {
         while let Ok(request) = incoming.recv().await {
             if this.update(cx, |this, cx| this.approval_arrived(request, cx)).is_err() {
@@ -48,7 +52,7 @@ pub(super) fn start(cx: &mut Context<Shell>) -> ApprovalUi {
         }
     })
     .detach();
-    ApprovalUi { allowances, ..Default::default() }
+    ApprovalUi { allowances, listen_error, ..Default::default() }
 }
 
 impl Shell {
