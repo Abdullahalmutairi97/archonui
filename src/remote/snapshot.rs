@@ -54,9 +54,11 @@ pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
             return Err(format!("{} is not empty", dest.display()));
         }
     }
-    let file = temp_path("restore");
-    let result = fs::write(&file, bundle).map_err(|e| format!("write bundle: {e}")).and_then(|_| fetch_into(dest, &file, commit));
-    let _ = fs::remove_file(&file);
+    let result = temp_path("restore").and_then(|file| {
+        let result = fs::write(&file, bundle).map_err(|e| format!("write bundle: {e}")).and_then(|_| fetch_into(dest, &file, commit));
+        let _ = fs::remove_file(&file);
+        result
+    });
     if result.is_err() && created {
         let _ = fs::remove_dir_all(dest);
     }
@@ -66,7 +68,7 @@ pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
 fn take_in(dir: &Path, device: &str, snapshots: &Path, secrets: bool) -> Result<Option<String>, String> {
     check_device(device)?;
     let repo = Repo::open(dir, snapshots)?;
-    let index = temp_path("index");
+    let index = temp_path("index")?;
     let result = take_with(&repo, device, &index, secrets);
     let _ = fs::remove_file(&index);
     result
@@ -143,7 +145,7 @@ fn bundle_in(dir: &Path, device: &str, since: Option<&str>, snapshots: &Path) ->
         return Ok(Vec::new());
     }
 
-    let file = temp_path("bundle");
+    let file = temp_path("bundle")?;
     let out = match create_bundle(&repo, &r, base, &file) {
         Ok(true) => fs::read(&file).map_err(|e| format!("read bundle: {e}")),
         Ok(false) => Ok(Vec::new()),
@@ -265,7 +267,7 @@ fn drop_secrets(repo: &Repo, index: &Path) -> Result<(), String> {
         specs.extend_from_slice(p);
         specs.push(0);
     }
-    let list = temp_path("secrets");
+    let list = temp_path("secrets")?;
     fs::write(&list, &specs).map_err(|e| format!("write {}: {e}", list.display()))?;
     let result = run(
         indexed(repo, index)
@@ -360,12 +362,19 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
-/// A path in the temp dir that no other call in this process or another one uses.
-fn temp_path(tag: &str) -> PathBuf {
+/// A path no other call in this process or another one uses, in an owner-only folder beside the
+/// snapshots. Not the shared temp dir: a bundle holds the project's files, uncommitted work and all,
+/// and is written readable by everyone.
+fn temp_path(tag: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     static N: AtomicU64 = AtomicU64::new(0);
+    let dir = snapshots_dir().join("tmp");
+    let failed = |e: std::io::Error| format!("{}: {e}", dir.display());
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(failed)?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(failed)?;
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("archonui-{tag}-{}-{nanos}-{n}", std::process::id()))
+    Ok(dir.join(format!("archonui-{tag}-{}-{nanos}-{n}", std::process::id())))
 }
 
 #[cfg(test)]
@@ -805,6 +814,15 @@ mod tests {
         assert_eq!(fs::read_to_string(dest.join("tracked.txt")).unwrap(), "one\n");
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn temp_files_stay_in_an_owner_only_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let file = temp_path("bundle").unwrap();
+        let dir = file.parent().unwrap();
+        assert_eq!(dir, snapshots_dir().join("tmp"), "not the shared temp dir");
+        assert_eq!(fs::metadata(dir).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
     #[test]
