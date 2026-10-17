@@ -244,7 +244,8 @@ impl Shell {
     }
 
     /// Turns sharing off at once: stops the host, drops every connection, every chat shown from
-    /// another device and every approval forwarded from one, and ends the timers. Cheap when already off.
+    /// another device, every approval forwarded from one and what Tailscale said about this device,
+    /// and ends the timers. Cheap when already off.
     fn stop_sharing(&mut self) {
         if let Some(hub) = self.remote.hub.take() {
             hub.stop();
@@ -266,6 +267,8 @@ impl Shell {
         r.cloud_asked = false;
         r.cloud_for = None;
         r.open_new = None;
+        // Asked again when sharing comes back on: Tailscale may have a new address or name for it by then.
+        r.me = None;
         if r.ticking {
             r.ticking = false;
             r.epoch += 1;
