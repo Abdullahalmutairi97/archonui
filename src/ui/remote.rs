@@ -911,9 +911,9 @@ impl Shell {
         Some(self.chat_device_name(device))
     }
 
-    fn chat_device_name(&self, device: &str) -> String {
-        let name = self.state.settings.sync.devices.iter().find(|d| d.id == device).map(|d| d.name.clone());
-        name.unwrap_or_else(|| device.to_string())
+    /// A device's name, by its id: this device's own too, as in the cloud copy list.
+    pub(super) fn chat_device_name(&self, device: &str) -> String {
+        device_name(&self.state.settings.sync, self.remote.me.as_ref(), device)
     }
 
     /// The connection to the cloud device, when one is marked and connected (and it isn't this device).
@@ -1150,6 +1150,13 @@ fn to_subscribe<'a>(
         .collect()
 }
 
+/// The name of device `id`: an included device's, or this device's (`me`), whose projects the cloud
+/// holds too. The id itself when neither.
+fn device_name(sync: &crate::remote::SyncSettings, me: Option<&Device>, id: &str) -> String {
+    let found = sync.devices.iter().chain(me).find(|d| d.id == id);
+    found.map_or_else(|| id.to_string(), |d| d.name.clone())
+}
+
 /// Whether `msg` answers a cloud request, so only the cloud's own count.
 fn cloud_reply(msg: &HostMsg) -> bool {
     matches!(msg, HostMsg::Stored { .. } | HostMsg::Cloud { .. } | HostMsg::ProjectData { .. } | HostMsg::Chats { .. })
@@ -1226,6 +1233,15 @@ mod tests {
         let listed = ["new-chat", local_id.as_str(), adopted_id.as_str(), from_cloud_id.as_str(), other_id.as_str(), live_id.as_str()];
         let wanted = to_subscribe(&state, "pc", listed.into_iter(), &subscribed);
         assert_eq!(wanted, vec!["new-chat".to_string(), from_cloud_id], "new chats and cloud copies of pc's chats only");
+    }
+
+    #[test]
+    fn this_devices_own_cloud_copies_are_named() {
+        let sync = SyncSettings { enabled: true, devices: vec![device("pc")], ..Default::default() };
+        let me = Device { name: "laptop".into(), ..device("n-me") };
+        assert_eq!(device_name(&sync, Some(&me), "n-me"), "laptop");
+        assert_eq!(device_name(&sync, Some(&me), "pc"), "pc");
+        assert_eq!(device_name(&sync, None, "n-me"), "n-me");
     }
 
     #[test]

@@ -187,9 +187,8 @@ impl Shell {
         let theme = self.theme.clone();
         self.ask_cloud_list_once();
         let mut rows: Vec<SettingRow> = Vec::new();
-        let names: Vec<(String, String)> = self.state.settings.sync.devices.iter().map(|d| (d.id.clone(), d.name.clone())).collect();
         for p in self.remote.cloud_projects.clone().unwrap_or_default() {
-            let from = names.iter().find(|(id, _)| *id == p.device).map_or(p.device.clone(), |(_, n)| n.clone());
+            let from = self.chat_device_name(&p.device);
             let (project, device) = (p.project.clone(), p.device.clone());
             rows.push(
                 SettingRow::new(p.name.clone(), format!("From {from} · {}", crate::store::ago(p.updated)), &theme).control(
