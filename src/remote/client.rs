@@ -23,6 +23,9 @@ const WELCOME_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the IO thread waits for a frame before it sends what is queued.
 const POLL: Duration = Duration::from_millis(50);
+/// How long a write may stall before the host is taken as gone. Without it a host that stops reading
+/// holds the IO thread for good, and everything sent meanwhile piles up in its queue.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What the client's reader thread reports.
 pub enum ClientEvent {
@@ -45,6 +48,7 @@ impl Client {
     pub fn connect(addr: &str, port: u16, this_device: &str) -> Result<Client, String> {
         let stream = connect_tcp(addr, port)?;
         stream.set_read_timeout(Some(WELCOME_TIMEOUT)).map_err(|e| e.to_string())?;
+        stream.set_write_timeout(Some(WRITE_TIMEOUT)).map_err(|e| e.to_string())?;
         let url = ws_url(addr, port);
         let (mut ws, _) =
             tungstenite::client::client_with_config(url.as_str(), MaybeTlsStream::Plain(stream), Some(super::proto::ws_config()))
