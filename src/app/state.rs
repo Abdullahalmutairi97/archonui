@@ -287,9 +287,14 @@ impl AppState {
 
     // Remote chats: chats that live on another device, shown here as a live copy. Never saved here.
 
-    /// Shows a chat from `origin` (a device id), replacing any chat with the same id. `busy` says a turn runs there now.
+    /// Shows a chat from `origin` (a device id), replacing that device's copy with the same id. `busy` says a
+    /// turn runs there now. Ignored when the id could leave the data folder (it becomes a file name once the
+    /// chat is continued here) or names one of this device's own chats.
     pub fn put_remote(&mut self, mut session: Session, origin: &str, busy: bool) {
         let id = session.id.clone();
+        if !crate::remote::cloud::safe_id(&id) || self.session(&id).is_some_and(|s| s.origin.is_none()) {
+            return;
+        }
         session.origin = Some(origin.into());
         match self.sessions.iter_mut().find(|s| s.id == id) {
             Some(slot) => *slot = session,
@@ -1692,6 +1697,26 @@ mod tests {
         app.put_remote(remote, "pc", false);
         assert!(!app.switch_agent(&remote_id, "codex", None, None, Mode::default()));
         assert_eq!(app.session(&remote_id).unwrap().agent, "claude");
+    }
+
+    #[test]
+    fn a_remote_chat_id_never_leaves_its_folder_or_replaces_a_local_chat() {
+        let mut app = state();
+        // An id that would leave the data folder once the chat is saved, adopted or deleted here.
+        for bad in ["../../..", "a/b", "", ".."] {
+            let mut chat = Session::new("pi", "/home/host".into());
+            chat.id = bad.into();
+            app.put_remote(chat, "pc", false);
+            assert!(app.session(bad).is_none(), "{bad:?} is refused");
+            assert!(!app.adopt_remote(bad, "/tmp".into()));
+        }
+        let local = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let mut chat = Session::new("pi", "/home/host".into());
+        chat.id = local.clone();
+        chat.title = "forged".into();
+        app.put_remote(chat, "pc", false);
+        assert!(app.is_remote(&local).is_none());
+        assert_ne!(app.session(&local).unwrap().title, "forged");
     }
 
     #[test]
