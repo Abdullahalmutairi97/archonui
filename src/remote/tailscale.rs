@@ -3,7 +3,7 @@
 use super::Device;
 use serde_json::Value;
 use std::io::{self, Read};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -165,9 +165,21 @@ fn ipv4_of(node: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The first IPv6 address in a node's `TailscaleIPs`, or "" when it has none.
+fn ipv6_of(node: &Value) -> String {
+    let ips = node.get("TailscaleIPs").and_then(Value::as_array);
+    ips.into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .find(|ip| ip.parse::<Ipv6Addr>().is_ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// A tailnet node as a `Device`. `None` when the node has no IPv4 address.
 fn node_device(node: &Value) -> Option<Device> {
     let addr = ipv4_of(node)?;
+    let addr6 = ipv6_of(node);
     let dns_name = text(node, "DNSName").trim_end_matches('.').to_string();
     let host = text(node, "HostName").to_string();
 
@@ -185,7 +197,7 @@ fn node_device(node: &Value) -> Option<Device> {
         host
     };
 
-    Some(Device { id, name, dns_name, addr })
+    Some(Device { id, name, dns_name, addr, addr6 })
 }
 
 #[cfg(test)]
@@ -260,6 +272,7 @@ mod tests {
         assert_eq!(t.me.name, "laptop");
         assert_eq!(t.me.dns_name, "laptop.tail1234.ts.net");
         assert_eq!(t.me.addr, "100.64.0.10");
+        assert_eq!(t.me.addr6, "fd7a:115c:a1e0::10");
 
         // The IPv6-only peer is skipped; the online peer sorts before the offline one.
         assert_eq!(t.peers.len(), 2);
@@ -270,6 +283,7 @@ mod tests {
                 name: "pc".into(),
                 dns_name: "pc.tail1234.ts.net".into(),
                 addr: "100.101.102.104".into(),
+                addr6: "fd7a:115c:a1e0::3".into(),
             }
         );
         assert!(t.peers[0].online);
@@ -304,6 +318,7 @@ mod tests {
         }"#;
         let t = parse(json).unwrap();
         assert_eq!(t.me.name, "pc");
+        assert_eq!(t.me.addr6, "", "no IPv6 address listed");
         assert!(t.peers.is_empty());
     }
 

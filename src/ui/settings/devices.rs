@@ -230,8 +230,16 @@ impl Shell {
                 .spawn(async move { crate::remote::tailscale::discover() })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                // Included devices keep the addresses Tailscale reports now, IPv6 included.
+                let refreshed = found.as_ref().is_ok_and(|net| {
+                    let seen = std::iter::once(&net.me).chain(net.peers.iter().map(|p| &p.device));
+                    this.state.settings.sync.refresh_devices(seen)
+                });
                 this.settings.tailnet = Some(found);
                 this.settings.tailnet_loading = false;
+                if refreshed {
+                    this.save(cx);
+                }
                 cx.notify();
             });
         })

@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn devices_are_found_by_host_or_magicdns_name() {
-        let device = |name: &str, dns: &str, addr: &str| Device { id: addr.into(), name: name.into(), dns_name: dns.into(), addr: addr.into() };
+        let device = |name: &str, dns: &str, addr: &str| Device { id: addr.into(), name: name.into(), dns_name: dns.into(), addr: addr.into(), addr6: String::new() };
         let peer = |d: Device| tailscale::Peer { device: d, online: true, os: "linux".into() };
         let tailnet = tailscale::Tailnet {
             me: device("minipc", "minipc.tail1.ts.net", "100.0.0.1"),
