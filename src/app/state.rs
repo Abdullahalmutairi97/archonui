@@ -499,12 +499,13 @@ impl AppState {
 
     /// Lists every chat the user has left with an unsent draft: one that isn't the focused tile,
     /// or any at all when `all` (the window is closing). Once listed, a chat stays in the sidebar
-    /// until it is deleted. Returns whether any chat was newly listed.
+    /// until it is deleted. Chats from other devices are skipped: their device decides. Returns
+    /// whether any chat was newly listed.
     pub fn list_left_drafts(&mut self, all: bool) -> bool {
         let focus = self.workspace.layout.focus.clone();
         let mut changed = false;
         for s in &mut self.sessions {
-            if !s.listed && !s.draft.trim().is_empty() && (all || focus.as_deref() != Some(s.id.as_str())) {
+            if s.origin.is_none() && !s.listed && !s.draft.trim().is_empty() && (all || focus.as_deref() != Some(s.id.as_str())) {
                 s.listed = true;
                 self.dirty.insert(s.id.clone());
                 changed = true;
@@ -1220,6 +1221,17 @@ mod tests {
         let mine = app.new_session("pi", "/tmp".into(), Placement::Focused);
         assert!(app.expire_requested(|_| false, idle, Instant::now() + idle).is_empty());
         assert!(app.session(&used).is_some() && app.session(&mine).is_some());
+    }
+
+    #[test]
+    fn a_draft_left_in_another_devices_chat_is_not_listed_here() {
+        let mut app = state();
+        let theirs = Session::new("pi", "/tmp".into());
+        let id = theirs.id.clone();
+        app.put_remote(theirs, "laptop", false);
+        app.set_draft(&id, "half a prompt");
+        assert!(!app.list_left_drafts(true));
+        assert!(app.session(&id).is_some_and(|s| !s.listed));
     }
 
     #[test]
