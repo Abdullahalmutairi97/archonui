@@ -1204,7 +1204,7 @@ mod tests {
         let req = next_request(&requests);
         handle(&mut app, &[], &hub, None, req);
         assert!(matches!(next_msg(&c), HostMsg::Snapshot { .. }));
-        let mut ask = |app: &mut AppState, msg: ClientMsg| {
+        let ask = |app: &mut AppState, msg: ClientMsg| {
             handle(app, &[], &hub, None, Request { conn: 1, msg });
         };
         // The client's connection is the first one, so `conn: 1` is the follower.
