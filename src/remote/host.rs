@@ -65,11 +65,16 @@ pub fn run(args: &[String]) -> i32 {
                 };
                 match value.parse::<SocketAddr>() {
                     Ok(addr) => bind = Some(addr),
-                    Err(e) => {
-                        eprintln!("bad --bind {value}: {e}");
+                    Err(_) => {
+                        eprintln!("bad --bind {value}: expected ADDR:PORT, such as 100.101.102.103:{}", super::DEFAULT_PORT);
                         return 2;
                     }
                 }
+            }
+            "--help" | "-h" => {
+                println!("usage: archonui --serve [--bind ADDR:PORT]");
+                println!("Without --bind: this device's Tailscale address and the port in Settings → Devices, when sharing is on.");
+                return 0;
             }
             other => {
                 eprintln!("unknown option {other}; usage: archonui --serve [--bind ADDR:PORT]");
