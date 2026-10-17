@@ -54,7 +54,7 @@ const COLUMN_WIDTH: f32 = 880.;
 /// A user message: right-aligned, with its attachment cards above the bubble (chat.md §1.3, §1.9).
 fn user_row<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, item: &Item) -> AnyElement {
     let theme = &ctx.theme;
-    let cards = item.attachments.iter().enumerate().map(|(n, file)| attachment_card(ctx, ix, n, file));
+    let cards = item.attachments.iter().enumerate().map(|(n, file)| attachment_card(ctx, ix, n, file, item.local_files));
     let bubble = div()
         .px(px(14.))
         .py(px(11.))
@@ -992,6 +992,10 @@ fn image_block<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, path: &str, image: &Fi
             let thumb = placeholder(format!("Missing file · {}", full.display())).into_any_element();
             (thumb, div().into_any_element())
         }
+        Source::Elsewhere(path) => {
+            let thumb = placeholder(format!("On the chat's device · {path}")).into_any_element();
+            (thumb, div().into_any_element())
+        }
     };
 
     div()
@@ -1069,7 +1073,8 @@ fn small_button<H: StreamHost>(ctx: &RowCtx<H>, id: String, label: &'static str,
         .into_any_element()
 }
 
-fn attachment_card<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, n: usize, file: &Attachment) -> AnyElement {
+/// `local` is false for a chat on another device: its file is there, so no thumbnail is read here.
+fn attachment_card<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, n: usize, file: &Attachment, local: bool) -> AnyElement {
     let card = AttachmentCard::new(
         SharedString::from(format!("stream-att-{ix}-{n}")),
         file.path.display().to_string(),
@@ -1077,7 +1082,7 @@ fn attachment_card<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, n: usize, file: &A
         CardVariant::Sent,
         &ctx.theme,
     );
-    let card = if file.kind == Kind::Image { card.thumbnail(file.path.clone()) } else { card };
+    let card = if local && file.kind == Kind::Image { card.thumbnail(file.path.clone()) } else { card };
     card.into_any_element()
 }
 
@@ -1126,7 +1131,7 @@ mod tests {
         s.push(Role::Error, STOPPED_NOTE);
         s.push(Role::Error, format!("{FAILED_NOTE}\nboom"));
         s.push(Role::User, "next question");
-        let items: Vec<super::Item> = s.messages.iter().map(|m| super::Item::from_message(m, cwd)).collect();
+        let items: Vec<super::Item> = s.messages.iter().map(|m| super::Item::from_message(m, Some(cwd))).collect();
         assert_eq!(super::turn_end(Some(&items[0])), "■ Stopped");
         assert_eq!(super::turn_end(Some(&items[1])), "✕ Failed");
         assert_eq!(super::turn_end(Some(&items[2])), "✓ Done");
