@@ -108,13 +108,17 @@ impl SettingRow {
 impl RenderOnce for SettingRow {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let c = self.colors;
+        // The control wraps under the name when the two don't fit side by side on a narrow page.
         let top = div()
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap(px(24.))
+            .gap_x(px(24.))
+            .gap_y(px(10.))
             .child(
                 div()
                     .flex_1()
+                    .flex_basis(px(170.))
                     .min_w_0()
                     .flex()
                     .flex_col()
