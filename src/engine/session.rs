@@ -139,15 +139,17 @@ pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnI
     for (file, text) in &plan.files {
         write_private(file, text)?;
     }
-    let mut child = Command::new(path)
-        .args(plan.args)
+    let mut cmd = Command::new(path);
+    cmd.args(plan.args)
         .envs(plan.env)
         .current_dir(input.cwd)
         .stdin(if plan.stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()?;
+        .process_group(0);
+    #[cfg(target_os = "linux")]
+    end_with_parent(&mut cmd);
+    let mut child = cmd.spawn()?;
     let pid = child.id();
     if let (Some(write), Some(stdin)) = (plan.stdin, child.stdin.take()) {
         // Large attachments are encoded here rather than on the UI thread.
@@ -253,6 +255,27 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// Has the agent sent SIGTERM when ArchonUI dies, even by SIGKILL or a crash, so it never keeps
+/// running tools on its own. Its own process group means nothing else would reach it. The kernel
+/// sends it when the spawning thread exits, so agents are only started from threads that live as
+/// long as the app (the UI thread, the executor's pool, the `--serve` loop).
+#[cfg(target_os = "linux")]
+fn end_with_parent(cmd: &mut Command) {
+    let parent = std::process::id();
+    // SAFETY: the closure runs between fork and exec, so it only makes async-signal-safe system
+    // calls (prctl, getppid) and allocates nothing.
+    unsafe {
+        cmd.pre_exec(move || {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            // The parent may have died before prctl, too late to be signalled: don't start orphaned.
+            if libc::getppid() as u32 != parent {
+                return Err(io::Error::from_raw_os_error(libc::ESRCH));
+            }
+            Ok(())
+        });
+    }
 }
 
 #[cfg(test)]
@@ -378,6 +401,17 @@ mod tests {
             }
         };
         assert_eq!(result, Err("exit status: 3\nboom".to_string()));
+    }
+
+    /// The kernel ends the agent when its parent goes. A thread that exits stands in for a killed
+    /// app: the death signal follows the spawning thread.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_agent_ends_when_its_parent_does() {
+        let turn = thread::spawn(|| run_shell("sleep 30")).join().unwrap();
+        let result = finished_within(&turn, 5).expect("the agent was ended");
+        let err = result.expect_err("ended by a signal");
+        assert!(err.contains("signal: 15"), "{err}");
     }
 
     #[test]
