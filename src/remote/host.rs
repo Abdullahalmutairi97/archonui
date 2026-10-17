@@ -314,6 +314,29 @@ pub fn handle(
                 hub.broadcast(&session, &HostMsg::Draft { session: session.clone(), text }, Some(conn));
             }
         }
+        ClientMsg::Rename { session, title } => {
+            let title = title.trim().to_string();
+            if title.is_empty() {
+                hub.reply(conn, &HostMsg::Error { message: "The name is empty".into() });
+            } else if !super::cloud::safe_id(&session) || !state.rename_session(&session, &title) {
+                hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
+            } else {
+                flush(state);
+                let msg = HostMsg::Renamed { session: session.clone(), title };
+                tell_followers(hub, conn, &session, &msg);
+            }
+        }
+        ClientMsg::Delete { session } => {
+            if !super::cloud::safe_id(&session) || state.session(&session).is_none() {
+                hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
+            } else if state.busy(&session) {
+                hub.reply(conn, &HostMsg::Error { message: "A reply is running in that chat; stop it first".into() });
+            } else {
+                state.delete_session(&session);
+                flush(state);
+                tell_followers(hub, conn, &session, &HostMsg::Deleted { session: session.clone() });
+            }
+        }
         // An answer the owner did not match to a waiting request.
         ClientMsg::Answer { .. } => hub.reply(conn, &HostMsg::Error { message: "Nothing is waiting for that answer".into() }),
         ClientMsg::Unknown => {
@@ -322,6 +345,14 @@ pub fn handle(
         }
     }
     turn
+}
+
+/// Sends `msg` about chat `session` to its followers, and to `conn`, which asked, if it isn't one.
+fn tell_followers(hub: &Hub, conn: u64, session: &str, msg: &HostMsg) {
+    if !hub.follows(conn, session) {
+        hub.reply(conn, msg);
+    }
+    hub.broadcast(session, msg, None);
 }
 
 /// Whether `msg` is about the cloud copy. Those need no chats and can be slow (they run git), so a
@@ -398,7 +429,9 @@ fn target(msg: &ClientMsg) -> Option<&str> {
         | ClientMsg::Prompt { session, .. }
         | ClientMsg::Cancel { session }
         | ClientMsg::Draft { session, .. }
-        | ClientMsg::Answer { session, .. } => Some(session),
+        | ClientMsg::Answer { session, .. }
+        | ClientMsg::Rename { session, .. }
+        | ClientMsg::Delete { session } => Some(session),
         ClientMsg::Hello { .. }
         | ClientMsg::ListSessions
         | ClientMsg::NewSession { .. }
@@ -1095,6 +1128,51 @@ mod tests {
         assert!(!approvals.answer(&stranger, &allowances, &hub));
         assert!(verdict.try_recv().is_err());
         assert!(!allowances.allowed("s1", "Bash"));
+    }
+
+    /// Rename and delete from another device change the host's chat and reach its followers; unknown,
+    /// unsafe and remote-shown ids are refused.
+    #[test]
+    fn rename_and_delete_from_another_device_change_the_hosts_chat() {
+        use super::super::client::Client;
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let c = Client::connect("127.0.0.1", hub.local_addr().port(), "a").unwrap();
+        let mut app = state();
+        let id = app.new_session("pi", std::env::temp_dir(), Placement::Focused);
+        c.send(&ClientMsg::Subscribe { session: id.clone() }).unwrap();
+        let req = next_request(&requests);
+        handle(&mut app, &[], &hub, None, req);
+        assert!(matches!(next_msg(&c), HostMsg::Snapshot { .. }));
+        let mut ask = |app: &mut AppState, msg: ClientMsg| {
+            handle(app, &[], &hub, None, Request { conn: 1, msg });
+        };
+        // The client's connection is the first one, so `conn: 1` is the follower.
+        ask(&mut app, ClientMsg::Rename { session: id.clone(), title: "  Fix the build ".into() });
+        assert_eq!(next_msg(&c), HostMsg::Renamed { session: id.clone(), title: "Fix the build".into() });
+        assert!(app.session(&id).is_some_and(|s| s.title == "Fix the build" && !s.title_auto));
+
+        for bad in ["nope", "../etc", ""] {
+            ask(&mut app, ClientMsg::Rename { session: bad.into(), title: "x".into() });
+            assert!(matches!(next_msg(&c), HostMsg::Error { .. }), "{bad}");
+            ask(&mut app, ClientMsg::Delete { session: bad.into() });
+            assert!(matches!(next_msg(&c), HostMsg::Error { .. }), "{bad}");
+        }
+        ask(&mut app, ClientMsg::Rename { session: id.clone(), title: "   ".into() });
+        assert!(matches!(next_msg(&c), HostMsg::Error { .. }));
+
+        // A chat shown here from a third device is not this host's to change.
+        let mut other = Session::new("pi", std::env::temp_dir());
+        other.title = "theirs".into();
+        let other_id = other.id.clone();
+        app.put_remote(other, "third", false);
+        ask(&mut app, ClientMsg::Delete { session: other_id.clone() });
+        assert!(matches!(next_msg(&c), HostMsg::Error { .. }));
+        assert!(app.session(&other_id).is_some());
+
+        ask(&mut app, ClientMsg::Delete { session: id.clone() });
+        assert_eq!(next_msg(&c), HostMsg::Deleted { session: id.clone() });
+        assert!(app.session(&id).is_none());
+        assert!(!app.workspace.layout.contains(&id));
     }
 
     /// "Always" settles every waiting request for the same tool in the chat and remembers it; a turn

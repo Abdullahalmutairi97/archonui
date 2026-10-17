@@ -449,12 +449,12 @@ impl AppState {
     }
 
     /// Removes every chat that isn't open in a tile or running, and returns their ids. Tiled chats
-    /// are kept even when they have no messages.
+    /// are kept even when they have no messages. Chats shown from other devices are theirs, so they stay.
     pub fn clear_history(&mut self) -> Vec<String> {
         let doomed: Vec<String> = self
             .sessions
             .iter()
-            .filter(|s| !self.workspace.layout.contains(&s.id) && !self.busy(&s.id))
+            .filter(|s| s.origin.is_none() && !self.workspace.layout.contains(&s.id) && !self.busy(&s.id))
             .map(|s| s.id.clone())
             .collect();
         for id in &doomed {
@@ -1150,6 +1150,17 @@ mod tests {
         assert_eq!(app.sessions().len(), 1);
         assert_eq!(app.sessions()[0].id, tiled);
         assert!(app.workspace.layout.contains(&tiled));
+    }
+
+    #[test]
+    fn clear_history_keeps_other_devices_chats() {
+        let mut app = state();
+        let mut theirs = Session::new("pi", "/tmp".into());
+        theirs.push(Role::User, "hi");
+        let id = theirs.id.clone();
+        app.put_remote(theirs, "laptop", false);
+        assert!(app.clear_history().is_empty());
+        assert!(app.session(&id).is_some());
     }
 
     #[test]

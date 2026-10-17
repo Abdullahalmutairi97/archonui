@@ -83,6 +83,10 @@ pub enum ClientMsg {
     /// Answer to an `Approval`: allow or deny the tool use `request` in chat `session`. `always` also
     /// allows the tool for the rest of the chat's session.
     Answer { session: String, request: u64, allow: bool, always: bool },
+    /// Rename a chat on the host. Followers are sent `Renamed`. A host from before this answers `Error`.
+    Rename { session: String, title: String },
+    /// Delete a chat on the host, unless a reply is running in it. Followers are sent `Deleted`.
+    Delete { session: String },
     /// A message from a newer client that this version does not know. The host answers `Error`. Never sent.
     #[serde(other)]
     Unknown,
@@ -162,6 +166,10 @@ pub enum HostMsg {
     Approval { session: String, request: u64, tool: String, input: serde_json::Value },
     /// Request `request` in chat `session` was answered or dropped, so clients clear its card.
     ApprovalDone { session: String, request: u64 },
+    /// Chat `session` was renamed on the host.
+    Renamed { session: String, title: String },
+    /// Chat `session` was deleted on the host.
+    Deleted { session: String },
     /// A message from a newer host that this version does not know; skip it. Never sent.
     #[serde(other)]
     Unknown,
@@ -196,6 +204,8 @@ mod tests {
             ClientMsg::PutProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "AAA=".into() },
             ClientMsg::GetChats { device: "n1".into() },
             ClientMsg::Answer { session: "s1".into(), request: 3, allow: true, always: false },
+            ClientMsg::Rename { session: "s1".into(), title: "Fix it".into() },
+            ClientMsg::Delete { session: "s1".into() },
         ];
         for m in msgs {
             assert_eq!(decode::<ClientMsg>(&encode(&m)).unwrap(), m);
@@ -212,6 +222,8 @@ mod tests {
             HostMsg::Finished { session: "s1".into(), error: Some("signal: 15".into()), stopped: true },
             HostMsg::Approval { session: "s1".into(), request: 3, tool: "Bash".into(), input: serde_json::json!({"command": "ls"}) },
             HostMsg::ApprovalDone { session: "s1".into(), request: 3 },
+            HostMsg::Renamed { session: "s1".into(), title: "Fix it".into() },
+            HostMsg::Deleted { session: "s1".into() },
         ];
         for m in msgs {
             assert_eq!(decode::<HostMsg>(&encode(&m)).unwrap(), m);

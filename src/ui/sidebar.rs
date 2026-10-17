@@ -507,7 +507,10 @@ impl Shell {
         if commit && !text.is_empty() {
             match rename.target {
                 Target::Session(id) => {
-                    if self.state.rename_session(&id, &text) {
+                    if self.rename_remote(&id, &text, cx) {
+                        // Renamed when its device answers.
+                    } else if self.state.rename_session(&id, &text) {
+                        self.share_renamed(&id, &text);
                         self.persist_sidebar(cx);
                     }
                 }
