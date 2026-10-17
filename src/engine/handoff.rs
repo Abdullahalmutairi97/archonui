@@ -14,6 +14,12 @@ const MAX_TOOLS: usize = 20;
 /// `prompt` with the conversation in `messages` in front of it, for an agent that takes over the chat.
 /// `messages` is what was said before `prompt`. Error rows and empty replies are left out.
 pub fn prompt(messages: &[Message], prompt: &str) -> String {
+    prompt_from(messages, prompt, None)
+}
+
+/// `prompt`, for a chat continued here from `device` (its name) when set: its files are on that
+/// device, so the agent is not told they are already changed on this disk.
+pub fn prompt_from(messages: &[Message], prompt: &str, device: Option<&str>) -> String {
     let mut parts: Vec<String> = messages.iter().filter_map(entry).collect();
     let mut omitted = 0;
     while parts.len() > 1 && parts.iter().map(|p| p.len() + 2).sum::<usize>() > MAX_CHARS {
@@ -23,10 +29,17 @@ pub fn prompt(messages: &[Message], prompt: &str) -> String {
     if parts.is_empty() {
         return prompt.to_string();
     }
-    let mut out = String::from(
-        "This chat was started with another coding agent and has been handed to you. Here is the \
-         conversation so far, oldest first. Files it changed are already changed on disk.\n\n<conversation>\n",
-    );
+    let mut out = match device {
+        None => String::from(
+            "This chat was started with another coding agent and has been handed to you. Here is the \
+             conversation so far, oldest first. Files it changed are already changed on disk.\n\n<conversation>\n",
+        ),
+        Some(device) => format!(
+            "This chat ran on another device ({device}) and continues here, on this one. Here is the \
+             conversation so far, oldest first. Files it changed were changed on {device}, so this \
+             folder may not have those changes.\n\n<conversation>\n"
+        ),
+    };
     if omitted > 0 {
         out.push_str(&format!("({omitted} earlier messages left out)\n\n"));
     }
@@ -110,6 +123,16 @@ mod tests {
         assert!(p.contains("[Claude Code]\n(tools used:\n- edit src/a.rs)\nDone."), "{p}");
         assert!(!p.contains("boom"), "error rows are left out");
         assert!(p.ends_with("The user's new message:\n\nnow test it"), "{p}");
+    }
+
+    #[test]
+    fn a_chat_from_another_device_is_not_said_to_have_changed_files_here() {
+        let history = [msg(Role::User, "fix a.rs", None), msg(Role::Agent, "Done.", Some("claude"))];
+        let p = prompt_from(&history, "now test it", Some("pc"));
+        assert!(p.contains("another device (pc)"), "{p}");
+        assert!(!p.contains("already changed on disk"), "{p}");
+        assert!(p.contains("[User]\nfix a.rs") && p.ends_with("now test it"), "{p}");
+        assert!(prompt(&history, "x").contains("already changed on disk"));
     }
 
     #[test]

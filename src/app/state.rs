@@ -373,12 +373,14 @@ impl AppState {
 
     /// Makes remote chat `id` one of this device's own, to continue it here while its device is
     /// away. The agent's session stays on the other device, so the next message carries the chat so
-    /// far (as after an agent switch). Runs in `cwd` from now on. Returns false if `id` isn't remote.
-    pub fn adopt_remote(&mut self, id: &str, cwd: PathBuf) -> bool {
+    /// far (as after an agent switch), saying it comes from `device` (its name), where its files are.
+    /// Runs in `cwd` from now on. Returns false if `id` isn't remote.
+    pub fn adopt_remote(&mut self, id: &str, cwd: PathBuf, device: &str) -> bool {
         let Some(s) = self.sessions.iter_mut().find(|s| s.id == id && s.origin.is_some()) else { return false };
         s.origin = None;
         s.agent_session = None;
         s.handoff = !s.messages.is_empty();
+        s.handoff_from = s.handoff.then(|| device.to_string());
         s.cwd = cwd;
         s.project = None;
         self.remote_busy.remove(id);
@@ -625,7 +627,7 @@ impl AppState {
         }
         // After an agent switch the new agent is sent the chat so far, once. A slash command goes to
         // the agent as typed, and the conversation waits for the next message.
-        let handoff = (session.handoff && !prompt.starts_with('/')).then(|| engine::handoff::prompt(&session.messages, prompt));
+        let handoff = (session.handoff && !prompt.starts_with('/')).then(|| engine::handoff::prompt_from(&session.messages, prompt, session.handoff_from.as_deref()));
         session.push_with(Role::User, prompt, files.clone());
         session.draft.clear();
         for e in file_errors {
@@ -666,6 +668,7 @@ impl AppState {
             Ok(turn) => {
                 if handoff.is_some() {
                     session.handoff = false;
+                    session.handoff_from = None;
                 }
                 session.push(Role::Agent, "");
                 let events = turn.events.clone();
@@ -1770,12 +1773,13 @@ mod tests {
         chat.push(Role::Agent, "Fixed.");
         let id = chat.id.clone();
         app.put_remote(chat, "pc", false);
-        assert!(app.adopt_remote(&id, "/home/laptop/app".into()));
+        assert!(app.adopt_remote(&id, "/home/laptop/app".into(), "pc"));
         let s = app.session(&id).unwrap();
         assert!(s.origin.is_none() && s.handoff && s.agent_session.is_none());
+        assert_eq!(s.handoff_from.as_deref(), Some("pc"), "the agent is told the files are on the pc");
         assert_eq!(s.cwd, PathBuf::from("/home/laptop/app"));
         assert!(app.dirty.contains(&id), "saved here from now on");
-        assert!(!app.adopt_remote(&id, "/x".into()), "already local");
+        assert!(!app.adopt_remote(&id, "/x".into(), "pc"), "already local");
     }
 
     #[test]
@@ -1786,7 +1790,7 @@ mod tests {
         chat.push(Role::Agent, "Fixed.");
         let id = chat.id.clone();
         app.put_remote(chat, "pc", false);
-        assert!(app.adopt_remote(&id, "/home/laptop/app".into()));
+        assert!(app.adopt_remote(&id, "/home/laptop/app".into(), "pc"));
         app.dirty.clear();
         // The pc comes back and goes on with its own copy of the chat.
         app.remote_started(&id, "and the tests?");
@@ -1814,7 +1818,7 @@ mod tests {
             chat.id = bad.into();
             app.put_remote(chat, "pc", false);
             assert!(app.session(bad).is_none(), "{bad:?} is refused");
-            assert!(!app.adopt_remote(bad, "/tmp".into()));
+            assert!(!app.adopt_remote(bad, "/tmp".into(), "pc"));
         }
         let local = app.new_session("pi", "/tmp".into(), Placement::Focused);
         let mut chat = Session::new("pi", "/home/host".into());
