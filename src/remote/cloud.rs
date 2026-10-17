@@ -42,6 +42,7 @@ impl Store {
     pub fn put_project(&self, project: &str, name: &str, device: &str, commit: &str, bundle: &[u8]) -> Result<(), String> {
         check_id(project, "project")?;
         check_id(device, "device")?;
+        self.make_private()?;
         let repo = self.repo(project);
         if !repo.join("HEAD").exists() {
             let projects = self.root.join("projects");
@@ -137,6 +138,7 @@ impl Store {
     /// Replaces `device`'s stored chats. Each value needs a string `id`; others are skipped.
     pub fn put_chats(&self, device: &str, sessions: &[Value]) -> Result<(), String> {
         check_id(device, "device")?;
+        self.make_private()?;
         let dir = self.root.join("chats").join(device);
         fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
         let mut keep = HashSet::new();
@@ -188,6 +190,15 @@ impl Store {
             .collect();
         out.sort();
         out
+    }
+
+    /// Creates the store root owner-only (0700), and makes one left by an older run so. The copies hold
+    /// uncommitted work, maybe secrets, so other accounts on the cloud device must not read them.
+    fn make_private(&self) -> Result<(), String> {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let failed = |e: std::io::Error| format!("could not create {}: {e}", self.root.display());
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.root).map_err(failed)?;
+        fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700)).map_err(failed)
     }
 
     /// The bare repository of `project`.
@@ -424,6 +435,9 @@ mod tests {
         assert_eq!(store.chats("n1"), vec![a]);
         assert_eq!(store.chat_devices(), vec!["n1".to_string()]);
         assert!(store.put_chats("../n1", &[]).is_err());
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(base.join("cloud")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "other accounts can't read the cloud copy");
         assert!(store.chats("../n1").is_empty());
     }
 }
