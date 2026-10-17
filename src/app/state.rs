@@ -889,7 +889,8 @@ impl AppState {
         if self.workspace.current_project.as_deref() == Some(id) {
             self.workspace.current_project = None;
         }
-        for s in self.sessions.iter_mut().filter(|s| s.project.as_deref() == Some(id)) {
+        // A chat from another device names that device's projects, so it is left alone.
+        for s in self.sessions.iter_mut().filter(|s| s.project.as_deref() == Some(id) && s.origin.is_none()) {
             s.project = None;
             self.dirty.insert(s.id.clone());
         }

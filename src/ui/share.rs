@@ -247,8 +247,8 @@ fn is_diff_text(detail: &str) -> bool {
 }
 
 /// One entry per edit/write tool call, oldest first, duplicate files collapsed: recorded diff text
-/// if a tool call has it, else the file's `git diff` in the session's folder. Files whose diff is
-/// empty are left out.
+/// if a tool call has it, else the file's `git diff` in the session's folder (never for a chat on
+/// another device). Files whose diff is empty are left out.
 fn file_diffs(s: &Session) -> Vec<(String, String)> {
     let mut files: Vec<String> = Vec::new();
     for tool in s.messages.iter().flat_map(|m| &m.tools) {
@@ -269,8 +269,11 @@ fn file_diffs(s: &Session) -> Vec<(String, String)> {
                 .collect();
             let diff = if !recorded.is_empty() {
                 recorded.join("\n\n")
-            } else {
+            } else if s.origin.is_none() {
                 git_diff(&s.cwd, &file)
+            } else {
+                // A chat on another device: this device's folder at that path is not where it edited.
+                String::new()
             };
             (!diff.trim().is_empty()).then(|| (file, diff))
         })
@@ -435,7 +438,7 @@ impl Shell {
             }
         };
         let name = format!("{}.{}", slug(title(s)), format.ext());
-        let dir = if s.cwd.is_dir() { s.cwd.clone() } else { self.default_folder() };
+        let dir = if s.cwd.is_dir() && s.origin.is_none() { s.cwd.clone() } else { self.default_folder() };
         let asked = cx.prompt_for_new_path(&dir, Some(&name));
         cx.spawn(async move |this, cx| {
             let path = match asked.await {
@@ -890,6 +893,9 @@ mod tests {
         assert_eq!(diffs[0].0, "src/cache.ts");
         assert!(diffs[0].1.contains("diff --git a/src/cache.ts b/src/cache.ts"), "{}", diffs[0].1);
         assert!(diffs[0].1.contains("+  return null;"), "{}", diffs[0].1);
+        // A chat on another device edited its own copy, so this folder's git is not asked.
+        s.origin = Some("laptop".into());
+        assert!(file_diffs(&s).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
