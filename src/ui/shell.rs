@@ -158,8 +158,13 @@ impl Shell {
         }
         if let Some(page) = target.strip_prefix("settings:") {
             self.settings_open(cx);
+            // `settings:appearance:fonts` also opens the Titles font list.
+            let (page, open_fonts) = page.strip_suffix(":fonts").map_or((page, false), |p| (p, true));
             if let Some(page) = super::settings::Page::from_label(page) {
                 self.settings.page = page;
+            }
+            if open_fonts {
+                self.settings.font_open = Some(super::settings::FontSlot::Titles);
             }
             if let Some(y) = std::env::var("ARCHONUI_SCROLL").ok().and_then(|v| v.parse::<f32>().ok()) {
                 self.settings.body_scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-y)));

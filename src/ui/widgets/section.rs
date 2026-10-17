@@ -66,6 +66,8 @@ pub struct SettingRow {
     control: Option<AnyElement>,
     /// Shown under the description, such as the agents a setting reaches.
     detail: Option<AnyElement>,
+    /// Full-width content under the name and control, such as a row of image tiles.
+    below: Option<AnyElement>,
     colors: Colors,
 }
 
@@ -80,6 +82,7 @@ impl SettingRow {
             description: description.into(),
             control: None,
             detail: None,
+            below: None,
             colors: Colors::of(theme),
         }
     }
@@ -94,18 +97,21 @@ impl SettingRow {
         self.detail = Some(detail.into_any_element());
         self
     }
+
+    /// Content laid out under the row's name, across its full width.
+    pub fn below(mut self, content: impl IntoElement) -> Self {
+        self.below = Some(content.into_any_element());
+        self
+    }
 }
 
 impl RenderOnce for SettingRow {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let c = self.colors;
-        div()
+        let top = div()
             .flex()
             .items_center()
             .gap(px(24.))
-            .py(px(14.))
-            .border_b_1()
-            .border_color(c.line)
             .child(
                 div()
                     .flex_1()
@@ -126,6 +132,15 @@ impl RenderOnce for SettingRow {
                     })
                     .when_some(self.detail, |col, detail| col.child(div().pt(px(3.)).child(detail))),
             )
-            .when_some(self.control, |row, control| row.child(control))
+            .when_some(self.control, |row, control| row.child(control));
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(14.))
+            .border_b_1()
+            .border_color(c.line)
+            .child(top)
+            .when_some(self.below, |row, below| row.child(below))
     }
 }
