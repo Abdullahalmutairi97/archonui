@@ -745,6 +745,9 @@ impl Shell {
             mode: Some(s.mode),
             model: s.model.clone(),
             effort: s.effort.clone(),
+            // "None" picked here must reach the host too, not keep its last choice.
+            default_model: s.model.is_none(),
+            default_effort: s.effort.is_none(),
             files,
         };
         match self.remote.clients.get(&device).map(|c| c.send(&msg)) {

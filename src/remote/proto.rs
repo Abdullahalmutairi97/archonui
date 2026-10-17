@@ -52,6 +52,7 @@ pub enum ClientMsg {
     /// A new chat on the host. The host answers `Created`.
     NewSession { agent: String, cwd: PathBuf, project: Option<String> },
     /// Send a prompt in a chat. `model`, `effort` and `mode` replace the chat's when given.
+    /// `default_model` / `default_effort` put the agent's default back instead; older hosts ignore them.
     /// `files` are saved in the chat on the host and sent with the prompt.
     Prompt {
         session: String,
@@ -62,6 +63,10 @@ pub enum ClientMsg {
         model: Option<String>,
         #[serde(default)]
         effort: Option<String>,
+        #[serde(default)]
+        default_model: bool,
+        #[serde(default)]
+        default_effort: bool,
         #[serde(default)]
         files: Vec<RemoteFile>,
     },
@@ -209,7 +214,7 @@ mod tests {
         let msgs = [
             ClientMsg::Hello { device: "laptop".into(), version: VERSION },
             ClientMsg::ListSessions,
-            ClientMsg::Prompt { session: "s1".into(), text: "hi".into(), mode: Some(Mode::Plan), model: None, effort: None, files: Vec::new() },
+            ClientMsg::Prompt { session: "s1".into(), text: "hi".into(), mode: Some(Mode::Plan), model: None, effort: None, default_model: false, default_effort: false, files: Vec::new() },
             ClientMsg::Cancel { session: "s1".into() },
             ClientMsg::PutProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "AAA=".into() },
             ClientMsg::GetChats { device: "n1".into() },
@@ -440,7 +445,7 @@ mod tests {
     fn wire_format_is_tagged() {
         assert_eq!(encode(&ClientMsg::ListSessions), r#"{"type":"list_sessions"}"#);
         let p: ClientMsg = decode(r#"{"type":"prompt","session":"s","text":"x"}"#).unwrap();
-        assert_eq!(p, ClientMsg::Prompt { session: "s".into(), text: "x".into(), mode: None, model: None, effort: None, files: Vec::new() });
+        assert_eq!(p, ClientMsg::Prompt { session: "s".into(), text: "x".into(), mode: None, model: None, effort: None, default_model: false, default_effort: false, files: Vec::new() });
         // A host from before `stopped` leaves it out.
         let f: HostMsg = decode(r#"{"type":"finished","session":"s","error":null}"#).unwrap();
         assert_eq!(f, HostMsg::Finished { session: "s".into(), error: None, stopped: false });

@@ -262,7 +262,9 @@ pub fn handle(
                 }
             }
         }
-        ClientMsg::Prompt { session, text, mode, model, effort, files } => {
+        ClientMsg::Prompt { session, text, mode, model, effort, default_model, default_effort, files } => {
+            let model = if default_model { Choice::Default } else { Choice::from(model) };
+            let effort = if default_effort { Choice::Default } else { Choice::from(effort) };
             match start_prompt(state, agents, hub, &session, &text, mode, model, effort, files) {
                 Ok(started) => turn = started,
                 Err(message) => hub.reply(conn, &HostMsg::Error { message }),
@@ -434,6 +436,31 @@ fn target(msg: &ClientMsg) -> Option<&str> {
     }
 }
 
+/// A model or effort a prompt asks for: the chat's current one, the agent's default, or a named one.
+#[derive(Clone, Debug, PartialEq)]
+enum Choice {
+    Keep,
+    Default,
+    Set(String),
+}
+
+impl From<Option<String>> for Choice {
+    fn from(v: Option<String>) -> Self {
+        v.map_or(Choice::Keep, Choice::Set)
+    }
+}
+
+impl Choice {
+    /// The value to use, given the chat's `current` one.
+    fn apply(self, current: Option<String>) -> Option<String> {
+        match self {
+            Choice::Keep => current,
+            Choice::Default => None,
+            Choice::Set(v) => Some(v),
+        }
+    }
+}
+
 /// Starts a turn in `session` with `text`, first applying the options the client sent. Errors are
 /// for the client who asked. A turn that cannot start is reported to the chat's subscribers instead.
 fn start_prompt(
@@ -443,8 +470,8 @@ fn start_prompt(
     session: &str,
     text: &str,
     mode: Option<Mode>,
-    model: Option<String>,
-    effort: Option<String>,
+    model: Choice,
+    effort: Choice,
     files: Vec<RemoteFile>,
 ) -> Result<Option<(String, smol::channel::Receiver<Event>)>, String> {
     let (cur_mode, cur_model, cur_effort, agent) = match state.session(session) {
@@ -466,8 +493,8 @@ fn start_prompt(
     if !attachments.is_empty() {
         state.add_pending(session, attachments);
     }
-    if mode.is_some() || model.is_some() || effort.is_some() {
-        state.set_options(session, model.or(cur_model), effort.or(cur_effort), mode.unwrap_or(cur_mode));
+    if mode.is_some() || model != Choice::Keep || effort != Choice::Keep {
+        state.set_options(session, model.apply(cur_model), effort.apply(cur_effort), mode.unwrap_or(cur_mode));
     }
     let Some(rx) = state.send(session, text, agents) else {
         flush(state);
@@ -1032,6 +1059,32 @@ mod tests {
         assert!(app.send(&new, "hello", &agents).is_none());
         assert!(app.drop_abandoned().is_empty());
         assert!(app.session(&new).is_some_and(|s| s.visible()));
+    }
+
+    #[test]
+    fn a_prompt_can_put_the_default_model_back() {
+        let mut app = state();
+        let id = app.new_session("pi", std::env::temp_dir(), Placement::Focused);
+        app.set_options(&id, Some("big".into()), Some("high".into()), Mode::Auto);
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let agents = [pi_at("/nonexistent/archonui-test-pi")];
+        let prompt = |default_model, default_effort| ClientMsg::Prompt {
+            session: id.clone(),
+            text: "hi".into(),
+            mode: None,
+            model: None,
+            effort: None,
+            default_model,
+            default_effort,
+            files: Vec::new(),
+        };
+        // An older client sends neither flag: the chat keeps its choices.
+        handle(&mut app, &agents, &hub, None, Request { conn: 1, msg: prompt(false, false) });
+        let s = app.session(&id).unwrap();
+        assert_eq!((s.model.as_deref(), s.effort.as_deref()), (Some("big"), Some("high")));
+        handle(&mut app, &agents, &hub, None, Request { conn: 1, msg: prompt(true, true) });
+        let s = app.session(&id).unwrap();
+        assert_eq!((s.model.as_deref(), s.effort.as_deref()), (None, None));
     }
 
     /// An empty chat a device asked for goes when that device's connection closes, and its followers are told.

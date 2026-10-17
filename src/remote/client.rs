@@ -337,6 +337,8 @@ fn ask(client: &Client, id: &str, prompt: &str) -> i32 {
             mode: None,
             model: None,
             effort: None,
+            default_model: false,
+            default_effort: false,
             files: Vec::new(),
         })
     });
