@@ -110,8 +110,9 @@ listens on 7420 (`ss -ltn`), and `tailscale` is never run.
 
 ## Known gaps and risks to watch
 
-- Running `--serve` and the app on the **same** machine: both use port 7420 and the same chat files.
-  The app will fail to listen (it shows a toast). Don't do it; or give one a different `--bind` port.
+- Running `--serve` and the app on the **same** machine: both would use port 7420 and the same chat
+  files. A lock on the chats folder now stops whichever starts second, with a message (the app's goes
+  to stderr only). To run both, give `--serve` its own `ARCHONUI_DATA_DIR` and `--bind` port.
 - "+ New on <device>" sends `NewSession` with an empty agent and folder; the host fills in its own
   defaults. Check the new chat opens in the focused tile on the asking device.
 - Not built: the other device's files, git and terminal in the side panel.
