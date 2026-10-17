@@ -55,6 +55,8 @@ pub struct RemoteUi {
     subscribed: HashMap<String, HashSet<String>>,
     /// The periodic list refresh and backup run.
     ticking: bool,
+    /// A reconnect is scheduled. One at a time: it reconnects every missing device.
+    retrying: bool,
     /// Bumped each time sharing stops, so the timers started before end.
     epoch: u64,
     /// The cloud copy, when this device is the one marked as cloud.
@@ -486,10 +488,19 @@ impl Shell {
         .detach();
     }
 
+    /// Reconnects missing devices after `RETRY_AFTER`. Each failed connect calls this, so only one
+    /// retry is kept pending; otherwise every round would multiply the timers and connects.
     fn retry_later(&mut self, cx: &mut Context<Self>) {
+        if self.remote.retrying {
+            return;
+        }
+        self.remote.retrying = true;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(RETRY_AFTER).await;
-            let _ = this.update(cx, |this, cx| this.refresh_remote(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.remote.retrying = false;
+                this.refresh_remote(cx);
+            });
         })
         .detach();
     }
