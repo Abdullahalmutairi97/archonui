@@ -7,6 +7,7 @@
 //! - `proto`: the JSON messages a host and a client exchange.
 //! - `host`: serves this device's chats to other devices (`archonui --serve`).
 //! - `client`: connects to another device's host and drives its chats.
+//! - `lock`: keeps `--serve` and the app from writing the same chats.
 
 #![allow(dead_code)]
 
@@ -14,6 +15,7 @@ pub mod client;
 pub mod cloud;
 pub mod hub;
 pub mod host;
+pub mod lock;
 pub mod proto;
 pub mod snapshot;
 pub mod tailscale;

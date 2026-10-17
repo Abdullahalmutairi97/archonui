@@ -484,6 +484,17 @@ fn main() {
     if headless(&args) {
         return;
     }
+    // App windows share the chats with each other, never with an `archonui --serve` on the same
+    // folder: both would write them (remote/lock.rs). Held until the app ends.
+    let chats = store::dir();
+    let _chats = match remote::lock::try_lock(&chats, false) {
+        Ok(lock) => lock.or_else(|| {
+            eprintln!("archonui: {}", remote::lock::busy_message(&chats, false));
+            std::process::exit(1);
+        }),
+        // A folder that can't be opened is reported when the app saves, as before.
+        Err(_) => None,
+    };
     // The previous UI, kept for a while behind `--old-ui`.
     let old_ui = args.first().map(String::as_str) == Some("--old-ui");
     // Development check of the message stream.
