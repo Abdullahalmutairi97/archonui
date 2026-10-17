@@ -198,6 +198,52 @@ fn peer_allowed(ip: IpAddr, sync: &SyncSettings, tailscale_peer: bool) -> bool {
     sync.enabled && tailscale_peer && (sync.devices.is_empty() || sync.allows(&ip.to_string()))
 }
 
+/// A connection from an address of this machine (loopback, or the address it reached, such as this
+/// device's own Tailscale address) must come from this user, so another account on a shared box can't
+/// run prompts as this one, or as root on a `--serve` VPS. The client socket's owner is read from the
+/// kernel's tables; one that can't be found is refused. Connections from other machines pass untouched.
+fn same_user_if_local(peer: SocketAddr, local: SocketAddr) -> bool {
+    let ip = peer.ip().to_canonical();
+    if !ip.is_loopback() && ip != local.ip().to_canonical() {
+        return true;
+    }
+    local_peer_uid(peer, local) == Some(unsafe { libc::geteuid() })
+}
+
+/// The user owning the client end of a connection from `peer` to `local`, from `/proc/net/tcp{,6}`.
+fn local_peer_uid(peer: SocketAddr, local: SocketAddr) -> Option<u32> {
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .filter_map(|table| std::fs::read_to_string(table).ok())
+        .find_map(|table| uid_in(&table, peer, local))
+}
+
+/// The `uid` column of the row in a `/proc/net/tcp{,6}` table whose socket goes from `from` to `to`.
+fn uid_in(table: &str, from: SocketAddr, to: SocketAddr) -> Option<u32> {
+    let (from, to) = (proc_addrs(from), proc_addrs(to));
+    table.lines().skip(1).find_map(|row| {
+        let cols: Vec<&str> = row.split_whitespace().collect();
+        let (src, dst, uid) = (cols.get(1)?, cols.get(2)?, cols.get(7)?);
+        (from.iter().any(|a| a == src) && to.iter().any(|a| a == dst)).then(|| uid.parse().ok())?
+    })
+}
+
+/// `addr` as `/proc/net/tcp{,6}` writes it: each 32-bit word of the address in host order, hex, then the
+/// port. An IPv4 address also in its IPv6-mapped form, as a dual-stack socket lists it.
+fn proc_addrs(addr: SocketAddr) -> Vec<String> {
+    let port = addr.port();
+    let v6 = |ip: std::net::Ipv6Addr| -> String {
+        ip.octets().chunks(4).map(|w| format!("{:08X}", u32::from_ne_bytes([w[0], w[1], w[2], w[3]]))).collect()
+    };
+    match addr.ip().to_canonical() {
+        IpAddr::V4(ip) => vec![
+            format!("{:08X}:{port:04X}", u32::from_ne_bytes(ip.octets())),
+            format!("{}:{port:04X}", v6(ip.to_ipv6_mapped())),
+        ],
+        IpAddr::V6(ip) => vec![format!("{}:{port:04X}", v6(ip))],
+    }
+}
+
 /// Accepts connections until `Hub::stop`, one thread each. Dropping the listener frees the port.
 fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Request>) {
     loop {
@@ -220,8 +266,10 @@ fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Reque
         if stream.set_nonblocking(false).is_err() {
             continue;
         }
-        let Ok(ip) = stream.peer_addr().map(|a| a.ip()) else { continue };
-        let allowed = peer_allowed(ip, &hub.lock().sync, tailscale::is_tailscale_addr(&ip));
+        let (Ok(peer), Ok(local)) = (stream.peer_addr(), stream.local_addr()) else { continue };
+        // `::ffff:a.b.c.d` on a dual-stack socket is checked as the IPv4 address it is.
+        let ip = peer.ip().to_canonical();
+        let allowed = same_user_if_local(peer, local) && peer_allowed(ip, &hub.lock().sync, tailscale::is_tailscale_addr(&ip));
         if !allowed {
             eprintln!("archonui host: refused a connection from {ip}");
             continue;
@@ -384,6 +432,47 @@ mod tests {
         assert!(tungstenite::connect(page).is_err(), "a web page on this machine gets no socket");
         assert!(tungstenite::connect(url.as_str()).is_ok(), "the archonui client still connects");
         hub.stop();
+    }
+
+    #[test]
+    fn a_local_client_is_traced_to_its_user() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, peer) = listener.accept().unwrap();
+        let local = server.local_addr().unwrap();
+        assert_eq!(peer, client.local_addr().unwrap());
+        assert_eq!(local_peer_uid(peer, local), Some(unsafe { libc::geteuid() }));
+        assert!(same_user_if_local(peer, local));
+        // Gone from the kernel's tables (or never there): refused, as it can't be traced.
+        drop((client, server));
+        let lo = |port| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        assert!(!same_user_if_local(lo(1), lo(2)));
+    }
+
+    #[test]
+    fn only_connections_from_this_machine_are_traced() {
+        let here: SocketAddr = "100.64.0.7:7420".parse().unwrap();
+        // Another tailnet device (the VPS's clients): no lookup, the tailnet checks decide.
+        assert!(same_user_if_local("100.64.0.9:40000".parse().unwrap(), here));
+        assert!(same_user_if_local("[fd7a:115c:a1e0::9]:40000".parse().unwrap(), "[fd7a:115c:a1e0::7]:7420".parse().unwrap()));
+        // This device's own address, untraceable: refused.
+        assert!(!same_user_if_local("100.64.0.7:1".parse().unwrap(), here));
+        assert!(!same_user_if_local("[::ffff:100.64.0.7]:1".parse().unwrap(), "[::ffff:100.64.0.7]:7420".parse().unwrap()));
+        assert!(!same_user_if_local("[::ffff:127.0.0.1]:1".parse().unwrap(), "[::ffff:127.0.0.1]:7420".parse().unwrap()));
+    }
+
+    #[test]
+    fn another_local_user_is_found_in_the_table() {
+        // 127.0.0.1:54321 -> 127.0.0.1:7420 owned by uid 1001, and 100.64.0.7:40000 -> 100.64.0.7:7420
+        // (this device's own Tailscale address) as a v4-mapped row owned by uid 33.
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+            0: 0100007F:D431 0100007F:1CFC 01 00000000:00000000 00:00000000 00000000  1001        0 1 1\n\
+            1: 0000000000000000FFFF000007004064:9C40 0000000000000000FFFF000007004064:1CFC 01 00000000:00000000 00:00000000 00000000    33        0 2 1\n";
+        let lo = |port| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        assert_eq!(uid_in(table, lo(54321), lo(7420)), Some(1001));
+        let ts = |port| SocketAddr::new("100.64.0.7".parse().unwrap(), port);
+        assert_eq!(uid_in(table, ts(40000), ts(7420)), Some(33));
+        assert_eq!(uid_in(table, lo(1), lo(7420)), None);
     }
 
     #[test]
