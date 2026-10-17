@@ -144,7 +144,8 @@ impl Shell {
             }
         };
         // Another cloud holds none of what the last one confirmed or listed.
-        if self.remote.cloud_for != sync.cloud {
+        let new_cloud = self.remote.cloud_for != sync.cloud;
+        if new_cloud {
             self.remote.cloud_for = sync.cloud.clone();
             self.remote.forget_copies();
             self.remote.copy_errors.clear();
@@ -175,6 +176,12 @@ impl Shell {
             if !self.remote.clients.contains_key(&device.id) && !self.remote.connecting.contains(&device.id) {
                 self.connect_device(device.clone(), me.name.clone(), sync.port, cx);
             }
+        }
+        // A device already connected when it was marked as the cloud gets what a new connection
+        // to the cloud would: the away devices' chats asked for, and a first copy.
+        if new_cloud && self.cloud_client().is_some() {
+            self.ask_cloud_for_away_devices();
+            self.backup(cx);
         }
         if !self.remote.ticking {
             self.remote.ticking = true;
