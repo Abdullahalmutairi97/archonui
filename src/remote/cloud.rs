@@ -6,13 +6,12 @@
 //! `chats/<device>/<session>.json` is one chat each. Ids come from the network, so `safe_id`
 //! checks every one before it becomes part of a path.
 
-use super::proto::CloudProject;
+use super::{proto::CloudProject, snapshot::git_cmd};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -47,10 +46,9 @@ impl Store {
         if !repo.join("HEAD").exists() {
             let projects = self.root.join("projects");
             fs::create_dir_all(&projects).map_err(|e| format!("could not create {}: {e}", projects.display()))?;
-            let out = Command::new("git")
+            let out = git_cmd()
                 .args(["init", "--bare", "-q"])
                 .arg(&repo)
-                .env("GIT_TERMINAL_PROMPT", "0")
                 .output()
                 .map_err(|e| format!("git init: {e}"))?;
             if !out.status.success() {
@@ -227,11 +225,10 @@ fn wip_ref(device: &str) -> String {
 
 /// Runs `git -C repo args` and returns its trimmed stdout, or the error text.
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = git_cmd()
         .arg("-C")
         .arg(repo)
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
     if out.status.success() {
@@ -289,7 +286,7 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Stdio;
+    use std::process::{Command, Stdio};
 
     /// A fresh directory for one test.
     fn scratch(name: &str) -> PathBuf {

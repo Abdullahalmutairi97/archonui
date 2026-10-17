@@ -189,7 +189,7 @@ struct Repo {
 
 impl Repo {
     fn open(dir: &Path, snapshots: &Path) -> Result<Repo, String> {
-        if succeeds(Command::new("git").arg("-C").arg(dir).args(["rev-parse", "--git-dir"])) {
+        if succeeds(git_cmd().arg("-C").arg(dir).args(["rev-parse", "--git-dir"])) {
             return Ok(Repo { git_dir: None, work: dir.to_path_buf() });
         }
         let canon = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -197,19 +197,15 @@ impl Repo {
         let git_dir = snapshots.join(name);
         if !git_dir.join("HEAD").is_file() {
             fs::create_dir_all(snapshots).map_err(|e| format!("{}: {e}", snapshots.display()))?;
-            run(Command::new("git").arg("init").arg("-q").arg("--bare").arg(&git_dir))?;
+            run(git_cmd().arg("init").arg("-q").arg("--bare").arg(&git_dir))?;
         }
         Ok(Repo { git_dir: Some(git_dir), work: dir.to_path_buf() })
     }
 
     /// A git command for this project, run in the project folder without inherited repo variables.
     fn git(&self) -> Command {
-        let mut cmd = Command::new("git");
-        cmd.env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .current_dir(&self.work);
+        let mut cmd = git_cmd();
+        cmd.current_dir(&self.work);
         if let Some(g) = &self.git_dir {
             cmd.arg(format!("--git-dir={}", g.display()))
                 .arg(format!("--work-tree={}", self.work.display()));
@@ -226,6 +222,39 @@ impl Repo {
         let p = PathBuf::from(run(self.git().args(["rev-parse", "--git-path", "index"]))?);
         Ok(if p.is_absolute() { p } else { self.work.join(p) })
     }
+}
+
+/// Variables an outer git (a hook, or `GIT_DIR=… archonui`) passes down that point git at another
+/// repository or change what it reads: git's own `rev-parse --local-env-vars`, plus the quarantine
+/// path a receive hook sets, under which ref updates are refused.
+const REPO_ENV: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_QUARANTINE_PATH",
+];
+
+/// `git` without the inherited variables that pick a repository, and without password prompts.
+/// Code that wants a temporary index sets `GIT_INDEX_FILE` again afterwards.
+pub(super) fn git_cmd() -> Command {
+    let mut cmd = Command::new("git");
+    for var in REPO_ENV {
+        cmd.env_remove(var);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd
 }
 
 /// A git command for `repo` that uses the temporary index at `index`. A split index is written
@@ -823,6 +852,60 @@ mod tests {
         let dir = file.parent().unwrap();
         assert_eq!(dir, snapshots_dir().join("tmp"), "not the shared temp dir");
         assert_eq!(fs::metadata(dir).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    /// Set by `inherited_git_variables_are_ignored` for the child run of `git_env_child`.
+    const CHILD_BASE: &str = "ARCHONUI_TEST_GIT_ENV_BASE";
+
+    /// Run as a child process with `GIT_DIR` and friends pointing at another repository: snapshots,
+    /// bundles and the cloud store must still use the project's own. Does nothing when run directly.
+    #[test]
+    fn git_env_child() {
+        let Some(base) = std::env::var_os(CHILD_BASE).map(PathBuf::from) else { return };
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        let c = take_in(&proj, "n1", &snaps, false).unwrap().expect("snapshot");
+        let full = bundle_in(&proj, "n1", None, &snaps).unwrap();
+        let store = super::super::cloud::Store::open(base.join("cloud"));
+        store.put_project("p1", "proj", "n1", &c, &full).unwrap();
+        assert_eq!(store.get_project("p1", "n1").unwrap().0, c);
+        restore(&full, &c, &base.join("restored")).unwrap();
+    }
+
+    #[test]
+    fn inherited_git_variables_are_ignored() {
+        if !git_available() {
+            return;
+        }
+        let base = root("git-env");
+        let proj = base.join("proj");
+        let other = base.join("other");
+        init_repo(&proj);
+        init_repo(&other);
+        fs::write(proj.join("notes.txt"), "draft\n").unwrap();
+        fs::write(other.join("theirs.txt"), "x\n").unwrap();
+        let other_index = fs::read(other.join(".git/index")).unwrap();
+
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "remote::snapshot::tests::git_env_child", "--test-threads=1"])
+            .env(CHILD_BASE, &base)
+            .env("GIT_DIR", other.join(".git"))
+            .env("GIT_WORK_TREE", &other)
+            .env("GIT_INDEX_FILE", other.join(".git/index"))
+            .env("GIT_OBJECT_DIRECTORY", other.join(".git/objects"))
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
+        assert!(text.contains("1 passed"), "the child test ran: {text}");
+
+        assert!(!git(&proj, &["for-each-ref", "refs/archon/"]).is_empty());
+        assert_eq!(git(&other, &["for-each-ref", "refs/archon/"]), "");
+        assert_eq!(fs::read(other.join(".git/index")).unwrap(), other_index);
+        assert_eq!(fs::read_to_string(base.join("restored/notes.txt")).unwrap(), "draft\n");
+        assert!(!base.join("restored/theirs.txt").exists());
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
