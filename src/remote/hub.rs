@@ -130,6 +130,11 @@ impl Hub {
         }
     }
 
+    /// Whether connection `conn` follows chat `session`.
+    pub fn follows(&self, conn: u64, session: &str) -> bool {
+        self.lock().subs.get(session).is_some_and(|ids| ids.contains(&conn))
+    }
+
     /// Stops sending `conn` the events of `session`.
     pub fn unsubscribe(&self, conn: u64, session: &str) {
         if let Some(ids) = self.lock().subs.get_mut(session) {

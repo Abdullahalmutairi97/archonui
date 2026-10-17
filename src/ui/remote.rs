@@ -272,7 +272,10 @@ impl Shell {
         if let ClientMsg::Answer { session, request, allow, always } = &req.msg {
             // Only this device's own requests: a forwarded one is answered by the device it came from.
             let own = !self.remote.forwarded.contains_key(request) && self.state.is_remote(session).is_none();
-            let waiting = own && self.approvals.queue.iter().any(|p| p.id == *request && &p.request.session == session);
+            // And only from a connection following that chat.
+            let waiting = own
+                && hub.follows(conn, session)
+                && self.approvals.queue.iter().any(|p| p.id == *request && &p.request.session == session);
             if waiting {
                 let verdict = if *allow { Verdict::Allow } else { Verdict::Deny(DENIED.into()) };
                 self.answer_approval(*request, verdict, *allow && *always, cx);
