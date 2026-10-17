@@ -34,13 +34,6 @@ use std::{
 /// What a waiting approval is told when the user denies it.
 const DENIED: &str = "The user denied this action.";
 
-/// Serves this device's chats on `bind` until the process ends. Loads the settings and chats itself.
-pub fn serve(bind: SocketAddr) -> io::Result<()> {
-    let _chats = lock_chats().map_err(|e| io::Error::new(io::ErrorKind::WouldBlock, e))?;
-    let device = host_name(&discover());
-    listen(bind, device, AppState::load(&Paths::current()))
-}
-
 /// Takes the chats folder for this host alone, or says why it can't.
 fn lock_chats() -> Result<lock::Lock, String> {
     let dir = store::dir();
@@ -98,7 +91,8 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
     let state = AppState::load(&Paths::current());
-    let tailnet = discover();
+    // `discover` gives up on a stuck Tailscale daemon by itself.
+    let tailnet = tailscale::discover();
     let addr = match bind {
         Some(addr) => addr,
         None if !state.settings.sync.enabled => {
@@ -142,27 +136,6 @@ fn bind_error(addr: SocketAddr, e: &io::Error) -> String {
         io::ErrorKind::PermissionDenied => format!("cannot listen on {addr}: permission denied (ports below 1024 need root)"),
         _ => format!("cannot listen on {addr}: {e}"),
     }
-}
-
-/// How long `--serve` waits for `tailscale status`.
-const DISCOVER_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// `tailscale::discover`, given up after `DISCOVER_TIMEOUT`: a stuck Tailscale daemon must not keep
-/// the host from starting. A late answer is dropped with its thread, which blocks every signal so a
-/// stuck one never takes the Ctrl-C meant for `catch_stop_signals`.
-fn discover() -> Result<tailscale::Tailnet, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        // SAFETY: plain libc calls on a local signal set.
-        unsafe {
-            let mut all: libc::sigset_t = std::mem::zeroed();
-            libc::sigfillset(&mut all);
-            libc::pthread_sigmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
-        }
-        let _ = tx.send(tailscale::discover());
-    });
-    rx.recv_timeout(DISCOVER_TIMEOUT)
-        .unwrap_or_else(|_| Err(format!("Tailscale did not answer within {} s", DISCOVER_TIMEOUT.as_secs())))
 }
 
 /// The name a host shows its clients: this device's Tailscale host name, else its own host name, else "host".
