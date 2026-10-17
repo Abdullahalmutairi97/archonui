@@ -172,6 +172,10 @@ enum Command {
 /// new <agent> <folder> <prompt...>`. Returns the process exit code.
 pub fn run(args: &[String]) -> i32 {
     let Some((target, rest)) = args.split_first() else { return usage() };
+    if matches!(target.as_str(), "--help" | "-h") {
+        usage();
+        return 0;
+    }
     let words: Vec<&str> = rest.iter().map(String::as_str).collect();
     let command = match words.as_slice() {
         ["list"] => Command::List,
@@ -250,6 +254,7 @@ fn usage() -> i32 {
     eprintln!("       archonui --remote <host>[:port] show <session>");
     eprintln!("       archonui --remote <host>[:port] ask <session> <prompt...>");
     eprintln!("       archonui --remote <host>[:port] new <agent> <folder> <prompt...>");
+    eprintln!("<host> is a tailnet device's name or address; the port defaults to {DEFAULT_PORT}.");
     eprintln!("<folder> is on the host; quote '~' for the host's home.");
     2
 }
