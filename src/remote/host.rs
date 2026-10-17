@@ -392,7 +392,7 @@ fn start_prompt(
 /// What a chat's subscribers are sent when a prompt in `session` could not start: `Finished` with the
 /// reason `send` put in the chat (it ends `--remote ask` and sends queued prompts), then the chat as it
 /// is now, which holds the prompt and the error that no `Started` announced.
-fn start_failed(state: &AppState, session: &str, before: usize) -> Vec<HostMsg> {
+pub(crate) fn start_failed(state: &AppState, session: &str, before: usize) -> Vec<HostMsg> {
     let error = Some(start_error(state, session, before));
     let mut msgs = vec![HostMsg::Finished { session: session.to_string(), error, stopped: false }];
     if let Some(Ok(value)) = state.session(session).map(serde_json::to_value) {

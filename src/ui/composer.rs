@@ -504,7 +504,11 @@ impl Shell {
                 self.state.set_options(id, model, None, mode);
             }
         }
-        let Some(events) = self.state.send(id, text, &self.agents) else { return false };
+        let before = self.state.session(id).map_or(0, |s| s.messages.len());
+        let Some(events) = self.state.send(id, text, &self.agents) else {
+            self.share_start_failed(id, before);
+            return false;
+        };
         self.share_started(id, text);
         self.follow_turn(id, events, cx);
         cx.notify();
