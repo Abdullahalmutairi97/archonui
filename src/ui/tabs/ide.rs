@@ -528,7 +528,7 @@ impl Shell {
     /// Whether the IDE tab is shown in VS Code mode, so its page should stream frames.
     fn ide_visible(&self) -> bool {
         let ws = &self.state.workspace;
-        ws.right_open && ws.right_tab == RightTab::Ide && self.state.settings.ide == IdeKind::VsCode
+        ws.right_open && ws.right_tab == RightTab::Ide && self.state.settings.ide == IdeKind::VsCode && self.focused_remote().is_none()
     }
 
     /// VS Code mode: the page once code-server runs, else its starting or failed state.
