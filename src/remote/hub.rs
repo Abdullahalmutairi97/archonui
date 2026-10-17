@@ -19,6 +19,8 @@ use std::{
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often a connection checks its queue while the client is quiet.
 const POLL: Duration = Duration::from_millis(50);
+/// How long a write may stall before the client is taken as gone.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A client message from connection `conn`, for whoever owns the chats.
 #[derive(Clone, Debug)]
@@ -160,10 +162,11 @@ impl Hub {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Records a new connection's queue and returns its id.
+    /// Records a new connection's queue and returns its id. `None` when the hub stopped, or the
+    /// settings changed to refuse `ip` while its handshake ran.
     fn add_conn(&self, tx: mpsc::Sender<String>, ip: IpAddr) -> Option<u64> {
         let mut guard = self.lock();
-        if guard.stopped {
+        if guard.stopped || !peer_allowed(ip, &guard.sync, tailscale::is_tailscale_addr(&ip)) {
             return None;
         }
         let id = guard.next_conn;
@@ -232,7 +235,8 @@ fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Reque
 /// Runs one client connection until it closes: the handshake, then each message in and each queued
 /// message out, in order.
 fn connection(stream: TcpStream, ip: IpAddr, hub: Hub, requests: smol::channel::Sender<Request>) {
-    if stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() {
+    // The write timeout keeps a client that stops reading from pinning this thread while its queue grows.
+    if stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() || stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err() {
         return;
     }
     let mut ws = match tungstenite::accept_with_config(stream, Some(proto::ws_config())) {
@@ -436,6 +440,9 @@ mod tests {
         let (hub, _requests) = Hub::start(free_addr(), "host".into(), SyncSettings::default()).unwrap();
         let picked = SyncSettings { enabled: true, devices: vec![device("100.100.1.3")], ..Default::default() };
         let (tx, _rx) = mpsc::channel();
+        assert!(hub.add_conn(tx, "100.100.1.3".parse().unwrap()).is_none(), "sharing off: refused after its handshake");
+        hub.set_sync(picked.clone());
+        let (tx, _rx) = mpsc::channel();
         let conn = hub.add_conn(tx, "100.100.1.3".parse().unwrap()).unwrap();
         hub.set_sync(picked.clone());
         assert!(hub.is_open(conn), "still included");
@@ -443,10 +450,13 @@ mod tests {
         assert!(hub.is_open(conn), "no devices picked: any tailnet peer");
         hub.set_sync(SyncSettings { devices: vec![device("100.9.9.9")], ..picked.clone() });
         assert!(!hub.is_open(conn), "no longer included");
+        hub.set_sync(picked.clone());
         let (tx, _rx) = mpsc::channel();
         let conn = hub.add_conn(tx, "100.100.1.3".parse().unwrap()).unwrap();
         hub.set_sync(SyncSettings { enabled: false, ..picked });
         assert!(!hub.is_open(conn), "sharing off");
+        let (tx, _rx) = mpsc::channel();
+        assert!(hub.add_conn(tx, "100.100.1.3".parse().unwrap()).is_none(), "refused after its handshake");
         hub.stop();
         let (tx, _rx) = mpsc::channel();
         assert!(hub.add_conn(tx, "127.0.0.1".parse().unwrap()).is_none(), "a stopped hub takes no connection");
