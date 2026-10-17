@@ -10,13 +10,19 @@ use std::{
     collections::HashMap,
     io,
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
-    sync::{mpsc, Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Mutex, MutexGuard,
+    },
     thread,
     time::Duration,
 };
 
 /// How long a new connection may take to send its WebSocket handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Most connections open at once, handshakes included. Beyond this a new one is closed straight away,
+/// so a peer can't use up threads and memory (each connection may hold a whole `proto::ws_config` message).
+const MAX_CONNECTIONS: usize = 32;
 /// How often a connection checks its queue while the client is quiet.
 const POLL: Duration = Duration::from_millis(50);
 /// How long a write may stall before the client is taken as gone.
@@ -246,6 +252,7 @@ fn proc_addrs(addr: SocketAddr) -> Vec<String> {
 
 /// Accepts connections until `Hub::stop`, one thread each. Dropping the listener frees the port.
 fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Request>) {
+    let live = Arc::new(AtomicUsize::new(0));
     loop {
         if hub.lock().stopped {
             return;
@@ -274,9 +281,16 @@ fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Reque
             eprintln!("archonui host: refused a connection from {ip}");
             continue;
         }
-        let hub = hub.clone();
-        let requests = requests.clone();
-        thread::spawn(move || connection(stream, ip, hub, requests));
+        if live.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+            live.fetch_sub(1, Ordering::AcqRel);
+            eprintln!("archonui host: refused a connection from {ip}: {MAX_CONNECTIONS} are open");
+            continue;
+        }
+        let (hub, requests, live) = (hub.clone(), requests.clone(), live.clone());
+        thread::spawn(move || {
+            connection(stream, ip, hub, requests);
+            live.fetch_sub(1, Ordering::AcqRel);
+        });
     }
 }
 
@@ -473,6 +487,23 @@ mod tests {
         let ts = |port| SocketAddr::new("100.64.0.7".parse().unwrap(), port);
         assert_eq!(uid_in(table, ts(40000), ts(7420)), Some(33));
         assert_eq!(uid_in(table, lo(1), lo(7420)), None);
+    }
+
+    #[test]
+    fn open_connections_are_capped() {
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "h".into(), SyncSettings::default()).unwrap();
+        let addr = hub.local_addr();
+        // Silent sockets still in the handshake hold every slot.
+        let mut held: Vec<TcpStream> = (0..MAX_CONNECTIONS).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        let url = format!("ws://{addr}");
+        assert!(tungstenite::connect(url.as_str()).is_err(), "one more is closed");
+        held.pop();
+        let freed = (0..100).any(|_| {
+            thread::sleep(Duration::from_millis(20));
+            tungstenite::connect(url.as_str()).is_ok()
+        });
+        assert!(freed, "a closed connection frees its slot");
+        hub.stop();
     }
 
     #[test]
