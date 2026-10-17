@@ -10,7 +10,7 @@ use super::{
     cloud::Store,
     hub::{Hub, Request},
     lock,
-    proto::{self, ClientMsg, HostMsg, RemoteFile, SessionSummary, MAX_REMOTE_FILES_BYTES},
+    proto::{self, About, ClientMsg, HostMsg, RemoteFile, SessionSummary, MAX_REMOTE_FILES_BYTES},
     tailscale,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -164,8 +164,8 @@ fn summary(s: &Session, busy: bool) -> SessionSummary {
 }
 
 /// The answer when this device keeps no cloud copy.
-fn no_cloud() -> HostMsg {
-    HostMsg::Error { message: "This device does not keep a cloud copy".into() }
+fn no_cloud(about: &About) -> HostMsg {
+    HostMsg::error(about, "This device does not keep a cloud copy")
 }
 
 /// Saves the chats that changed, and prints the files that could not be written.
@@ -186,14 +186,16 @@ pub fn handle(
     req: Request,
 ) -> Option<(String, smol::channel::Receiver<Event>)> {
     let conn = req.conn;
+    // Every error names the request it answers, so the asker can tell a failed copy from a failed prompt.
+    let about = About::of(&req.msg);
     let mut turn = None;
     // Chats shown here from another device are not this host's to share.
     if let Some(id) = target(&req.msg).filter(|id| state.is_remote(id).is_some()) {
-        hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {id} on this device") });
+        hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {id} on this device")));
         return None;
     }
     match req.msg {
-        ClientMsg::Hello { .. } => hub.reply(conn, &HostMsg::Error { message: "Already said hello".into() }),
+        ClientMsg::Hello { .. } => hub.reply(conn, &HostMsg::error(&about, "Already said hello")),
         ClientMsg::ListSessions => {
             let mut list: Vec<&Session> = state.sessions().iter().filter(|s| s.visible() && s.origin.is_none()).collect();
             list.sort_by(|a, b| b.updated.cmp(&a.updated));
@@ -207,8 +209,8 @@ pub fn handle(
                     hub.subscribe(conn, &session);
                     hub.reply(conn, &HostMsg::Snapshot { session: value, busy });
                 }
-                Some(Err(e)) => hub.reply(conn, &HostMsg::Error { message: format!("Could not send the chat: {e}") }),
-                None => hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") }),
+                Some(Err(e)) => hub.reply(conn, &HostMsg::error(&about, format!("Could not send the chat: {e}"))),
+                None => hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device"))),
             }
         }
         ClientMsg::Unsubscribe { session } => hub.unsubscribe(conn, &session),
@@ -241,10 +243,10 @@ pub fn handle(
             };
             if !agents.iter().any(|a| a.enabled && a.harness.id() == agent.as_str()) {
                 let message = format!("{} is not set up on this device", engine::agent_name(&agent));
-                hub.reply(conn, &HostMsg::Error { message });
+                hub.reply(conn, &HostMsg::error(&about, message));
             } else if !cwd.is_dir() {
                 let message = format!("There is no folder {} on this device", cwd.display());
-                hub.reply(conn, &HostMsg::Error { message });
+                hub.reply(conn, &HostMsg::error(&about, message));
             } else {
                 // A folder the client named wins over the project open here, which would move the chat.
                 let current = if named { state.workspace.current_project.take() } else { None };
@@ -267,12 +269,12 @@ pub fn handle(
             let effort = if default_effort { Choice::Default } else { Choice::from(effort) };
             match start_prompt(state, agents, hub, &session, &text, mode, model, effort, files) {
                 Ok(started) => turn = started,
-                Err(message) => hub.reply(conn, &HostMsg::Error { message }),
+                Err(message) => hub.reply(conn, &HostMsg::error(&about, message)),
             }
         }
         ClientMsg::Cancel { session } => {
             if !state.stop(&session) {
-                hub.reply(conn, &HostMsg::Error { message: "No reply is running in that chat".into() });
+                hub.reply(conn, &HostMsg::error(&about, "No reply is running in that chat"));
             }
         }
         msg @ (ClientMsg::PutProject { .. }
@@ -282,7 +284,7 @@ pub fn handle(
         | ClientMsg::GetChats { .. }) => handle_cloud(cloud, hub, Request { conn, msg }),
         ClientMsg::Draft { session, text } => {
             if state.session(&session).is_none() {
-                hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
+                hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device")));
             } else {
                 state.set_draft(&session, &text);
                 flush(state);
@@ -292,9 +294,9 @@ pub fn handle(
         ClientMsg::Rename { session, title } => {
             let title = title.trim().to_string();
             if title.is_empty() {
-                hub.reply(conn, &HostMsg::Error { message: "The name is empty".into() });
+                hub.reply(conn, &HostMsg::error(&about, "The name is empty"));
             } else if !super::cloud::safe_id(&session) || !state.rename_session(&session, &title) {
-                hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
+                hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device")));
             } else {
                 flush(state);
                 let msg = HostMsg::Renamed { session: session.clone(), title };
@@ -303,9 +305,9 @@ pub fn handle(
         }
         ClientMsg::Delete { session } => {
             if !super::cloud::safe_id(&session) || state.session(&session).is_none() {
-                hub.reply(conn, &HostMsg::Error { message: format!("There is no chat {session} on this device") });
+                hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device")));
             } else if state.busy(&session) {
-                hub.reply(conn, &HostMsg::Error { message: "A reply is running in that chat; stop it first".into() });
+                hub.reply(conn, &HostMsg::error(&about, "A reply is running in that chat; stop it first"));
             } else {
                 state.delete_session(&session);
                 flush(state);
@@ -313,9 +315,9 @@ pub fn handle(
             }
         }
         // An answer the owner did not match to a waiting request.
-        ClientMsg::Answer { .. } => hub.reply(conn, &HostMsg::Error { message: "Nothing is waiting for that answer".into() }),
+        ClientMsg::Answer { .. } => hub.reply(conn, &HostMsg::error(&about, "Nothing is waiting for that answer")),
         ClientMsg::Unknown => {
-            hub.reply(conn, &HostMsg::Error { message: proto::UNKNOWN_REQUEST.into() });
+            hub.reply(conn, &HostMsg::error(&about, proto::UNKNOWN_REQUEST));
         }
     }
     turn
@@ -359,52 +361,53 @@ pub fn is_cloud(msg: &ClientMsg) -> bool {
 /// Answers one cloud request from `cloud`, or refuses it when this device keeps none. Blocking.
 pub fn handle_cloud(cloud: Option<&Store>, hub: &Hub, req: Request) {
     let conn = req.conn;
+    let about = About::of(&req.msg);
     match req.msg {
         ClientMsg::PutProject { project, name, device, commit, bundle } => {
             let reply = match cloud {
-                None => no_cloud(),
+                None => no_cloud(&about),
                 Some(store) => match STANDARD.decode(&bundle) {
-                    Err(e) => HostMsg::Error { message: format!("The bundle is not base64: {e}") },
+                    Err(e) => HostMsg::error(&about, format!("The bundle is not base64: {e}")),
                     Ok(bytes) => match store.put_project(&project, &name, &device, &commit, &bytes) {
                         Ok(()) => HostMsg::Stored { project, device, commit },
-                        Err(message) => HostMsg::Error { message },
+                        Err(message) => HostMsg::error(&about, message),
                     },
                 },
             };
             hub.reply(conn, &reply);
         }
         ClientMsg::PutChats { device, sessions } => match cloud {
-            None => hub.reply(conn, &no_cloud()),
+            None => hub.reply(conn, &no_cloud(&about)),
             Some(store) => {
                 // Nothing is sent back on success; the sender only needs to know about failures.
                 if let Err(message) = store.put_chats(&device, &sessions) {
-                    hub.reply(conn, &HostMsg::Error { message });
+                    hub.reply(conn, &HostMsg::error(&about, message));
                 }
             }
         },
         ClientMsg::ListCloud => {
             let reply = match cloud {
-                None => no_cloud(),
+                None => no_cloud(&about),
                 Some(store) => HostMsg::Cloud { projects: store.projects(), chats: store.chat_devices() },
             };
             hub.reply(conn, &reply);
         }
         ClientMsg::GetProject { project, device } => {
             let reply = match cloud {
-                None => no_cloud(),
+                None => no_cloud(&about),
                 Some(store) => match store.get_project(&project, &device) {
                     Ok((_, bundle)) if !proto::fits(bundle.len().div_ceil(3) * 4) => {
-                        HostMsg::Error { message: format!("That copy is too big to send ({} MB)", bundle.len() >> 20) }
+                        HostMsg::error(&about, format!("That copy is too big to send ({} MB)", bundle.len() >> 20))
                     }
                     Ok((commit, bundle)) => HostMsg::ProjectData { project, device, commit, bundle: STANDARD.encode(bundle) },
-                    Err(message) => HostMsg::Error { message },
+                    Err(message) => HostMsg::error(&about, message),
                 },
             };
             hub.reply(conn, &reply);
         }
         ClientMsg::GetChats { device } => {
             let reply = match cloud {
-                None => no_cloud(),
+                None => no_cloud(&about),
                 Some(store) => HostMsg::Chats { sessions: store.chats(&device), device },
             };
             hub.reply(conn, &reply);
@@ -985,7 +988,7 @@ mod tests {
         assert_eq!(req.msg, ClientMsg::Unknown);
         handle(&mut state(), &[], &hub, None, req);
         match smol::block_on(client.events.recv()).unwrap() {
-            ClientEvent::Msg(HostMsg::Error { message }) => assert!(message.contains("does not know"), "{message}"),
+            ClientEvent::Msg(HostMsg::Error { message, .. }) => assert!(message.contains("does not know"), "{message}"),
             ClientEvent::Msg(other) => panic!("unexpected {other:?}"),
             ClientEvent::Closed(reason) => panic!("closed: {reason:?}"),
         }
@@ -1235,7 +1238,7 @@ mod tests {
         assert!(!approvals.answer(&second, &allowances, &hub));
         assert!(handle(&mut state(), &[], &hub, None, second).is_none());
         match next_msg(&b) {
-            HostMsg::Error { message } => assert!(message.contains("Nothing is waiting"), "{message}"),
+            HostMsg::Error { message, .. } => assert!(message.contains("Nothing is waiting"), "{message}"),
             other => panic!("expected an error, got {other:?}"),
         }
         assert!(verdict.try_recv().is_err(), "only one verdict is ever sent");
@@ -1249,6 +1252,26 @@ mod tests {
         assert!(!approvals.answer(&stranger, &allowances, &hub));
         assert!(verdict.try_recv().is_err());
         assert!(!allowances.allowed("s1", "Bash"));
+    }
+
+    /// A failed copy names its project and a failed prompt names the prompt, so the asker can tell them apart.
+    #[test]
+    fn errors_name_the_request_they_answer() {
+        use super::super::client::Client;
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let c = Client::connect("127.0.0.1", hub.local_addr().port(), "a").unwrap();
+        let put = ClientMsg::PutProject { project: "p1".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "!".into() };
+        c.send(&put).unwrap();
+        handle(&mut state(), &[], &hub, None, next_request(&requests));
+        let about = About { request: "put_project".into(), project: Some("p1".into()) };
+        assert!(matches!(next_msg(&c), HostMsg::Error { about: Some(a), .. } if a == about));
+        c.send(&ClientMsg::PutChats { device: "n1".into(), sessions: Vec::new() }).unwrap();
+        handle(&mut state(), &[], &hub, None, next_request(&requests));
+        assert!(matches!(next_msg(&c), HostMsg::Error { about: Some(a), .. } if a.request == "put_chats"));
+        let prompt = ClientMsg::Prompt { session: "nope".into(), text: "hi".into(), mode: None, model: None, effort: None, default_model: false, default_effort: false, files: Vec::new() };
+        c.send(&prompt).unwrap();
+        handle(&mut state(), &[], &hub, None, next_request(&requests));
+        assert!(matches!(next_msg(&c), HostMsg::Error { about: Some(a), .. } if a == About { request: "prompt".into(), project: None }));
     }
 
     /// Rename and delete from another device change the host's chat and reach its followers; unknown,

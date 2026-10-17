@@ -157,8 +157,13 @@ pub enum HostMsg {
     },
     /// The chat's draft changed on another device.
     Draft { session: String, text: String },
-    /// Something the client asked for failed, e.g. an unknown session id.
-    Error { message: String },
+    /// Something the client asked for failed, e.g. an unknown session id. `about` names the request;
+    /// hosts from before it leave it out.
+    Error {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_about")]
+        about: Option<About>,
+    },
     /// Cloud: a `PutProject` was stored.
     Stored { project: String, device: String, commit: String },
     /// Cloud: answer to `ListCloud`. `chats` lists device ids with chats stored.
@@ -178,6 +183,74 @@ pub enum HostMsg {
     /// A message from a newer host that this version does not know; skip it. Never sent.
     #[serde(other)]
     Unknown,
+}
+
+/// Which request a host's `Error` answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct About {
+    /// The request's `type`, e.g. `"put_project"`; empty when the host could not read it.
+    pub request: String,
+    /// The project a `put_project` or `get_project` was about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+impl About {
+    /// The request `msg`.
+    pub fn of(msg: &ClientMsg) -> About {
+        let project = match msg {
+            ClientMsg::PutProject { project, .. } | ClientMsg::GetProject { project, .. } => Some(project.clone()),
+            _ => None,
+        };
+        About { request: msg.kind().into(), project }
+    }
+
+    /// A request read only as JSON, e.g. one that did not decode.
+    pub fn of_raw(text: &str) -> About {
+        let value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+        let field = |name: &str| value.get(name).and_then(|v| v.as_str()).map(str::to_string);
+        let request = field("type").unwrap_or_default();
+        let project = if matches!(request.as_str(), "put_project" | "get_project") { field("project") } else { None };
+        About { request, project }
+    }
+}
+
+impl ClientMsg {
+    /// The message's `type` on the wire; empty for `Unknown`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ClientMsg::Hello { .. } => "hello",
+            ClientMsg::ListSessions => "list_sessions",
+            ClientMsg::Subscribe { .. } => "subscribe",
+            ClientMsg::Unsubscribe { .. } => "unsubscribe",
+            ClientMsg::NewSession { .. } => "new_session",
+            ClientMsg::Prompt { .. } => "prompt",
+            ClientMsg::Cancel { .. } => "cancel",
+            ClientMsg::Draft { .. } => "draft",
+            ClientMsg::PutProject { .. } => "put_project",
+            ClientMsg::PutChats { .. } => "put_chats",
+            ClientMsg::ListCloud => "list_cloud",
+            ClientMsg::GetProject { .. } => "get_project",
+            ClientMsg::GetChats { .. } => "get_chats",
+            ClientMsg::Answer { .. } => "answer",
+            ClientMsg::Rename { .. } => "rename",
+            ClientMsg::Delete { .. } => "delete",
+            ClientMsg::Unknown => "",
+        }
+    }
+}
+
+impl HostMsg {
+    /// An `Error` answering request `about`.
+    pub fn error(about: &About, message: impl Into<String>) -> HostMsg {
+        HostMsg::Error { message: message.into(), about: Some(about.clone()) }
+    }
+}
+
+/// Reads an `Error`'s `about`, or `None` when it is in a shape this version does not know.
+fn known_about<'de, D: Deserializer<'de>>(d: D) -> Result<Option<About>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(About::deserialize(value).ok())
 }
 
 /// Reads an event of a turn, or `None` when it is one this version does not know.
@@ -387,7 +460,15 @@ mod tests {
                 r#"{"type":"finished","session":"s1","error":"signal: 15 (SIGTERM)","stopped":true}"#.into(),
             ),
             (HostMsg::Draft { session: "s1".into(), text: "d".into() }, r#"{"type":"draft","session":"s1","text":"d"}"#.into()),
-            (HostMsg::Error { message: "no".into() }, r#"{"type":"error","message":"no"}"#.into()),
+            (HostMsg::Error { message: "no".into(), about: None }, r#"{"type":"error","message":"no"}"#.into()),
+            (
+                HostMsg::Error { message: "no".into(), about: Some(About { request: "prompt".into(), project: None }) },
+                r#"{"type":"error","message":"no","about":{"request":"prompt"}}"#.into(),
+            ),
+            (
+                HostMsg::Error { message: "no".into(), about: Some(About { request: "put_project".into(), project: Some("p".into()) }) },
+                r#"{"type":"error","message":"no","about":{"request":"put_project","project":"p"}}"#.into(),
+            ),
             (
                 HostMsg::Stored { project: "p".into(), device: "n1".into(), commit: "abc".into() },
                 r#"{"type":"stored","project":"p","device":"n1","commit":"abc"}"#.into(),
@@ -436,6 +517,45 @@ mod tests {
         assert!(matches!(decode::<ClientMsg>(bare).unwrap(), ClientMsg::Prompt { files, mode: None, .. } if files.is_empty()));
         // `out` must still be there: an older host always sends it.
         assert!(decode::<HostMsg>(r#"{"type":"event","session":"s1"}"#).is_err());
+        // A host from before `about` names no request.
+        let old_error = r#"{"type":"error","message":"git fetch: fatal: bad object"}"#;
+        assert_eq!(decode::<HostMsg>(old_error).unwrap(), HostMsg::Error { message: "git fetch: fatal: bad object".into(), about: None });
+        // An `about` in a shape this version can't read loses only the `about`.
+        let odd = r#"{"type":"error","message":"no","about":{"kind":7}}"#;
+        assert_eq!(decode::<HostMsg>(odd).unwrap(), HostMsg::Error { message: "no".into(), about: None });
+        let odd = r#"{"type":"error","message":"no","about":"put_project"}"#;
+        assert_eq!(decode::<HostMsg>(odd).unwrap(), HostMsg::Error { message: "no".into(), about: None });
+    }
+
+    /// Hosts at 0dce615 and d30ae41 read `Error` as `{ message }` with no `deny_unknown_fields`, so a
+    /// new `Error` with `about` still reads there, as this stand-in for their type shows.
+    #[test]
+    fn older_peers_read_an_error_with_about() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum OldHostMsg {
+            Error { message: String },
+        }
+        let about = About { request: "put_project".into(), project: Some("p".into()) };
+        let wire = encode(&HostMsg::error(&about, "disk full"));
+        assert_eq!(decode::<OldHostMsg>(&wire).unwrap(), OldHostMsg::Error { message: "disk full".into() });
+    }
+
+    #[test]
+    fn errors_name_the_request() {
+        let put = ClientMsg::PutProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "AAA=".into() };
+        assert_eq!(About::of(&put), About { request: "put_project".into(), project: Some("p".into()) });
+        let prompt = ClientMsg::Prompt { session: "s".into(), text: "x".into(), mode: None, model: None, effort: None, default_model: false, default_effort: false, files: Vec::new() };
+        assert_eq!(About::of(&prompt), About { request: "prompt".into(), project: None });
+        // `kind` matches the tag each message carries on the wire.
+        for msg in [put, prompt, ClientMsg::ListCloud, ClientMsg::PutChats { device: "n1".into(), sessions: Vec::new() }, ClientMsg::Delete { session: "s".into() }] {
+            let wire: serde_json::Value = serde_json::from_str(&encode(&msg)).unwrap();
+            assert_eq!(wire["type"], msg.kind());
+        }
+        // A frame that did not decode is named from its JSON when it can be.
+        let bad = r#"{"type":"put_project","project":"p","bundle":7}"#;
+        assert_eq!(About::of_raw(bad), About { request: "put_project".into(), project: Some("p".into()) });
+        assert_eq!(About::of_raw("not json"), About { request: String::new(), project: None });
     }
 
     #[test]
