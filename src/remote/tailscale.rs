@@ -70,7 +70,7 @@ pub fn parse(json: &str) -> Result<Tailnet, String> {
         .get("Self")
         .filter(|v| v.is_object())
         .ok_or_else(|| "Tailscale status has no Self device".to_string())?;
-    let me = node_device(self_node)
+    let mut me = node_device(self_node)
         .ok_or_else(|| "Tailscale has no IPv4 address for this device".to_string())?;
 
     let mut peers = Vec::new();
@@ -83,6 +83,7 @@ pub fn parse(json: &str) -> Result<Tailnet, String> {
             }
         }
     }
+    unique_names(std::iter::once(&mut me).chain(peers.iter_mut().map(|p| &mut p.device)));
 
     peers.sort_by(|a, b| {
         b.online
@@ -92,6 +93,21 @@ pub fn parse(json: &str) -> Result<Tailnet, String> {
     });
 
     Ok(Tailnet { me, peers })
+}
+
+/// Devices sharing a host name (two machines both called "ubuntu", say) are named by their MagicDNS
+/// label instead, which Tailscale keeps unique ("ubuntu", "ubuntu-1"), so the device list, the
+/// sidebar and restored folders can tell them apart.
+fn unique_names<'a>(devices: impl Iterator<Item = &'a mut Device>) {
+    let mut devices: Vec<&mut Device> = devices.collect();
+    let names: Vec<String> = devices.iter().map(|d| d.name.to_lowercase()).collect();
+    for (i, d) in devices.iter_mut().enumerate() {
+        if names.iter().filter(|n| **n == names[i]).count() > 1 {
+            if let Some(label) = d.dns_name.split('.').next().filter(|l| !l.is_empty()) {
+                d.name = label.to_string();
+            }
+        }
+    }
 }
 
 /// Whether `ip` is in Tailscale's address ranges: IPv4 100.64.0.0/10 or IPv6 fd7a:115c:a1e0::/48.
@@ -294,6 +310,22 @@ mod tests {
         assert_eq!(t.peers[1].device.addr, "100.101.102.103");
         assert!(!t.peers[1].online);
         assert_eq!(t.peers[1].os, "windows");
+    }
+
+    #[test]
+    fn devices_with_the_same_host_name_get_their_dns_names() {
+        let json = r#"{
+            "BackendState": "Running",
+            "Self": {"ID": "n1", "HostName": "ubuntu", "DNSName": "ubuntu.t.ts.net.", "TailscaleIPs": ["100.64.0.1"]},
+            "Peer": {
+                "a": {"ID": "n2", "HostName": "Ubuntu", "DNSName": "ubuntu-1.t.ts.net.", "TailscaleIPs": ["100.64.0.2"]},
+                "b": {"ID": "n3", "HostName": "pc", "DNSName": "pc.t.ts.net.", "TailscaleIPs": ["100.64.0.3"]}
+            }
+        }"#;
+        let t = parse(json).unwrap();
+        assert_eq!(t.me.name, "ubuntu");
+        let names: Vec<&str> = t.peers.iter().map(|p| p.device.name.as_str()).collect();
+        assert_eq!(names, ["pc", "ubuntu-1"]);
     }
 
     #[test]
