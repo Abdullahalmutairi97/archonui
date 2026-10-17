@@ -275,7 +275,8 @@ pub fn handle(
             } else {
                 // A folder the client named wins over the project open here, which would move the chat.
                 let current = if named { state.workspace.current_project.take() } else { None };
-                let id = state.new_session(&agent, cwd, Placement::Focused);
+                // Not in this window's tiles: the asking device opens it, and the user here keeps what they had open.
+                let id = state.new_session(&agent, cwd, Placement::Elsewhere);
                 if current.is_some() {
                     state.workspace.current_project = current;
                 }
@@ -975,6 +976,27 @@ mod tests {
         // No folder: the host's defaults, which include its open project.
         assert_eq!(default, (project_dir.clone(), Some(p.clone())));
         std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn a_chat_another_device_starts_keeps_the_hosts_tile_and_waits_for_its_prompt() {
+        let mut app = state();
+        let mine = app.new_session("pi", std::env::temp_dir(), Placement::Focused);
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let agents = [pi_at("/nonexistent/archonui-test-pi")];
+        let msg = ClientMsg::NewSession { agent: "pi".into(), cwd: std::env::temp_dir(), project: None };
+        handle(&mut app, &agents, &hub, None, Request { conn: 1, msg });
+        let new = app.sessions().iter().find(|s| s.id != mine).map(|s| s.id.clone()).unwrap();
+        // The host's own chat stays where it was.
+        assert_eq!(app.workspace.layout.focus.as_deref(), Some(mine.as_str()));
+        assert_eq!(app.workspace.layout.tiles, vec![mine.clone()]);
+        // The window drops empty chats on each render; this one waits for the asking device's prompt.
+        assert!(!app.drop_abandoned());
+        assert!(app.session(&new).is_some());
+        // Once a turn ran in it, it is an ordinary chat.
+        assert!(app.send(&new, "hello", &agents).is_none());
+        assert!(!app.drop_abandoned());
+        assert!(app.session(&new).is_some_and(|s| s.visible()));
     }
 
     #[test]
