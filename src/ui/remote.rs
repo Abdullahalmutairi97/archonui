@@ -669,13 +669,16 @@ impl Shell {
                 let name = self.chat_device_name(device);
                 self.toast(format!("{name} runs an older archonUI that can't do that; update it there"), cx);
             }
+            // Answers about the cloud copy count only from the cloud: a late one from a cloud since
+            // replaced would mark copies the new one lacks as stored, or list what it doesn't hold.
+            msg if cloud_reply(&msg) && !self.state.settings.sync.is_cloud(device) => {}
             // A copy the cloud couldn't apply: send those projects whole next time.
             HostMsg::Error { message } if self.state.settings.sync.is_cloud(device) && !self.remote.sending.is_empty() => {
                 if let Some(text) = self.remote.copy_failed(message) {
                     self.toast(text, cx);
                 }
             }
-            HostMsg::Error { message } if message.starts_with("git ") => {
+            HostMsg::Error { message } if message.starts_with("git ") && self.state.settings.sync.is_cloud(device) => {
                 eprintln!("archonui: cloud copy from {device}: {message}");
                 self.remote.pushed.clear();
             }
@@ -1107,6 +1110,11 @@ fn to_subscribe<'a>(
         .collect()
 }
 
+/// Whether `msg` answers a cloud request, so only the cloud's own count.
+fn cloud_reply(msg: &HostMsg) -> bool {
+    matches!(msg, HostMsg::Stored { .. } | HostMsg::Cloud { .. } | HostMsg::ProjectData { .. } | HostMsg::Chats { .. })
+}
+
 /// The devices whose connection or chats must go: every one of `known` the settings no longer include.
 fn dropped_devices(sync: &crate::remote::SyncSettings, known: impl Iterator<Item = String>) -> Vec<String> {
     let mut out: Vec<String> = known.filter(|id| !sync.devices.iter().any(|d| &d.id == id)).collect();
@@ -1122,6 +1130,15 @@ mod tests {
 
     fn device(id: &str) -> Device {
         Device { id: id.into(), name: id.into(), dns_name: String::new(), addr: "100.1.2.3".into(), addr6: String::new() }
+    }
+
+    #[test]
+    fn only_cloud_answers_are_cloud_replies() {
+        let stored = HostMsg::Stored { project: "p".into(), device: "d".into(), commit: "c".into() };
+        assert!(cloud_reply(&stored));
+        assert!(cloud_reply(&HostMsg::Chats { device: "d".into(), sessions: Vec::new() }));
+        assert!(!cloud_reply(&HostMsg::Sessions { sessions: Vec::new() }));
+        assert!(!cloud_reply(&HostMsg::Error { message: "x".into() }));
     }
 
     /// The hard rule: a fresh install, or settings from before sharing existed, never reach Tailscale,
