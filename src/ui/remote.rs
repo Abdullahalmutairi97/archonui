@@ -171,8 +171,13 @@ impl Shell {
             self.remote.cloud = None;
             self.remote.cloud_jobs = None;
         }
-        if self.remote.hub.is_none() && !self.remote.listen_failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
-            self.start_hub(&me, cx);
+        if self.remote.hub.is_none() {
+            if self.remote.listen_failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
+                // Kept pending while listening fails, even when every device is connected.
+                self.retry_later(cx);
+            } else {
+                self.start_hub(&me, cx);
+            }
         }
         // Devices no longer included are dropped, with their chats (live or from the cloud).
         let shown = self.state.sessions().iter().filter_map(|s| s.origin.clone());
@@ -286,6 +291,8 @@ impl Shell {
         r.open_new = None;
         // Asked again when sharing comes back on: Tailscale may have a new address or name for it by then.
         r.me = None;
+        // Turned back on, the host is tried at once.
+        r.listen_failed_at = None;
         if r.ticking {
             r.ticking = false;
             r.epoch += 1;
@@ -317,10 +324,16 @@ impl Shell {
                 })
                 .detach();
             }
-            // Most often `archonui --serve` already runs on this device. Tried again after `RETRY_AFTER`.
+            // Most often `archonui --serve` already runs on this device, or sharing was just turned off
+            // and on and the old listener has not let go of the port yet. Tried again after
+            // `RETRY_AFTER`; the toast shows once per run of failures.
             Err(e) => {
+                let first = self.remote.listen_failed_at.is_none();
                 self.remote.listen_failed_at = Some(Instant::now());
-                self.toast(format!("Sharing: could not listen on {bind}: {e}"), cx);
+                if first {
+                    self.toast(format!("Sharing: could not listen on {bind}: {e}"), cx);
+                }
+                self.retry_later(cx);
             }
         }
     }
