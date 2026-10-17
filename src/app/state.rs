@@ -440,9 +440,10 @@ impl AppState {
         self.dirty.insert(id.to_string());
     }
 
-    /// Puts the chat in `project`, or in no project for `None`. Returns false if there is no such chat.
+    /// Puts the chat in `project`, or in no project for `None`. Returns false if there is no such
+    /// chat, or it is on another device: project ids are per device, and its next copy would undo it.
     pub fn move_to_project(&mut self, id: &str, project: Option<String>) -> bool {
-        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return false };
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id && s.origin.is_none()) else { return false };
         s.project = project;
         self.dirty.insert(id.to_string());
         true
@@ -1150,6 +1151,17 @@ mod tests {
         assert_eq!(app.sessions().len(), 1);
         assert_eq!(app.sessions()[0].id, tiled);
         assert!(app.workspace.layout.contains(&tiled));
+    }
+
+    #[test]
+    fn move_to_project_leaves_other_devices_chats() {
+        let mut app = state();
+        let mut theirs = Session::new("pi", "/tmp".into());
+        theirs.push(Role::User, "hi");
+        let id = theirs.id.clone();
+        app.put_remote(theirs, "laptop", false);
+        assert!(!app.move_to_project(&id, Some("p1".into())));
+        assert!(app.session(&id).is_some_and(|s| s.project.is_none()));
     }
 
     #[test]
