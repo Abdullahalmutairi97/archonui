@@ -1121,7 +1121,7 @@ mod tests {
     use crate::remote::SyncSettings;
 
     fn device(id: &str) -> Device {
-        Device { id: id.into(), name: id.into(), dns_name: String::new(), addr: "100.1.2.3".into() }
+        Device { id: id.into(), name: id.into(), dns_name: String::new(), addr: "100.1.2.3".into(), addr6: String::new() }
     }
 
     /// The hard rule: a fresh install, or settings from before sharing existed, never reach Tailscale,

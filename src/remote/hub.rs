@@ -429,7 +429,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     fn device(addr: &str) -> Device {
-        Device { id: "n1".into(), name: "pc".into(), dns_name: String::new(), addr: addr.into() }
+        Device { id: "n1".into(), name: "pc".into(), dns_name: String::new(), addr: addr.into(), addr6: String::new() }
     }
 
     #[test]
@@ -632,5 +632,15 @@ mod tests {
         assert!(peer_allowed(lo, &SyncSettings::default(), false));
         let other: IpAddr = "::ffff:100.101.9.9".parse().unwrap();
         assert!(!peer_allowed(other, &picked, true));
+    }
+
+    #[test]
+    fn a_picked_device_may_connect_from_its_ipv6_address() {
+        let pc = Device { addr6: "fd7a:115c:a1e0::3".into(), ..device("100.101.2.3") };
+        let picked = SyncSettings { enabled: true, devices: vec![pc], ..Default::default() };
+        let v6: IpAddr = "fd7a:115c:a1e0::3".parse().unwrap();
+        assert!(peer_allowed(v6, &picked, tailscale::is_tailscale_addr(&v6)));
+        let other: IpAddr = "fd7a:115c:a1e0::9".parse().unwrap();
+        assert!(!peer_allowed(other, &picked, tailscale::is_tailscale_addr(&other)));
     }
 }

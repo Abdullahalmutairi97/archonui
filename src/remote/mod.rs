@@ -21,6 +21,7 @@ pub mod snapshot;
 pub mod tailscale;
 
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 
 /// Port a host listens on, on its Tailscale address only.
 pub const DEFAULT_PORT: u16 = 7420;
@@ -52,6 +53,10 @@ pub struct Device {
     pub dns_name: String,
     /// Tailscale IPv4 address, e.g. `"100.101.102.103"`.
     pub addr: String,
+    /// Tailscale IPv6 address, e.g. `"fd7a:115c:a1e0::3"`. Empty when unknown, as in settings saved
+    /// before it was kept.
+    #[serde(default)]
+    pub addr6: String,
 }
 
 /// The Devices settings: which tailnet devices share this workspace and which one is the cloud.
@@ -79,9 +84,24 @@ impl Default for SyncSettings {
 }
 
 impl SyncSettings {
-    /// Whether `addr` (a peer's IP) belongs to a device the user included.
+    /// Whether `addr` (a peer's IP) belongs to a device the user included, by its IPv4 or IPv6 address.
     pub fn allows(&self, addr: &str) -> bool {
-        self.devices.iter().any(|d| d.addr == addr)
+        let Ok(ip) = addr.parse::<IpAddr>().map(|ip| ip.to_canonical()) else { return false };
+        let is = |a: &str| a.parse::<IpAddr>().is_ok_and(|a| a.to_canonical() == ip);
+        self.devices.iter().any(|d| is(&d.addr) || is(&d.addr6))
+    }
+
+    /// Updates the included devices from what Tailscale reports now (`found`), matched by id: a
+    /// renamed device, a new address, or the IPv6 address older settings lack. Returns whether any changed.
+    pub fn refresh_devices<'a>(&mut self, found: impl IntoIterator<Item = &'a Device>) -> bool {
+        let mut changed = false;
+        for new in found {
+            if let Some(d) = self.devices.iter_mut().find(|d| d.id == new.id && *d != new) {
+                *d = new.clone();
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub fn is_cloud(&self, id: &str) -> bool {
@@ -111,12 +131,38 @@ mod tests {
     fn allows_only_included_devices() {
         let s = SyncSettings {
             enabled: true,
-            devices: vec![Device { id: "n1".into(), name: "pc".into(), dns_name: String::new(), addr: "100.1.2.3".into() }],
+            devices: vec![Device {
+                id: "n1".into(),
+                name: "pc".into(),
+                dns_name: String::new(),
+                addr: "100.1.2.3".into(),
+                addr6: "fd7a:115c:a1e0::3".into(),
+            }],
             cloud: Some("n1".into()),
             ..Default::default()
         };
         assert!(s.allows("100.1.2.3"));
         assert!(!s.allows("100.9.9.9"));
+        // From its IPv6 address too, however it is written; an IPv4-mapped one counts as IPv4.
+        assert!(s.allows("fd7a:115c:a1e0::3"));
+        assert!(s.allows("fd7a:115c:a1e0:0:0:0:0:3"));
+        assert!(s.allows("::ffff:100.1.2.3"));
+        assert!(!s.allows("fd7a:115c:a1e0::4"));
+        assert!(!s.allows(""));
         assert!(s.is_cloud("n1"));
+    }
+
+    #[test]
+    fn old_devices_load_and_learn_their_ipv6_address() {
+        let mut s: SyncSettings =
+            serde_json::from_str(r#"{"enabled":true,"devices":[{"id":"n1","name":"pc","addr":"100.1.2.3"}]}"#).unwrap();
+        assert_eq!(s.devices[0].addr6, "");
+        assert!(!s.allows("fd7a:115c:a1e0::3"));
+        let found = Device { addr6: "fd7a:115c:a1e0::3".into(), ..s.devices[0].clone() };
+        let other = Device { id: "n2".into(), ..found.clone() };
+        assert!(s.refresh_devices([&found, &other]));
+        assert_eq!(s.devices, [found.clone()], "only included devices are updated");
+        assert!(s.allows("fd7a:115c:a1e0::3"));
+        assert!(!s.refresh_devices([&found]));
     }
 }
