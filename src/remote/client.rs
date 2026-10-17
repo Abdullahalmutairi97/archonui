@@ -183,7 +183,7 @@ pub fn run(args: &[String]) -> i32 {
         _ => return usage(),
     };
     let (addr, port) = parse_target(target);
-    let me = std::env::var("HOSTNAME").unwrap_or_else(|_| "client".to_string());
+    let me = super::local_host_name().unwrap_or_else(|| "client".to_string());
     let client = match Client::connect(&addr, port, &me) {
         Ok(client) => client,
         Err(e) => return fail(e),
