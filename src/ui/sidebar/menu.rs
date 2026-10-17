@@ -126,9 +126,13 @@ impl Shell {
                         let id = id.clone();
                         move |this, _: &ClickEvent, _, cx| {
                             this.sidebar.menu = None;
-                            this.state.delete_session(&id);
-                            this.terminal_forget(&id);
-                            this.persist_sidebar(cx);
+                            // A chat on another device goes when that device has deleted it.
+                            if !this.delete_remote(&id, cx) {
+                                this.state.delete_session(&id);
+                                this.terminal_forget(&id);
+                                this.share_deleted(&id);
+                                this.persist_sidebar(cx);
+                            }
                         }
                     }),
                     cx.listener(|this, _: &ClickEvent, _, cx| this.set_menu_view(MenuView::Actions, cx)),

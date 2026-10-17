@@ -293,8 +293,17 @@ impl Shell {
             ClientMsg::Subscribe { session } => Some(session.clone()),
             _ => None,
         };
+        let deleting = match &req.msg {
+            ClientMsg::Delete { session } => Some(session.clone()),
+            _ => None,
+        };
         if let Some((id, events)) = host::handle(&mut self.state, &self.agents, &hub, self.remote.cloud.as_ref(), req) {
             self.follow_turn(&id, events, cx);
+        }
+        // A chat another device deleted takes its shell and tile here with it.
+        if let Some(id) = deleting.filter(|id| self.state.session(id).is_none()) {
+            self.terminal_forget(&id);
+            self.save(cx);
         }
         if let Some(session) = subscribed {
             self.send_waiting_approvals(&hub, conn, &session);
@@ -571,6 +580,8 @@ impl Shell {
             | HostMsg::Finished { session, .. }
             | HostMsg::Draft { session, .. }
             | HostMsg::Approval { session, .. }
+            | HostMsg::Renamed { session, .. }
+            | HostMsg::Deleted { session }
                 if self.state.is_remote(&session) != Some(device) => {}
             HostMsg::Started { session, text } => self.state.remote_started(&session, &text),
             HostMsg::Event { session, out } => {
@@ -585,6 +596,18 @@ impl Shell {
                 self.send_queued(&session, stopped, cx);
             }
             HostMsg::Draft { session, text } => self.state.set_draft(&session, &text),
+            HostMsg::Renamed { session, title } => {
+                self.state.rename_session(&session, &title);
+            }
+            HostMsg::Deleted { session } => {
+                self.drop_forwarded(|f| f.device == device && f.session == session);
+                if let Some(subscribed) = self.remote.subscribed.get_mut(device) {
+                    subscribed.remove(&session);
+                }
+                self.state.delete_session(&session);
+                self.terminal_forget(&session);
+                self.save(cx);
+            }
             HostMsg::Approval { session, request, tool, input } => {
                 let known = self.remote.forwarded.values().any(|f| f.device == device && f.session == session && f.request == request);
                 // A subscriber gets the waiting approvals again on each subscribe: show each one once.
@@ -722,6 +745,46 @@ impl Shell {
         let msg = ClientMsg::NewSession { agent: String::new(), cwd: std::path::PathBuf::new(), project: None };
         if client.send(&msg).is_ok() {
             self.remote.open_new = Some((device.to_string(), None));
+        }
+    }
+
+    /// Asks the device chat `id` lives on to rename it; the name changes here when it answers.
+    /// Returns false, doing nothing, for this device's own chats.
+    pub(super) fn rename_remote(&mut self, id: &str, title: &str, cx: &mut Context<Self>) -> bool {
+        let msg = ClientMsg::Rename { session: id.to_string(), title: title.to_string() };
+        self.ask_chat_device(id, msg, "rename", cx)
+    }
+
+    /// Asks the device chat `id` lives on to delete it; it goes here when it answers.
+    /// Returns false, doing nothing, for this device's own chats.
+    pub(super) fn delete_remote(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        self.ask_chat_device(id, ClientMsg::Delete { session: id.to_string() }, "delete", cx)
+    }
+
+    /// Sends `msg` to the device remote chat `id` lives on, or says why it can't. False for a chat of this device.
+    fn ask_chat_device(&mut self, id: &str, msg: ClientMsg, what: &str, cx: &mut Context<Self>) -> bool {
+        let Some(device) = self.state.is_remote(id).map(str::to_string) else { return false };
+        let sent = self.remote.clients.get(&device).is_some_and(|c| c.send(&msg).is_ok());
+        if !sent {
+            // A copy from the cloud: changing it here would be undone, so it waits for the device.
+            let name = self.chat_device_name(&device);
+            self.toast(format!("{name} is not connected; {what} this chat there or once it's back"), cx);
+        }
+        true
+    }
+
+    /// Tells the devices following this device's chat `id` that it was renamed here.
+    pub(super) fn share_renamed(&self, id: &str, title: &str) {
+        let Some(hub) = &self.remote.hub else { return };
+        if self.state.is_remote(id).is_none() {
+            hub.broadcast(id, &HostMsg::Renamed { session: id.to_string(), title: title.to_string() }, None);
+        }
+    }
+
+    /// Tells the devices following chat `id`, just deleted here, that it is gone.
+    pub(super) fn share_deleted(&self, id: &str) {
+        if let Some(hub) = &self.remote.hub {
+            hub.broadcast(id, &HostMsg::Deleted { session: id.to_string() }, None);
         }
     }
 
