@@ -118,8 +118,9 @@ listens on 7420 (`ss -ltn`), and `tailscale` is never run.
 - Not built: the other device's files, git and terminal in the side panel.
 - The Devices page sends `ListCloud` on each render until the cloud answers. Fine while connected;
   worth tidying.
-- A cloud copy that fails as an incremental bundle falls back to a full one on the next round
-  (`pushed` is cleared on a `git …` error from the cloud).
+- A cloud copy that fails falls back to a full one on the next round: any error from the cloud
+  while copies are unconfirmed clears `pushed` for those projects. Its toast shows once per
+  distinct error; `git …` errors are only logged.
 
 ## Working conventions
 

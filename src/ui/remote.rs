@@ -65,6 +65,10 @@ pub struct RemoteUi {
     cloud_jobs: Option<smol::channel::Sender<(Store, Hub, Request)>>,
     /// Project id -> the latest snapshot commit the cloud confirmed, so later copies send only changes.
     pushed: HashMap<String, String>,
+    /// Projects sent to the cloud that it has not stored yet.
+    sending: HashSet<String>,
+    /// Cloud copy errors already shown, so one that repeats every round shows once.
+    copy_errors: HashSet<String>,
     /// A copy to the cloud is being prepared.
     backing_up: bool,
     /// A reply ended while a copy was being prepared: copy again once it is sent.
@@ -91,6 +95,35 @@ pub(super) struct Forwarded {
     pub(super) always: bool,
 }
 
+impl RemoteUi {
+    /// Forgets what the cloud confirmed and every copy on its way, for a new or lost cloud.
+    fn forget_copies(&mut self) {
+        self.pushed.clear();
+        self.sending.clear();
+    }
+
+    /// The cloud stored `project` at `commit`: later copies send only what is newer.
+    fn copy_stored(&mut self, project: String, commit: String) {
+        self.sending.remove(&project);
+        self.pushed.insert(project, commit);
+    }
+
+    /// The cloud answered an error while copies were on their way. Its error names no project, so
+    /// each unconfirmed project goes back to a full copy next round, which the cloud can always
+    /// apply. Returns what to show: a git error is only logged (the full copy fixes it), and any
+    /// other error shows once, not on every round it repeats.
+    fn copy_failed(&mut self, message: String) -> Option<String> {
+        eprintln!("archonui: cloud copy: {message}");
+        for project in &self.sending {
+            self.pushed.remove(project);
+        }
+        if message.starts_with("git ") || !self.copy_errors.insert(message.clone()) {
+            return None;
+        }
+        Some(format!("Cloud copy: {message}"))
+    }
+}
+
 impl Shell {
     /// Brings sharing in line with the settings: starts or calms the host, connects to newly
     /// included devices and drops the rest. Cheap when nothing changed; call it after settings change.
@@ -113,7 +146,8 @@ impl Shell {
         // Another cloud holds none of what the last one confirmed or listed.
         if self.remote.cloud_for != sync.cloud {
             self.remote.cloud_for = sync.cloud.clone();
-            self.remote.pushed.clear();
+            self.remote.forget_copies();
+            self.remote.copy_errors.clear();
             self.remote.cloud_projects = None;
             self.remote.cloud_asked = false;
         }
@@ -219,7 +253,8 @@ impl Shell {
         r.subscribed.clear();
         r.cloud = None;
         r.cloud_jobs = None;
-        r.pushed.clear();
+        r.forget_copies();
+        r.copy_errors.clear();
         r.backup_again = false;
         r.cloud_projects = None;
         r.cloud_asked = false;
@@ -524,6 +559,8 @@ impl Shell {
             ClientEvent::Closed(_) => {
                 if self.state.settings.sync.is_cloud(device) {
                     self.remote.cloud_asked = false;
+                    // Copies sent over the lost connection get no answer; `pushed` still holds what it stored.
+                    self.remote.sending.clear();
                 }
                 self.remote.clients.remove(device);
                 self.remote.subscribed.remove(device);
@@ -621,16 +658,19 @@ impl Shell {
             HostMsg::ApprovalDone { session, request } => {
                 self.drop_forwarded(|f| f.device == device && f.session == session && f.request == request);
             }
-            // A copy the cloud couldn't apply (it lacks an earlier snapshot): send everything next time.
+            // A copy the cloud couldn't apply: send those projects whole next time.
+            HostMsg::Error { message } if self.state.settings.sync.is_cloud(device) && !self.remote.sending.is_empty() => {
+                if let Some(text) = self.remote.copy_failed(message) {
+                    self.toast(text, cx);
+                }
+            }
             HostMsg::Error { message } if message.starts_with("git ") => {
                 eprintln!("archonui: cloud copy from {device}: {message}");
                 self.remote.pushed.clear();
             }
             HostMsg::Error { message } => self.toast(message, cx),
             HostMsg::Welcome { .. } | HostMsg::Unknown => {}
-            HostMsg::Stored { project, commit, .. } => {
-                self.remote.pushed.insert(project, commit);
-            }
+            HostMsg::Stored { project, commit, .. } => self.remote.copy_stored(project, commit),
             HostMsg::Cloud { projects, .. } => self.remote.cloud_projects = Some(projects),
             HostMsg::ProjectData { project, device: from, commit, bundle } => self.restore_project(&project, &from, &commit, &bundle, cx),
             HostMsg::Chats { device: owner, sessions } => {
@@ -930,11 +970,15 @@ impl Shell {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.remote.backing_up = false;
+                let mut sent = Vec::new();
                 if let Some(cloud) = this.cloud_client() {
                     for msg in &ready {
-                        let _ = cloud.send(msg);
+                        if let (Ok(()), ClientMsg::PutProject { project, .. }) = (cloud.send(msg), msg) {
+                            sent.push(project.clone());
+                        }
                     }
                 }
+                this.remote.sending.extend(sent);
                 if std::mem::take(&mut this.remote.backup_again) {
                     this.backup(cx);
                 }
@@ -1107,5 +1151,32 @@ mod tests {
         // "laptop" is connected, "vps" only shows chats from the cloud: both were unticked.
         let known = ["pc", "laptop", "vps", "vps"].into_iter().map(String::from);
         assert_eq!(dropped_devices(&sync, known), vec!["laptop".to_string(), "vps".to_string()]);
+    }
+
+    #[test]
+    fn a_failed_cloud_copy_is_sent_whole_next_time_and_shown_once() {
+        let mut r = RemoteUi::default();
+        r.pushed.insert("pa".into(), "c1".into());
+        r.pushed.insert("pb".into(), "c2".into());
+        r.pushed.insert("pc".into(), "c3".into());
+        r.sending.extend(["pa".to_string(), "pb".to_string()]);
+        r.copy_stored("pb".into(), "c4".into());
+
+        // Not a git error: before, it was shown every round and the stale base kept.
+        let err = "refs/archon/wip/n1 is at abc, not def".to_string();
+        assert!(r.copy_failed(err.clone()).is_some());
+        assert_eq!(r.pushed.get("pa"), None, "the next copy of pa is a full one");
+        assert_eq!(r.pushed.get("pb").map(String::as_str), Some("c4"), "stored before the error");
+        assert_eq!(r.pushed.get("pc").map(String::as_str), Some("c3"), "not on its way");
+        r.pushed.insert("pa".into(), "c5".into());
+        assert_eq!(r.copy_failed(err), None, "shown once");
+        assert_eq!(r.pushed.get("pa"), None, "still unconfirmed, so reset again");
+        assert_eq!(r.copy_failed("git fetch: missing prerequisite".into()), None, "git errors are only logged");
+        assert!(r.copy_failed("disk full".into()).is_some(), "a new error shows");
+
+        r.copy_stored("pa".into(), "c6".into());
+        assert!(r.sending.is_empty());
+        r.forget_copies();
+        assert!(r.pushed.is_empty());
     }
 }
