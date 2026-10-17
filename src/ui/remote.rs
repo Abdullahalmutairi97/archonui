@@ -1082,22 +1082,16 @@ impl Shell {
         let base = self.default_folder();
         let safe = |s: &str| s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect::<String>();
         let stem = format!("{}-from-{}", safe(&name), safe(&from));
-        let mut dest = base.join(&stem);
-        let mut n = 2;
-        while dest.exists() {
-            dest = base.join(format!("{stem}-{n}"));
-            n += 1;
-        }
         let Ok(bytes) = STANDARD.decode(bundle) else {
             self.toast("The cloud sent a broken copy", cx);
             return;
         };
         let commit = commit.to_string();
         cx.spawn(async move |this, cx| {
-            let target = dest.clone();
-            let done = cx.background_executor().spawn(async move { snapshot::restore(&bytes, &commit, &target) }).await;
+            // The folder is picked as it is made, so a second "Open copy" still running gets another one.
+            let done = cx.background_executor().spawn(async move { snapshot::restore_new(&bytes, &commit, &base, &stem) }).await;
             let _ = this.update(cx, |this, cx| match done {
-                Ok(()) => {
+                Ok(dest) => {
                     this.state.add_project(&format!("{name} (from {from})"), dest.clone());
                     this.save(cx);
                     this.toast(format!("Opened {name} from the cloud in {}", dest.display()), cx);

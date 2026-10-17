@@ -64,15 +64,43 @@ pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
             return Err(format!("{} is not empty", dest.display()));
         }
     }
-    let result = temp_path("restore").and_then(|file| {
-        let result = fs::write(&file, bundle).map_err(|e| format!("write bundle: {e}")).and_then(|_| fetch_into(dest, &file, commit));
-        let _ = fs::remove_file(&file);
-        result
-    });
+    let result = fill(bundle, commit, dest);
     if result.is_err() && created {
         let _ = fs::remove_dir_all(dest);
     }
     result
+}
+
+/// `restore` into a new folder `base/stem`, or `stem-2`, `stem-3`… when that is taken, and returns it.
+/// The folder is claimed with a single `create_dir`, so two restores at once never write into, or on
+/// failure remove, the same folder.
+pub fn restore_new(bundle: &[u8], commit: &str, base: &Path, stem: &str) -> Result<PathBuf, String> {
+    if !is_hex(commit) {
+        return Err(format!("not a commit id: {commit:?}"));
+    }
+    let mut n = 1;
+    let dest = loop {
+        let dest = if n == 1 { base.join(stem) } else { base.join(format!("{stem}-{n}")) };
+        match fs::create_dir(&dest) {
+            Ok(()) => break dest,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(format!("{}: {e}", dest.display())),
+        }
+    };
+    let result = fill(bundle, commit, &dest);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&dest);
+    }
+    result.map(|()| dest)
+}
+
+/// Writes `bundle` to a temp file and checks `commit` out of it into the empty folder `dest`.
+fn fill(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
+    temp_path("restore").and_then(|file| {
+        let result = fs::write(&file, bundle).map_err(|e| format!("write bundle: {e}")).and_then(|_| fetch_into(dest, &file, commit));
+        let _ = fs::remove_file(&file);
+        result
+    })
 }
 
 fn take_in(dir: &Path, project: &str, device: &str, snapshots: &Path, secrets: bool) -> Result<Option<String>, String> {
@@ -1143,6 +1171,40 @@ mod tests {
         let err = restore(b"", "abcdef0123456789", &dest).unwrap_err();
         assert!(err.contains("not empty"), "{err}");
         assert!(dest.join("keep.txt").exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// "Open copy" pressed twice: each restore gets its own folder, and one that fails removes only its own.
+    #[test]
+    fn restores_at_once_never_share_a_folder() {
+        if !git_available() {
+            return;
+        }
+        let base = root("restore-new");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        fs::write(proj.join("notes.txt"), "draft\n").unwrap();
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
+        let full = bundle_in(&proj, "p1", "n1", None, &snaps).unwrap();
+        let out = base.join("out");
+        fs::create_dir_all(&out).unwrap();
+
+        let made: Vec<PathBuf> = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..3).map(|_| s.spawn(|| restore_new(&full, &c, &out, "app").unwrap())).collect();
+            runs.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        let mut names: Vec<String> = made.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, ["app", "app-2", "app-3"]);
+        for dir in &made {
+            assert_eq!(fs::read_to_string(dir.join("notes.txt")).unwrap(), "draft\n");
+        }
+        // A broken copy takes only the folder it claimed.
+        assert!(restore_new(b"not a bundle", &c, &out, "app").is_err());
+        assert!(!out.join("app-4").exists());
+        assert!(out.join("app").join("notes.txt").exists());
 
         let _ = fs::remove_dir_all(&base);
     }
