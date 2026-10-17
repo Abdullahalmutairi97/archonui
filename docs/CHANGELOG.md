@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.7
+
+- The redesigned Appearance page is back: theme cards show a small picture of each theme, wallpaper tiles
+  sit full width under Image, and Titles and Text each get a font row with a Change button.
+- Background style and wallpaper work at any window opacity. Below 100% they used to give way to a flat
+  tint, so changing them did nothing; now every layer keeps its style and fades with the window.
+- The picked wallpaper stays when you change theme. A pick saved per theme by an older version moves over.
+
 ## 0.2.6
 
 - Skills, extensions and tools are marked with their agents. Every skill card shows which agents load it,

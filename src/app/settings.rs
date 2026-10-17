@@ -62,7 +62,7 @@ pub struct AppSettings {
     pub user_wallpapers: Vec<PathBuf>,
     /// The wallpaper picked instead of the theme's own. It stays when the theme changes.
     pub wallpaper: Option<PathBuf>,
-    /// Before 0.2.6, a wallpaper per theme (`theme_key`). `normalize` moves one into `wallpaper`.
+    /// Before 0.2.7, a wallpaper per theme (`theme_key`). `normalize` moves one into `wallpaper`.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub wallpapers: HashMap<String, PathBuf>,
     /// Gap between tiles, px.
