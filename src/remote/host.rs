@@ -44,6 +44,13 @@ pub fn serve(bind: SocketAddr) -> io::Result<()> {
 /// Takes the chats folder for this host alone, or says why it can't.
 fn lock_chats() -> Result<lock::Lock, String> {
     let dir = store::dir();
+    // Without HOME (a systemd service, say) the folder falls back to one under the working directory.
+    if dir.is_relative() {
+        return Err(format!(
+            "no home folder for the chats (they would go in {}); set HOME, or ARCHONUI_DATA_DIR and ARCHONUI_CONFIG_DIR",
+            dir.display()
+        ));
+    }
     match lock::try_lock(&dir, true) {
         Ok(Some(lock)) => Ok(lock),
         Ok(None) => Err(lock::busy_message(&dir, true)),
