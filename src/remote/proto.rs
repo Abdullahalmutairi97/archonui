@@ -268,6 +268,160 @@ mod tests {
         assert!(decode::<ClientMsg>(r#"{"type":"prompt","session":"s"}"#).is_err());
     }
 
+    /// Every message's exact JSON. Devices update at different times, so a change here breaks an
+    /// older peer: only add optional fields (`#[serde(default)]`) or new variants, never rename,
+    /// drop or retype a field. Rename and Delete are new, and only reach hosts that know them.
+    #[test]
+    fn every_message_keeps_its_wire_format() {
+        use serde_json::json;
+        let client: Vec<(ClientMsg, &str)> = vec![
+            (ClientMsg::Hello { device: "pc".into(), version: 1 }, r#"{"type":"hello","device":"pc","version":1}"#),
+            (ClientMsg::ListSessions, r#"{"type":"list_sessions"}"#),
+            (ClientMsg::Subscribe { session: "s1".into() }, r#"{"type":"subscribe","session":"s1"}"#),
+            (ClientMsg::Unsubscribe { session: "s1".into() }, r#"{"type":"unsubscribe","session":"s1"}"#),
+            (
+                ClientMsg::NewSession { agent: "claude".into(), cwd: "/w".into(), project: None },
+                r#"{"type":"new_session","agent":"claude","cwd":"/w","project":null}"#,
+            ),
+            (
+                ClientMsg::Prompt {
+                    session: "s1".into(),
+                    text: "hi".into(),
+                    mode: Some(Mode::Plan),
+                    model: Some("m".into()),
+                    effort: Some("high".into()),
+                    files: vec![RemoteFile { name: "a.txt".into(), data: "QQ==".into() }],
+                },
+                r#"{"type":"prompt","session":"s1","text":"hi","mode":"plan","model":"m","effort":"high","files":[{"name":"a.txt","data":"QQ=="}]}"#,
+            ),
+            (
+                ClientMsg::Prompt { session: "s1".into(), text: "hi".into(), mode: None, model: None, effort: None, files: Vec::new() },
+                r#"{"type":"prompt","session":"s1","text":"hi","mode":null,"model":null,"effort":null,"files":[]}"#,
+            ),
+            (ClientMsg::Cancel { session: "s1".into() }, r#"{"type":"cancel","session":"s1"}"#),
+            (ClientMsg::Draft { session: "s1".into(), text: "d".into() }, r#"{"type":"draft","session":"s1","text":"d"}"#),
+            (
+                ClientMsg::PutProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "AAA=".into() },
+                r#"{"type":"put_project","project":"p","name":"app","device":"n1","commit":"abc","bundle":"AAA="}"#,
+            ),
+            (
+                ClientMsg::PutChats { device: "n1".into(), sessions: vec![json!({"id": "c1"})] },
+                r#"{"type":"put_chats","device":"n1","sessions":[{"id":"c1"}]}"#,
+            ),
+            (ClientMsg::ListCloud, r#"{"type":"list_cloud"}"#),
+            (ClientMsg::GetProject { project: "p".into(), device: "n1".into() }, r#"{"type":"get_project","project":"p","device":"n1"}"#),
+            (ClientMsg::GetChats { device: "n1".into() }, r#"{"type":"get_chats","device":"n1"}"#),
+            (
+                ClientMsg::Answer { session: "s1".into(), request: 3, allow: true, always: false },
+                r#"{"type":"answer","session":"s1","request":3,"allow":true,"always":false}"#,
+            ),
+            (ClientMsg::Rename { session: "s1".into(), title: "T".into() }, r#"{"type":"rename","session":"s1","title":"T"}"#),
+            (ClientMsg::Delete { session: "s1".into() }, r#"{"type":"delete","session":"s1"}"#),
+        ];
+        for (msg, wire) in client {
+            assert_eq!(encode(&msg), wire);
+            assert_eq!(decode::<ClientMsg>(wire).unwrap(), msg, "{wire}");
+        }
+
+        let summary = SessionSummary {
+            id: "s1".into(),
+            title: "T".into(),
+            agent: "claude".into(),
+            project: Some("p".into()),
+            cwd: "/w".into(),
+            updated: 5,
+            busy: false,
+            messages: 2,
+        };
+        let summary_wire = r#"{"id":"s1","title":"T","agent":"claude","project":"p","cwd":"/w","updated":5,"busy":false,"messages":2}"#;
+        let cloud = CloudProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), updated: 7 };
+        let host: Vec<(HostMsg, String)> = vec![
+            (HostMsg::Welcome { device: "vps".into(), version: 1 }, r#"{"type":"welcome","device":"vps","version":1}"#.into()),
+            (HostMsg::Sessions { sessions: vec![summary.clone()] }, format!(r#"{{"type":"sessions","sessions":[{summary_wire}]}}"#)),
+            (HostMsg::Snapshot { session: json!({"id": "s1"}), busy: true }, r#"{"type":"snapshot","session":{"id":"s1"},"busy":true}"#.into()),
+            (HostMsg::Created { session: summary }, format!(r#"{{"type":"created","session":{summary_wire}}}"#)),
+            (HostMsg::Started { session: "s1".into(), text: "hi".into() }, r#"{"type":"started","session":"s1","text":"hi"}"#.into()),
+            (
+                HostMsg::Event { session: "s1".into(), out: Some(Out::Text("Hel".into())) },
+                r#"{"type":"event","session":"s1","out":{"type":"text","data":"Hel"}}"#.into(),
+            ),
+            (HostMsg::Event { session: "s1".into(), out: Some(Out::Break) }, r#"{"type":"event","session":"s1","out":{"type":"break"}}"#.into()),
+            (
+                HostMsg::Event { session: "s1".into(), out: Some(Out::Final("Hello".into())) },
+                r#"{"type":"event","session":"s1","out":{"type":"final","data":"Hello"}}"#.into(),
+            ),
+            (
+                HostMsg::Event { session: "s1".into(), out: Some(Out::Session("x".into())) },
+                r#"{"type":"event","session":"s1","out":{"type":"session","data":"x"}}"#.into(),
+            ),
+            (
+                HostMsg::Event { session: "s1".into(), out: Some(Out::ToolStart { id: "t".into(), kind: ToolKind::Run, target: "ls".into() }) },
+                r#"{"type":"event","session":"s1","out":{"type":"tool_start","data":{"id":"t","kind":"run","target":"ls"}}}"#.into(),
+            ),
+            (
+                HostMsg::Event { session: "s1".into(), out: Some(Out::ToolEnd { id: "t".into(), ok: true, detail: None }) },
+                r#"{"type":"event","session":"s1","out":{"type":"tool_end","data":{"id":"t","ok":true,"detail":null}}}"#.into(),
+            ),
+            (
+                HostMsg::Finished { session: "s1".into(), error: None, stopped: false },
+                r#"{"type":"finished","session":"s1","error":null,"stopped":false}"#.into(),
+            ),
+            (
+                HostMsg::Finished { session: "s1".into(), error: Some("signal: 15 (SIGTERM)".into()), stopped: true },
+                r#"{"type":"finished","session":"s1","error":"signal: 15 (SIGTERM)","stopped":true}"#.into(),
+            ),
+            (HostMsg::Draft { session: "s1".into(), text: "d".into() }, r#"{"type":"draft","session":"s1","text":"d"}"#.into()),
+            (HostMsg::Error { message: "no".into() }, r#"{"type":"error","message":"no"}"#.into()),
+            (
+                HostMsg::Stored { project: "p".into(), device: "n1".into(), commit: "abc".into() },
+                r#"{"type":"stored","project":"p","device":"n1","commit":"abc"}"#.into(),
+            ),
+            (
+                HostMsg::Cloud { projects: vec![cloud], chats: vec!["n1".into()] },
+                r#"{"type":"cloud","projects":[{"project":"p","name":"app","device":"n1","commit":"abc","updated":7}],"chats":["n1"]}"#.into(),
+            ),
+            (
+                HostMsg::ProjectData { project: "p".into(), device: "n1".into(), commit: "abc".into(), bundle: "AAA=".into() },
+                r#"{"type":"project_data","project":"p","device":"n1","commit":"abc","bundle":"AAA="}"#.into(),
+            ),
+            (
+                HostMsg::Chats { device: "n1".into(), sessions: vec![json!({"id": "c1"})] },
+                r#"{"type":"chats","device":"n1","sessions":[{"id":"c1"}]}"#.into(),
+            ),
+            (
+                HostMsg::Approval { session: "s1".into(), request: 3, tool: "Bash".into(), input: json!({"command": "ls"}) },
+                r#"{"type":"approval","session":"s1","request":3,"tool":"Bash","input":{"command":"ls"}}"#.into(),
+            ),
+            (HostMsg::ApprovalDone { session: "s1".into(), request: 3 }, r#"{"type":"approval_done","session":"s1","request":3}"#.into()),
+            (HostMsg::Renamed { session: "s1".into(), title: "T".into() }, r#"{"type":"renamed","session":"s1","title":"T"}"#.into()),
+            (HostMsg::Deleted { session: "s1".into() }, r#"{"type":"deleted","session":"s1"}"#.into()),
+        ];
+        for (msg, wire) in host {
+            assert_eq!(encode(&msg), wire);
+            assert_eq!(decode::<HostMsg>(&wire).unwrap(), msg, "{wire}");
+        }
+    }
+
+    /// Frames as older peers send them (a 0dce615 host has no `stopped`), and as newer ones might
+    /// (an extra field), still read here.
+    #[test]
+    fn frames_from_older_peers_still_decode() {
+        let old_finished = r#"{"type":"finished","session":"s1","error":"signal: 15 (SIGTERM)"}"#;
+        assert_eq!(
+            decode::<HostMsg>(old_finished).unwrap(),
+            HostMsg::Finished { session: "s1".into(), error: Some("signal: 15 (SIGTERM)".into()), stopped: false }
+        );
+        // A field this version does not know, from a newer peer, is ignored rather than refused.
+        let newer = r#"{"type":"started","session":"s1","text":"hi","by":"laptop"}"#;
+        assert_eq!(decode::<HostMsg>(newer).unwrap(), HostMsg::Started { session: "s1".into(), text: "hi".into() });
+        let newer = r#"{"type":"cancel","session":"s1","why":"esc"}"#;
+        assert_eq!(decode::<ClientMsg>(newer).unwrap(), ClientMsg::Cancel { session: "s1".into() });
+        let bare = r#"{"type":"prompt","session":"s1","text":"hi"}"#;
+        assert!(matches!(decode::<ClientMsg>(bare).unwrap(), ClientMsg::Prompt { files, mode: None, .. } if files.is_empty()));
+        // `out` must still be there: an older host always sends it.
+        assert!(decode::<HostMsg>(r#"{"type":"event","session":"s1"}"#).is_err());
+    }
+
     #[test]
     fn an_older_host_refusing_a_request_is_recognised() {
         // Word for word what hosts at 0dce615 (no `Unknown` yet) and d30ae41 answer a `rename`.
