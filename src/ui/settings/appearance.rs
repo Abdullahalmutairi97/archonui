@@ -342,7 +342,7 @@ impl Shell {
     fn presets_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let current = self.state.settings.theme.clone();
-        let mut grid = div().grid().grid_cols(6).gap(px(10.));
+        let mut grid = div().grid().grid_cols(super::columns(self.settings.body_w, 112., 10., 6)).gap(px(10.));
         for (i, preset) in presets().iter().enumerate() {
             let id = preset.id.to_string();
             let active = id == current;
@@ -651,7 +651,7 @@ impl Shell {
             };
             let mut groups = div().flex().flex_col().gap(px(12.));
             for (group, families) in FONT_GROUPS {
-                let mut grid = div().grid().grid_cols(5).gap(px(6.));
+                let mut grid = div().grid().grid_cols(super::columns(self.settings.body_w, 110., 6., 5)).gap(px(6.));
                 for family in families.iter().copied() {
                     let active = in_use == family;
                     grid = grid.child(
