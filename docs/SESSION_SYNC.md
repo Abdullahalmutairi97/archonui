@@ -32,7 +32,7 @@ Running `--serve`:
 
 - It needs a home folder for its chats (`HOME`, or `ARCHONUI_DATA_DIR` and `ARCHONUI_CONFIG_DIR`), so
   give a systemd unit `Environment=HOME=/root` or `User=`. The cloud store is
-  `<data>/cloud`, 0700. With `ARCHONUI_DATA_DIR=/x/sessions` it is `/x/cloud`.
+  `<data>/cloud`. With `ARCHONUI_DATA_DIR=/x/sessions` it is `/x/cloud`.
 - Ctrl-C, `kill` and `systemctl stop` stop running replies as Stop does, save them, and end the agents.
   `kill -9` cannot: the agent keeps running and the reply so far is lost.
 - It refuses to share a chats folder with the app or another `--serve` on the same device; give one
