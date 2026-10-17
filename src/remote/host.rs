@@ -711,6 +711,12 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
     // The headless host keeps the cloud copy: `--serve` is meant for the always-on box.
     let cloud = Store::open_default();
     eprintln!("archonui host listening on {}", hub.local_addr());
+    let ready: Vec<&str> = agents.iter().filter(|a| a.enabled).map(|a| a.harness.id()).collect();
+    if ready.is_empty() {
+        eprintln!("archonui host: no agent is installed and enabled here, so chats can be read but not run (see --detect)");
+    } else {
+        eprintln!("archonui host: agents {}", ready.join(", "));
+    }
     let from_requests = work_tx.clone();
     thread::spawn(move || {
         while let Ok(req) = smol::block_on(requests.recv()) {
