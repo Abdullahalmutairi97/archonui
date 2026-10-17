@@ -418,6 +418,16 @@ impl Shell {
         }
     }
 
+    /// Tells the devices following chat `id` that a prompt typed here could not start, so their copy
+    /// gets the prompt and the error too. `before` is the chat's message count before the prompt.
+    pub(super) fn share_start_failed(&self, id: &str, before: usize) {
+        if let Some(hub) = &self.remote.hub {
+            for msg in host::start_failed(&self.state, id, before) {
+                hub.broadcast(id, &msg, None);
+            }
+        }
+    }
+
     /// Connects to `device` off the UI thread, then follows its messages.
     fn connect_device(&mut self, device: Device, me: String, port: u16, cx: &mut Context<Self>) {
         self.remote.connecting.insert(device.id.clone());
