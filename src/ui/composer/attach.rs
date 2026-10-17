@@ -35,8 +35,10 @@ impl Shell {
             self.close_popover(id, cx);
             return;
         }
-        let Some(cwd) = self.state.session(id).map(|s| s.cwd.clone()) else { return };
-        self.composers.set_recent(id, recent_files(&cwd));
+        let Some(s) = self.state.session(id) else { return };
+        // A chat on another device has its folder there; this device's files at that path aren't its.
+        let recent = if s.origin.is_some() { Vec::new() } else { recent_files(&s.cwd) };
+        self.composers.set_recent(id, recent);
         self.open_popover(id, Pop::Attach, cx);
     }
 
@@ -112,6 +114,17 @@ impl Shell {
         let mut rows: Vec<AnyElement> = Vec::new();
         let cwd = self.state.session(id).map(|s| s.cwd.clone()).unwrap_or_default();
         let home = std::env::var_os("HOME").map(PathBuf::from);
+        if let Some(device) = self.chat_device(id) {
+            rows.push(
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .text_size(px(11.5))
+                    .text_color(theme.muted.to_hsla())
+                    .child(format!("Recent files are on {device}; files attached here are sent there."))
+                    .into_any_element(),
+            );
+        }
         for (i, path) in self.composers.recent(id).iter().enumerate() {
             let (id, path) = (id.to_string(), path.clone());
             let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());

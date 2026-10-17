@@ -242,6 +242,8 @@ impl Shell {
     pub(super) fn run_local(&mut self, id: &str, name: &str, arg: &str, cx: &mut Context<Self>) -> bool {
         let Some(s) = self.state.session(id) else { return false };
         let (cwd, agent) = (s.cwd.clone(), s.agent.clone());
+        // A chat on another device has its folder there, not here.
+        let remote = self.chat_device(id);
         match name {
             "new" => self.new_session_split(cx),
             "stop" => {
@@ -275,11 +277,15 @@ impl Shell {
             },
             "mode" => self.open_popover(id, Pop::Model, cx),
             "preview" if arg.is_empty() => self.show_tool_tab(RightTab::Browser, cx),
-            "preview" => self.open_url(&crate::preview::normalize_address(arg, &cwd), cx),
+            "preview" => match preview_target(arg, &cwd, remote.as_deref()) {
+                Ok(url) => self.open_url(&url, cx),
+                Err(message) => self.toast(message, cx),
+            },
             "terminal" => self.show_tool_tab(RightTab::Terminal, cx),
             "edit" => {
                 self.show_tool_tab(RightTab::Ide, cx);
-                if !arg.is_empty() {
+                // The editor tab shows a note for a remote chat; the file is on its device.
+                if !arg.is_empty() && remote.is_none() {
                     self.open_in_editor(cwd.join(arg), cx);
                 }
             }
@@ -293,10 +299,37 @@ impl Shell {
         self.agents.iter().find(|a| a.harness.id() == agent).map_or(&Mode::ALL[..], |a| a.harness.modes())
     }
 }
+/// Where `/preview arg` goes for a chat in `cwd`. For a chat on `remote`, a path relative to its
+/// folder is refused: that folder is on the other device, and this one's copy of it isn't the chat's.
+fn preview_target(arg: &str, cwd: &std::path::Path, remote: Option<&str>) -> Result<String, String> {
+    let url = crate::preview::normalize_address(arg, cwd);
+    let full_path = arg.starts_with('/') || arg.starts_with("~/") || arg.to_ascii_lowercase().starts_with("file://");
+    match remote {
+        Some(device) if url.starts_with("file://") && !full_path => Err(format!(
+            "This chat's folder is on {device}. /preview takes a web address or a full path on this device."
+        )),
+        _ => Ok(url),
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_refuses_paths_relative_to_a_remote_chats_folder() {
+        let cwd = std::env::temp_dir().join(format!("archonui-preview-{}", std::process::id()));
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("index.html"), "<p>hi</p>").unwrap();
+        for relative in ["./index.html", "../x.html", "index.html"] {
+            assert!(preview_target(relative, &cwd, Some("laptop")).is_err(), "{relative}");
+            assert!(preview_target(relative, &cwd, None).is_ok_and(|u| u.starts_with("file://")), "{relative}");
+        }
+        for fine in ["https://example.com", "localhost:3000", "/tmp/page.html", "~/page.html"] {
+            assert_eq!(preview_target(fine, &cwd, Some("laptop")), preview_target(fine, &cwd, None), "{fine}");
+        }
+        std::fs::remove_dir_all(&cwd).ok();
+    }
 
     fn entry(name: &str, hint: &str) -> PaletteEntry {
         PaletteEntry {
