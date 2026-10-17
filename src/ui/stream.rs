@@ -64,6 +64,8 @@ struct Item {
     role: Role,
     tools: Vec<ToolCall>,
     attachments: Vec<Attachment>,
+    /// Whether the message's files are on this machine: false in a chat shown from another device.
+    local_files: bool,
     thought_secs: Option<u32>,
     took_secs: Option<u32>,
     /// Registry id of the agent that wrote a reply.
@@ -124,13 +126,14 @@ struct Lightbox {
 }
 
 impl Item {
-    fn from_message(message: &Message, cwd: &Path) -> Self {
+    /// `cwd` is `None` for a chat on another device, whose file paths aren't this machine's.
+    fn from_message(message: &Message, cwd: Option<&Path>) -> Self {
         let (progress, blocks) = match (message.role, message.final_at) {
             (Role::Agent, Some(at)) if message.text.is_char_boundary(at) => {
                 let (progress, next) = markdown::parse_from(&message.text[..at], cwd, 0);
                 (progress, markdown::parse_from(&message.text[at..], cwd, next).0)
             }
-            (Role::Agent, _) => (Vec::new(), markdown::parse(&message.text, cwd)),
+            (Role::Agent, _) => (Vec::new(), markdown::parse_from(&message.text, cwd, 0).0),
             (Role::User | Role::Error, _) => {
                 (Vec::new(), vec![Block::Text(Text { id: 0, heading: None, text: message.text.clone(), marks: Vec::new() })])
             }
@@ -140,6 +143,7 @@ impl Item {
             role: message.role,
             tools: message.tools.clone(),
             attachments: message.attachments.clone(),
+            local_files: cwd.is_some(),
             thought_secs: message.thought_secs,
             took_secs: message.took_secs,
             agent: message.agent.clone(),
@@ -196,12 +200,15 @@ impl StreamUi {
         let previous = entry.items.clone();
         let mut items: Vec<Rc<Item>> = Vec::with_capacity(env.session.messages.len());
         let mut changed = Vec::new();
+        // A remote chat's image paths are its device's; none is read from this machine.
+        let cwd = env.session.origin.is_none().then_some(env.session.cwd.as_path());
         for (ix, message) in env.session.messages.iter().enumerate() {
             match previous.get(ix) {
-                Some(item) if item.sig == signature(message) => items.push(item.clone()),
+                // A chat continued here from another device draws its files again.
+                Some(item) if item.sig == signature(message) && item.local_files == cwd.is_some() => items.push(item.clone()),
                 _ => {
                     changed.push(ix);
-                    items.push(Rc::new(Item::from_message(message, &env.session.cwd)));
+                    items.push(Rc::new(Item::from_message(message, cwd)));
                 }
             }
         }

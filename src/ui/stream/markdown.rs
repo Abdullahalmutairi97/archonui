@@ -88,18 +88,22 @@ pub enum Source {
     Local(PathBuf),
     Missing(PathBuf),
     Remote(String),
+    /// A file on the device a remote chat runs on; never read here.
+    Elsewhere(String),
 }
 
 type Events<'a> = Peekable<Parser<'a>>;
 
 /// Parses an agent reply. Relative image paths resolve against `cwd`, the session's folder.
+#[cfg(test)]
 pub fn parse(markdown: &str, cwd: &Path) -> Vec<Block> {
-    parse_from(markdown, cwd, 0).0
+    parse_from(markdown, Some(cwd), 0).0
 }
 
 /// `parse` with text ids starting at `first_id`, so two parts of one message keep distinct ids.
-/// Returns the blocks and the next free id.
-pub fn parse_from(markdown: &str, cwd: &Path, first_id: usize) -> (Vec<Block>, usize) {
+/// `cwd` is `None` for a chat on another device: its file paths are not this machine's, so no local
+/// file is read for them. Returns the blocks and the next free id.
+pub fn parse_from(markdown: &str, cwd: Option<&Path>, first_id: usize) -> (Vec<Block>, usize) {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut events = Parser::new_ext(markdown, options).peekable();
     let mut ids = first_id;
@@ -108,7 +112,7 @@ pub fn parse_from(markdown: &str, cwd: &Path, first_id: usize) -> (Vec<Block>, u
 }
 
 /// The blocks up to the end of the enclosing container, which is consumed.
-fn blocks(events: &mut Events, ids: &mut usize, cwd: &Path) -> Vec<Block> {
+fn blocks(events: &mut Events, ids: &mut usize, cwd: Option<&Path>) -> Vec<Block> {
     let mut out = Vec::new();
     while let Some(event) = events.peek().cloned() {
         match event {
@@ -208,7 +212,7 @@ fn blocks(events: &mut Events, ids: &mut usize, cwd: &Path) -> Vec<Block> {
 
 /// Adds a folded inline run as a text block, then the images that came with it and any bare image
 /// paths in its text.
-fn push_inline(out: &mut Vec<Block>, (text, images): (Text, Vec<Block>), cwd: &Path) {
+fn push_inline(out: &mut Vec<Block>, (text, images): (Text, Vec<Block>), cwd: Option<&Path>) {
     if text.text.trim().is_empty() {
         out.extend(images);
         return;
@@ -221,7 +225,7 @@ fn push_inline(out: &mut Vec<Block>, (text, images): (Text, Vec<Block>), cwd: &P
 
 /// The inline text up to `until` (consumed), or up to the first block-level event when `until` is `None`.
 /// Returns the text and the images it contained.
-fn inline(events: &mut Events, ids: &mut usize, cwd: &Path, until: Option<TagEnd>) -> (Text, Vec<Block>) {
+fn inline(events: &mut Events, ids: &mut usize, cwd: Option<&Path>, until: Option<TagEnd>) -> (Text, Vec<Block>) {
     let mut text = String::new();
     let mut marks = Vec::new();
     // Open inline containers: where their text starts, and the mark to record at their end.
@@ -317,7 +321,7 @@ fn is_line_break_tag(html: &str) -> bool {
 }
 
 /// A table: the head row, then body rows, each cell as inline text.
-fn table(events: &mut Events, ids: &mut usize, cwd: &Path) -> Block {
+fn table(events: &mut Events, ids: &mut usize, cwd: Option<&Path>) -> Block {
     let mut head = Vec::new();
     let mut rows = Vec::new();
     let mut row = Vec::new();
@@ -335,7 +339,7 @@ fn table(events: &mut Events, ids: &mut usize, cwd: &Path) -> Block {
 }
 
 /// The block for a fenced code block's info string and body (chat.md §1.6–§1.8).
-fn fence(info: &str, body: &str, cwd: &Path) -> Block {
+fn fence(info: &str, body: &str, cwd: Option<&Path>) -> Block {
     let info = info.trim();
     let (lang, rest) = info.split_once(char::is_whitespace).map_or((info, ""), |(l, r)| (l, r.trim()));
     match lang {
@@ -357,13 +361,13 @@ fn fence(info: &str, body: &str, cwd: &Path) -> Block {
     }
 }
 
-fn markdown_image(dest: &str, alt: &str, cwd: &Path) -> Image {
+fn markdown_image(dest: &str, alt: &str, cwd: Option<&Path>) -> Image {
     let name = if alt.trim().is_empty() { basename(dest) } else { alt.trim().to_string() };
     Image { source: source_of(dest, cwd), name, caption: String::new() }
 }
 
 /// Image paths in running text that exist on disk, in order. Only whole words are considered.
-fn bare_images(text: &str, cwd: &Path) -> Vec<Block> {
+fn bare_images(text: &str, cwd: Option<&Path>) -> Vec<Block> {
     text.split_whitespace()
         .map(|word| word.trim_matches(|c: char| "`\"'()[]<>,;:".contains(c)).trim_end_matches('.'))
         .filter(|word| is_image_path(word))
@@ -379,10 +383,12 @@ fn is_image_path(word: &str) -> bool {
 }
 
 /// Where the image at `path` comes from: a URL, a file under `cwd` (or absolute), or a missing file.
-fn source_of(path: &str, cwd: &Path) -> Source {
+/// Without `cwd` (a chat on another device) a file path is never looked up here.
+fn source_of(path: &str, cwd: Option<&Path>) -> Source {
     if path.starts_with("http://") || path.starts_with("https://") {
         return Source::Remote(path.to_string());
     }
+    let Some(cwd) = cwd else { return Source::Elsewhere(path.to_string()) };
     let full = if Path::new(path).is_absolute() { PathBuf::from(path) } else { cwd.join(path) };
     if full.is_file() {
         Source::Local(full)
@@ -532,5 +538,21 @@ mod tests {
         let blocks = parse("> quoted\n\n---", &cwd());
         assert!(matches!(&blocks[0], Block::Quote(inner) if text(&inner[0]).text == "quoted"));
         assert_eq!(blocks[1], Block::Rule);
+    }
+
+    #[test]
+    fn a_remote_chats_image_paths_are_never_read_here() {
+        let md = "![logo](assets/logo/archonui-mark.png)\n\nSee assets/logo/archonui-mark.png and ![x](https://x.y/a.png)";
+        let local = parse(md, &cwd());
+        assert!(local.iter().any(|b| matches!(b, Block::Image(i) if matches!(i.source, Source::Local(_)))));
+        let (remote, _) = parse_from(md, None, 0);
+        let sources: Vec<&Source> = remote.iter().filter_map(|b| if let Block::Image(i) = b { Some(&i.source) } else { None }).collect();
+        assert_eq!(
+            sources,
+            [&Source::Elsewhere("assets/logo/archonui-mark.png".into()), &Source::Remote("https://x.y/a.png".into())],
+            "the bare path is dropped, the link shown as elsewhere, the URL kept"
+        );
+        let (fenced, _) = parse_from("```image /etc/passwd.png x.png\ncap\n```", None, 0);
+        assert!(matches!(&fenced[0], Block::Image(i) if i.source == Source::Elsewhere("/etc/passwd.png".into())));
     }
 }
