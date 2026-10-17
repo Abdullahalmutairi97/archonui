@@ -3,7 +3,7 @@
 //! `archonui --remote` command line on top of it.
 
 use super::proto::{decode, encode, ClientMsg, HostMsg, VERSION};
-use super::DEFAULT_PORT;
+use super::{tailscale, Device, DEFAULT_PORT};
 use crate::engine::Out;
 use std::{
     io::{self, Write},
@@ -183,6 +183,10 @@ pub fn run(args: &[String]) -> i32 {
         _ => return usage(),
     };
     let (addr, port) = parse_target(target);
+    let addr = match resolve(&addr, port) {
+        Ok(addr) => addr,
+        Err(e) => return fail(e),
+    };
     let me = super::local_host_name().unwrap_or_else(|| "client".to_string());
     let client = match Client::connect(&addr, port, &me) {
         Ok(client) => client,
@@ -213,6 +217,32 @@ fn parse_target(s: &str) -> (String, u16) {
         }
     }
     (s.to_string(), DEFAULT_PORT)
+}
+
+/// The address to connect to for `host`. A name the system resolves (an IP, or a MagicDNS name) is
+/// used as given. Otherwise, as when MagicDNS is off, the tailnet device of that name is looked up
+/// with `tailscale status`; only then is Tailscale run.
+fn resolve(host: &str, port: u16) -> Result<String, String> {
+    if (host, port).to_socket_addrs().is_ok_and(|mut a| a.next().is_some()) {
+        return Ok(host.to_string());
+    }
+    let tailnet = tailscale::discover().map_err(|e| format!("cannot find {host}: it is not a known host name, and {e}"))?;
+    find_device(&tailnet, host)
+        .map(|d| d.addr.clone())
+        .ok_or_else(|| format!("cannot find {host}: no host or tailnet device has that name"))
+}
+
+/// The device in `tailnet` named `name`: its host name, its MagicDNS name, or that name's first label.
+fn find_device<'a>(tailnet: &'a tailscale::Tailnet, name: &str) -> Option<&'a Device> {
+    let name = name.trim_end_matches('.');
+    if name.is_empty() {
+        return None;
+    }
+    std::iter::once(&tailnet.me).chain(tailnet.peers.iter().map(|p| &p.device)).find(|d| {
+        d.name.eq_ignore_ascii_case(name)
+            || d.dns_name.eq_ignore_ascii_case(name)
+            || d.dns_name.split('.').next().is_some_and(|label| !label.is_empty() && label.eq_ignore_ascii_case(name))
+    })
 }
 
 fn usage() -> i32 {
@@ -453,5 +483,26 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(Client::connect("127.0.0.1", port, "test").is_err());
         assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    #[test]
+    fn devices_are_found_by_host_or_magicdns_name() {
+        let device = |name: &str, dns: &str, addr: &str| Device { id: addr.into(), name: name.into(), dns_name: dns.into(), addr: addr.into() };
+        let peer = |d: Device| tailscale::Peer { device: d, online: true, os: "linux".into() };
+        let tailnet = tailscale::Tailnet {
+            me: device("minipc", "minipc.tail1.ts.net", "100.0.0.1"),
+            peers: vec![
+                peer(device("Winbox", "winbox-1.tail1.ts.net", "100.0.0.2")),
+                peer(device("ashpc", "", "100.0.0.3")),
+            ],
+        };
+        let addr = |name| find_device(&tailnet, name).map(|d| d.addr.as_str());
+        assert_eq!(addr("minipc"), Some("100.0.0.1"));
+        assert_eq!(addr("winbox"), Some("100.0.0.2"), "host name, any case");
+        assert_eq!(addr("winbox-1"), Some("100.0.0.2"), "MagicDNS label");
+        assert_eq!(addr("winbox-1.tail1.ts.net."), Some("100.0.0.2"), "full MagicDNS name");
+        assert_eq!(addr("ashpc"), Some("100.0.0.3"), "MagicDNS off");
+        assert_eq!(addr("nothere"), None);
+        assert_eq!(addr(""), None);
     }
 }
