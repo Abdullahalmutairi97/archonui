@@ -28,8 +28,19 @@ Tailscale works exactly as before: no listener, no `tailscale` calls, no backgro
    file; or pass `--bind <tailscale-ip>:7420` to run without them. A `--serve` device keeps a cloud
    store, so it can be the cloud.
 
+Running `--serve`:
+
+- It needs a home folder for its chats (`HOME`, or `ARCHONUI_DATA_DIR` and `ARCHONUI_CONFIG_DIR`), so
+  give a systemd unit `Environment=HOME=/root` or `User=`. The cloud store is
+  `<data>/cloud`, 0700. With `ARCHONUI_DATA_DIR=/x/sessions` it is `/x/cloud`.
+- Ctrl-C, `kill` and `systemctl stop` stop running replies as Stop does, save them, and end the agents.
+  `kill -9` cannot: the agent keeps running and the reply so far is lost.
+- It refuses to share a chats folder with the app or another `--serve` on the same device; give one
+  its own `ARCHONUI_DATA_DIR`. The app likewise exits while a `--serve` holds the folder.
+
 Command line, handy for testing: `archonui --remote <device> list | show <chat> | ask <chat> <prompt> |
-new <agent> <folder> <prompt>`.
+new <agent> <folder> <prompt>`. `<device>` is a MagicDNS name or an address; when the name does not
+resolve (MagicDNS off), it is looked up in `tailscale status` by host name.
 
 ## How it works
 
