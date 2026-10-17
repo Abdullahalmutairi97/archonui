@@ -7,7 +7,7 @@ use super::DEFAULT_PORT;
 use crate::engine::Out;
 use std::{
     io::{self, Write},
-    net::TcpStream,
+    net::{TcpStream, ToSocketAddrs},
     path::PathBuf,
     sync::mpsc::{self, TryRecvError},
     thread,
@@ -17,8 +17,10 @@ use tungstenite::{stream::MaybeTlsStream, Message, WebSocket};
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 
-/// How long the host has to answer `Hello`.
+/// How long the host has to answer `Hello`, and the WebSocket handshake before it.
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a TCP connect may take. An offline tailnet device otherwise holds the caller for minutes.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the IO thread waits for a frame before it sends what is queued.
 const POLL: Duration = Duration::from_millis(50);
 
@@ -41,12 +43,14 @@ impl Client {
     /// Connects to `ws://{addr}:{port}`, sends `Hello` as `this_device`, waits up to 5 s for
     /// `Welcome`, then starts the IO thread.
     pub fn connect(addr: &str, port: u16, this_device: &str) -> Result<Client, String> {
+        let stream = connect_tcp(addr, port)?;
+        stream.set_read_timeout(Some(WELCOME_TIMEOUT)).map_err(|e| e.to_string())?;
         let url = ws_url(addr, port);
-        let (mut ws, _) = tungstenite::client::connect_with_config(url.as_str(), Some(super::proto::ws_config()), 3)
-            .map_err(|e| format!("cannot connect to {addr}:{port}: {e}"))?;
+        let (mut ws, _) =
+            tungstenite::client::client_with_config(url.as_str(), MaybeTlsStream::Plain(stream), Some(super::proto::ws_config()))
+                .map_err(|e| format!("cannot connect to {addr}:{port}: {e}"))?;
         let hello = encode(&ClientMsg::Hello { device: this_device.to_string(), version: VERSION });
         ws.send(Message::Text(hello.into())).map_err(|e| format!("cannot send Hello: {e}"))?;
-        set_read_timeout(&ws, Some(WELCOME_TIMEOUT))?;
         let host = read_welcome(&mut ws)?;
         set_read_timeout(&ws, Some(POLL))?;
 
@@ -69,6 +73,20 @@ fn ws_url(addr: &str, port: u16) -> String {
     } else {
         format!("ws://{addr}:{port}")
     }
+}
+
+/// Opens a TCP connection to `addr:port`, giving each address it resolves to up to `CONNECT_TIMEOUT`.
+fn connect_tcp(addr: &str, port: u16) -> Result<TcpStream, String> {
+    let host = addr.trim_start_matches('[').trim_end_matches(']');
+    let addrs = (host, port).to_socket_addrs().map_err(|e| format!("cannot find {addr}: {e}"))?;
+    let mut error = format!("cannot find {addr}");
+    for a in addrs {
+        match TcpStream::connect_timeout(&a, CONNECT_TIMEOUT) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => error = format!("cannot connect to {addr}:{port}: {e}"),
+        }
+    }
+    Err(error)
 }
 
 /// Sets the read timeout of a plain (non-TLS) socket. Other streams are left alone.
@@ -425,5 +443,15 @@ mod tests {
         };
         let client = Client::connect("::1", port, "me").unwrap();
         assert_eq!(client.host, "host");
+    }
+
+    #[test]
+    fn a_silent_host_times_out() {
+        // Takes the TCP connection (the backlog does) but never answers the WebSocket handshake.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let started = std::time::Instant::now();
+        assert!(Client::connect("127.0.0.1", port, "test").is_err());
+        assert!(started.elapsed() < Duration::from_secs(15));
     }
 }
