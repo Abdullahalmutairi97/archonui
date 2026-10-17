@@ -501,11 +501,14 @@ impl Approvals {
         }
     }
 
-    /// Applies a client's `Answer` to a request waiting in its chat. Returns false when none matches, so
-    /// `handle` refuses the message. With `always`, the tool is allowed for the rest of the session, and the
+    /// Applies a client's `Answer` to a request waiting in its chat, from a connection following that chat.
+    /// Returns false when none matches, so `handle` refuses the message. With `always`, the tool is allowed for the rest of the session, and the
     /// other waiting requests for it are allowed too.
     fn answer(&mut self, req: &Request, allowances: &approve::Allowances, hub: &Hub) -> bool {
         let ClientMsg::Answer { session, request, allow, always } = &req.msg else { return false };
+        if !hub.follows(req.conn, session) {
+            return false;
+        }
         let Some(tool) = self.waiting.get(request).filter(|r| &r.session == session).map(|r| r.tool_name.clone()) else {
             return false;
         };
@@ -904,6 +907,15 @@ mod tests {
             other => panic!("expected an error, got {other:?}"),
         }
         assert!(verdict.try_recv().is_err(), "only one verdict is ever sent");
+        assert!(!allowances.allowed("s1", "Bash"));
+
+        // A connection that doesn't follow the chat can't answer for it, even with the right ids.
+        let (req, verdict) = approve::forwarded("s1".into(), "Bash".into(), serde_json::json!({}));
+        let id = approvals.add(req, &hub);
+        hub.unsubscribe(conns[1], "s1");
+        let stranger = Request { conn: conns[1], msg: ClientMsg::Answer { session: "s1".into(), request: id, allow: true, always: true } };
+        assert!(!approvals.answer(&stranger, &allowances, &hub));
+        assert!(verdict.try_recv().is_err());
         assert!(!allowances.allowed("s1", "Bash"));
     }
 
