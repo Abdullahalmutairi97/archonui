@@ -69,6 +69,9 @@ pub struct RemoteUi {
     sending: HashSet<String>,
     /// Cloud copy errors already shown, so one that repeats every round shows once.
     copy_errors: HashSet<String>,
+    /// Projects too big for one message to the cloud. Skipped until the cloud changes, rather than
+    /// packed again, minutes of work for a big history, every round.
+    too_big: HashSet<String>,
     /// A copy to the cloud is being prepared.
     backing_up: bool,
     /// A reply ended while a copy was being prepared: copy again once it is sent.
@@ -100,6 +103,20 @@ impl RemoteUi {
     fn forget_copies(&mut self) {
         self.pushed.clear();
         self.sending.clear();
+        self.too_big.clear();
+    }
+
+    /// Project `project` (`name`) needs `bytes` to copy, more than one message holds: it is no longer
+    /// tried. Returns what to show, once.
+    fn copy_too_big(&mut self, project: String, name: &str, bytes: u64) -> Option<String> {
+        eprintln!("archonui: cloud copy: {name} needs {} MB, more than the {} MB one copy can carry", bytes >> 20, proto::MAX_BUNDLE_BYTES >> 20);
+        self.too_big.insert(project);
+        let text = format!(
+            "Cloud copy: {name} is too big to copy ({} MB; at most {} MB fits), so it is left out",
+            bytes >> 20,
+            proto::MAX_BUNDLE_BYTES >> 20
+        );
+        self.copy_errors.insert(text.clone()).then_some(text)
     }
 
     /// The cloud stored `project` at `commit`: later copies send only what is newer.
@@ -987,7 +1004,7 @@ impl Shell {
             .state
             .projects()
             .iter()
-            .filter(|p| p.path.is_dir())
+            .filter(|p| p.path.is_dir() && !self.remote.too_big.contains(&p.id))
             .map(|p| (p.id.clone(), p.name.clone(), p.path.clone(), self.remote.pushed.get(&p.id).cloned()))
             .collect();
         if projects.is_empty() {
@@ -999,10 +1016,11 @@ impl Shell {
         // The copies are made against what this cloud confirmed; another one would refuse them.
         let cloud = self.state.settings.sync.cloud.clone();
         cx.spawn(async move |this, cx| {
-            let ready = cx
+            let (ready, too_big) = cx
                 .background_executor()
                 .spawn(async move {
                     let mut out = Vec::new();
+                    let mut too_big = Vec::new();
                     for (id, name, path, pushed) in projects {
                         let made = snapshot::take(&path, &id, &device, secrets).map(|_| snapshot::current(&path, &id, &device));
                         let commit = match made {
@@ -1016,12 +1034,10 @@ impl Shell {
                         if pushed.as_deref() == Some(commit.as_str()) {
                             continue;
                         }
-                        match snapshot::bundle(&path, &id, &device, pushed.as_deref()) {
+                        match snapshot::bundle(&path, &id, &device, pushed.as_deref(), proto::MAX_BUNDLE_BYTES) {
                             // Sent anyway, it would only drop the connection to the cloud.
-                            Ok(bytes) if !proto::fits(bytes.len().div_ceil(3) * 4) => {
-                                eprintln!("archonui: {name} is too big for the cloud copy ({} MB)", bytes.len() >> 20);
-                            }
-                            Ok(bytes) => out.push(ClientMsg::PutProject {
+                            Ok(snapshot::Bundle::TooBig(bytes)) => too_big.push((id, name, bytes)),
+                            Ok(snapshot::Bundle::Ready(bytes)) => out.push(ClientMsg::PutProject {
                                 project: id,
                                 name,
                                 device: device.clone(),
@@ -1031,11 +1047,18 @@ impl Shell {
                             Err(e) => eprintln!("archonui: could not pack {name}: {e}"),
                         }
                     }
-                    out
+                    (out, too_big)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.remote.backing_up = false;
+                if this.state.settings.sync.cloud == cloud {
+                    for (project, name, bytes) in too_big {
+                        if let Some(text) = this.remote.copy_too_big(project, &name, bytes) {
+                            this.toast(text, cx);
+                        }
+                    }
+                }
                 let mut sent = Vec::new();
                 if this.state.settings.sync.cloud != cloud {
                     // Made for a cloud since replaced: copy again, whole, to the new one.
@@ -1292,6 +1315,17 @@ mod tests {
         assert!(r.sending.is_empty());
         r.forget_copies();
         assert!(r.pushed.is_empty());
+    }
+
+    #[test]
+    fn a_project_too_big_to_copy_is_shown_once_and_left_out_until_the_cloud_changes() {
+        let mut r = RemoteUi::default();
+        let text = r.copy_too_big("pa".into(), "big", 1000 << 20).expect("shown");
+        assert!(text.contains("big is too big") && text.contains("1000 MB") && text.contains("383 MB"), "{text}");
+        assert!(r.too_big.contains("pa"));
+        assert_eq!(r.copy_too_big("pa".into(), "big", 1000 << 20), None, "shown once");
+        r.forget_copies();
+        assert!(r.too_big.is_empty(), "a new cloud tries again");
     }
 
     #[test]

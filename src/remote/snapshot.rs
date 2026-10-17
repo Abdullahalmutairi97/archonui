@@ -35,10 +35,19 @@ pub fn take(dir: &Path, project: &str, device: &str, secrets: bool) -> Result<Op
     take_in(dir, project, device, &snapshots_dir(), secrets)
 }
 
+/// A bundle, or the size that kept it from being made.
+#[derive(Debug, PartialEq)]
+pub enum Bundle {
+    Ready(Vec<u8>),
+    /// Larger than the most asked for: about this many bytes. Never read into memory.
+    TooBig(u64),
+}
+
 /// A git bundle of the latest snapshot, as `wip_ref(device)`, holding only what `since` lacks. A
 /// full bundle when `since` is None or unknown here. Empty when `since` is already the current snapshot.
-pub fn bundle(dir: &Path, project: &str, device: &str, since: Option<&str>) -> Result<Vec<u8>, String> {
-    bundle_in(dir, project, device, since, &snapshots_dir())
+/// `TooBig` when it would be over `max` bytes, judged from git's object sizes before packing when it can.
+pub fn bundle(dir: &Path, project: &str, device: &str, since: Option<&str>, max: u64) -> Result<Bundle, String> {
+    bundle_upto(dir, project, device, since, &snapshots_dir(), max)
 }
 
 /// The commit of this device's latest snapshot of `dir`, if any.
@@ -192,6 +201,13 @@ fn write_tree(repo: &Repo, index: &Path) -> Result<String, String> {
 }
 
 fn bundle_in(dir: &Path, project: &str, device: &str, since: Option<&str>, snapshots: &Path) -> Result<Vec<u8>, String> {
+    match bundle_upto(dir, project, device, since, snapshots, u64::MAX)? {
+        Bundle::Ready(bytes) => Ok(bytes),
+        Bundle::TooBig(n) => Err(format!("bundle of {n} bytes")),
+    }
+}
+
+fn bundle_upto(dir: &Path, project: &str, device: &str, since: Option<&str>, snapshots: &Path, max: u64) -> Result<Bundle, String> {
     check_ids(project, device)?;
     let repo = Repo::open(dir, snapshots)?;
     let r = local_ref(project, device);
@@ -204,26 +220,57 @@ fn bundle_in(dir: &Path, project: &str, device: &str, since: Option<&str>, snaps
         }
     });
     if base == Some(cur.as_str()) {
-        return Ok(Vec::new());
+        return Ok(Bundle::Ready(Vec::new()));
+    }
+    // Packing a big history takes minutes; git's own sizes say much sooner that it won't fit.
+    if let Some(n) = disk_usage(&repo, &r, base).filter(|n| *n > max) {
+        return Ok(Bundle::TooBig(n));
     }
 
     let file = temp_path("bundle")?;
     let out = match create_bundle(&repo, &r, base, &file) {
-        Ok(true) => fs::read(&file).map_err(|e| format!("read bundle: {e}")).and_then(|b| rename_ref(&b, &r, &wip_ref(device))),
-        Ok(false) => Ok(Vec::new()),
+        Ok(true) => read_upto(&file, max).and_then(|b| match b {
+            Bundle::Ready(b) => rename_ref(b, &r, &wip_ref(device)).map(Bundle::Ready),
+            too_big => Ok(too_big),
+        }),
+        Ok(false) => Ok(Bundle::Ready(Vec::new())),
         Err(e) => Err(e),
     };
     let _ = fs::remove_file(&file);
     out
 }
 
+/// The bytes the objects of `r` (minus `base`) take in the repository, about what a bundle of them
+/// takes. None when git can't say (before git 2.31).
+fn disk_usage(repo: &Repo, r: &str, base: Option<&str>) -> Option<u64> {
+    let mut cmd = repo.git();
+    cmd.args(["rev-list", "--objects", "--disk-usage", r]);
+    if let Some(b) = base {
+        cmd.arg(format!("^{b}"));
+    }
+    run(&mut cmd).ok()?.parse().ok()
+}
+
+/// Reads `file` whole, unless it is over `max` bytes. Room is kept for `rename_ref` to grow the header in place.
+fn read_upto(file: &Path, max: u64) -> Result<Bundle, String> {
+    use std::io::Read;
+    let len = fs::metadata(file).map_err(|e| format!("read bundle: {e}"))?.len();
+    if len > max {
+        return Ok(Bundle::TooBig(len));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0).saturating_add(256));
+    fs::File::open(file).and_then(|mut f| f.read_to_end(&mut bytes)).map_err(|e| format!("read bundle: {e}"))?;
+    Ok(Bundle::Ready(bytes))
+}
+
 /// Renames ref `from` to `to` in a bundle's header, so the cloud gets the one ref per device it
 /// expects whatever the snapshot was called here. The header is the lines before the first empty
-/// one (gitformat-bundle(5)); a ref line is "<id> <name>". The pack after it is left as is.
-fn rename_ref(bundle: &[u8], from: &str, to: &str) -> Result<Vec<u8>, String> {
+/// one (gitformat-bundle(5)); a ref line is "<id> <name>". The pack after it is left as is: only the
+/// header is replaced, in place, so a big bundle is not copied.
+fn rename_ref(mut bundle: Vec<u8>, from: &str, to: &str) -> Result<Vec<u8>, String> {
     let end = bundle.windows(2).position(|w| w == b"\n\n").ok_or("git made a bundle without a header")? + 1;
-    let (header, pack) = bundle.split_at(end);
-    let mut out = Vec::with_capacity(bundle.len() + to.len());
+    let header = &bundle[..end];
+    let mut out = Vec::with_capacity(end + to.len());
     let mut renamed = false;
     for line in header.split_inclusive(|b| *b == b'\n') {
         let is_ref = !matches!(line.first(), Some(b'#' | b'-' | b'@'));
@@ -240,8 +287,8 @@ fn rename_ref(bundle: &[u8], from: &str, to: &str) -> Result<Vec<u8>, String> {
     if !renamed {
         return Err(format!("the bundle lacks {from}"));
     }
-    out.extend_from_slice(pack);
-    Ok(out)
+    bundle.splice(..end, out);
+    Ok(bundle)
 }
 
 /// Writes a bundle of `r` (minus `base`) to `file`. False when there was nothing to bundle.
@@ -792,6 +839,33 @@ mod tests {
     }
 
     #[test]
+    fn a_bundle_over_the_limit_is_refused_before_it_is_read() {
+        if !git_available() {
+            return;
+        }
+        let base = root("too-big");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        let c1 = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("first snapshot");
+        let full = bundle_in(&proj, "p1", "n1", None, &snaps).unwrap();
+        let roomy = full.len() as u64 * 100;
+        assert_eq!(bundle_upto(&proj, "p1", "n1", None, &snaps, roomy).unwrap(), Bundle::Ready(full));
+        assert!(matches!(bundle_upto(&proj, "p1", "n1", None, &snaps, 10).unwrap(), Bundle::TooBig(n) if n > 10));
+        // Without git's estimate, the file's size decides.
+        let repo = Repo::open(&proj, &snaps).unwrap();
+        let file = temp_path("test-bundle").unwrap();
+        assert!(create_bundle(&repo, &local_ref("p1", "n1"), None, &file).unwrap());
+        let len = fs::metadata(&file).unwrap().len();
+        assert_eq!(read_upto(&file, len - 1).unwrap(), Bundle::TooBig(len));
+        assert!(matches!(read_upto(&file, len).unwrap(), Bundle::Ready(b) if b.len() as u64 == len));
+        let _ = fs::remove_file(&file);
+        // Nothing new is still an empty bundle, whatever the limit.
+        assert_eq!(bundle_upto(&proj, "p1", "n1", Some(c1.as_str()), &snaps, 0).unwrap(), Bundle::Ready(Vec::new()));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn incremental_bundles_are_small_and_empty_when_current() {
         if !git_available() {
             return;
@@ -1097,11 +1171,11 @@ mod tests {
 
     #[test]
     fn bundle_refs_are_renamed_in_the_header_only() {
-        let bundle = b"# v2 git bundle\n-abc0 archonui snapshot\nabc1 refs/archon/snap/p/n1\n\nPACK\n\nrefs/archon/snap/p/n1";
-        let out = rename_ref(bundle, "refs/archon/snap/p/n1", "refs/archon/wip/n1").unwrap();
+        let bundle = b"# v2 git bundle\n-abc0 archonui snapshot\nabc1 refs/archon/snap/p/n1\n\nPACK\n\nrefs/archon/snap/p/n1".to_vec();
+        let out = rename_ref(bundle.clone(), "refs/archon/snap/p/n1", "refs/archon/wip/n1").unwrap();
         assert_eq!(&out[..], &b"# v2 git bundle\n-abc0 archonui snapshot\nabc1 refs/archon/wip/n1\n\nPACK\n\nrefs/archon/snap/p/n1"[..]);
         assert!(rename_ref(bundle, "refs/archon/snap/q/n1", "refs/archon/wip/n1").is_err());
-        assert!(rename_ref(b"no header", "a", "b").is_err());
+        assert!(rename_ref(b"no header".to_vec(), "a", "b").is_err());
     }
 
     /// Set by `inherited_git_variables_are_ignored` for the child run of `git_env_child`.
