@@ -164,8 +164,8 @@ impl Hub {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    /// Whether connection `conn` may go on.
-    fn is_open(&self, conn: u64) -> bool {
+    /// Whether connection `conn` is still open.
+    pub fn is_open(&self, conn: u64) -> bool {
         self.lock().conns.contains_key(&conn)
     }
 
