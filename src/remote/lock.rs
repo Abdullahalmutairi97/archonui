@@ -54,12 +54,21 @@ mod tests {
         assert!(a.is_some() && b.is_some(), "app windows run together");
         assert!(try_lock(&dir, true).unwrap().is_none(), "no --serve while the app runs");
         drop((a, b));
-        let serve = try_lock(&dir, true).unwrap();
+        // Another test's child can hold a copy of the descriptor between its fork and exec.
+        let serve = (0..50)
+            .find_map(|_| try_lock(&dir, true).unwrap().or_else(|| {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                None
+            }));
         assert!(serve.is_some());
         assert!(try_lock(&dir, false).unwrap().is_none(), "no app while --serve runs");
         assert!(try_lock(&dir, true).unwrap().is_none(), "no second --serve");
         drop(serve);
-        assert!(try_lock(&dir, false).unwrap().is_some());
+        let app = (0..50).find_map(|_| try_lock(&dir, false).unwrap().or_else(|| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            None
+        }));
+        assert!(app.is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 }
