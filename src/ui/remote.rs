@@ -561,12 +561,13 @@ impl Shell {
                     }
                 }
             }
-            // A turn's messages only reach chats shown from the device that sent them: never a chat of
-            // this device (one adopted here keeps the id) or one from another device.
+            // A turn's messages and approvals only reach chats shown from the device that sent them: never
+            // a chat of this device (one adopted here keeps the id) or one from another device.
             HostMsg::Started { session, .. }
             | HostMsg::Event { session, .. }
             | HostMsg::Finished { session, .. }
             | HostMsg::Draft { session, .. }
+            | HostMsg::Approval { session, .. }
                 if self.state.is_remote(&session) != Some(device) => {}
             HostMsg::Started { session, text } => self.state.remote_started(&session, &text),
             HostMsg::Event { session, out } => {
