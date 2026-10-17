@@ -36,6 +36,8 @@ pub enum Placement {
     Split { area: Rect, gap: f32 },
     /// Show in the focused tile, replacing it.
     Focused,
+    /// No tile: another device asked for the chat. Kept while empty, until its first prompt.
+    Elsewhere,
 }
 
 /// What the caller must do after `AppState::apply`.
@@ -106,6 +108,8 @@ pub struct AppState {
     removed: Vec<String>,
     /// Remote chats with a turn running on their device.
     remote_busy: BTreeSet<String>,
+    /// Empty chats another device started here (`Placement::Elsewhere`), which `drop_abandoned` keeps.
+    requested: BTreeSet<String>,
 }
 
 impl AppState {
@@ -131,6 +135,7 @@ impl AppState {
             dirty: BTreeSet::new(),
             removed: Vec::new(),
             remote_busy: BTreeSet::new(),
+            requested: BTreeSet::new(),
         };
         let mut taken = Vec::new();
         for s in &mut state.sessions {
@@ -223,6 +228,9 @@ impl AppState {
                 }
             }
             Placement::Focused => self.workspace.layout.open_in_focused(&id),
+            Placement::Elsewhere => {
+                self.requested.insert(id.clone());
+            }
         }
         id
     }
@@ -279,6 +287,7 @@ impl AppState {
         self.workspace.layout.close(id);
         self.dirty.remove(id);
         self.remote_busy.remove(id);
+        self.requested.remove(id);
         // A remote chat has no file here to delete.
         if !remote {
             self.removed.push(id.to_string());
@@ -493,13 +502,17 @@ impl AppState {
 
     /// Deletes every chat the user has left empty: nothing sent, typed or attached, no terminal, and
     /// not the focused tile (its tile was closed or replaced, or another chat was focused). Its tile
-    /// closes with it. Returns whether any went.
+    /// closes with it. A chat another device started here is kept until its first message. Returns
+    /// whether any went.
     pub fn drop_abandoned(&mut self) -> bool {
+        // Once it has a message, a chat another device asked for is like any other.
+        let sessions = &self.sessions;
+        self.requested.retain(|id| sessions.iter().any(|s| &s.id == id && !s.visible()));
         let focus = self.workspace.layout.focus.as_deref();
         let doomed: Vec<String> = self
             .sessions
             .iter()
-            .filter(|s| !s.visible() && s.draft.trim().is_empty())
+            .filter(|s| !s.visible() && s.draft.trim().is_empty() && !self.requested.contains(&s.id))
             .filter(|s| focus != Some(s.id.as_str()) && !self.busy(&s.id) && self.pending(&s.id).is_empty())
             .map(|s| s.id.clone())
             .collect();
