@@ -751,6 +751,18 @@ fn expire_later(id: u64, work: smol::channel::Sender<Work>) {
     });
 }
 
+/// Starts the thread that answers cloud requests from `store`, one at a time. It ends when the
+/// returned sender is dropped.
+fn cloud_worker(store: Store, hub: Hub) -> std::sync::mpsc::Sender<Request> {
+    let (tx, rx) = std::sync::mpsc::channel::<Request>();
+    thread::spawn(move || {
+        while let Ok(req) = rx.recv() {
+            handle_cloud(Some(&store), &hub, req);
+        }
+    });
+    tx
+}
+
 /// Pushes each event of one turn into the owner's queue, until the turn's channel closes.
 fn follow(id: String, turn: smol::channel::Receiver<Event>, work: smol::channel::Sender<Work>) {
     thread::spawn(move || {
@@ -811,6 +823,9 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
             break;
         }
     });
+    // Cloud requests run git and can take a while: answered in order on a thread of their own, so
+    // the chats' replies and approvals keep flowing meanwhile, as in the window.
+    let cloud_jobs = cloud_worker(cloud, hub.clone());
     let mut approvals = Approvals::default();
     while let Ok(work) = smol::block_on(work_rx.recv()) {
         match work {
@@ -818,12 +833,16 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
                 if approvals.answer(&req, &allowances, &hub) {
                     continue;
                 }
+                if is_cloud(&req.msg) {
+                    let _ = cloud_jobs.send(req);
+                    continue;
+                }
                 let conn = req.conn;
                 let subscribed = match &req.msg {
                     ClientMsg::Subscribe { session } => Some(session.clone()),
                     _ => None,
                 };
-                if let Some((id, turn)) = handle(&mut state, &agents, &hub, Some(&cloud), req) {
+                if let Some((id, turn)) = handle(&mut state, &agents, &hub, None, req) {
                     follow(id, turn, work_tx.clone());
                 }
                 if let Some(session) = subscribed.filter(|s| state.session(s).is_some()) {
@@ -1059,6 +1078,21 @@ mod tests {
         assert!(app.send(&new, "hello", &agents).is_none());
         assert!(app.drop_abandoned().is_empty());
         assert!(app.session(&new).is_some_and(|s| s.visible()));
+    }
+
+    #[test]
+    fn the_cloud_worker_answers_off_the_owner_thread() {
+        use super::super::client::Client;
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let client = Client::connect("127.0.0.1", hub.local_addr().port(), "c").unwrap();
+        client.send(&ClientMsg::ListCloud).unwrap();
+        let req = next_request(&requests);
+        assert!(is_cloud(&req.msg));
+        let root = std::env::temp_dir().join(format!("archonui-cloud-worker-{}", store::new_id()));
+        let jobs = cloud_worker(Store::open(root.clone()), hub.clone());
+        jobs.send(req).unwrap();
+        assert!(matches!(next_msg(&client), HostMsg::Cloud { projects, .. } if projects.is_empty()));
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
