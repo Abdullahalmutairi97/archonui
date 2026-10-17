@@ -150,10 +150,11 @@ impl Shell {
         ws.right_open && ws.right_tab == RightTab::Terminal
     }
 
-    /// The focused session, which the terminal is for.
+    /// The focused session, which the terminal is for. `None` for a chat on another device: a shell
+    /// here would open in this device's copy of that folder, if there is one.
     fn terminal_session(&self) -> Option<String> {
         let id = self.state.workspace.layout.focus.as_ref()?;
-        self.state.session(id).map(|s| s.id.clone())
+        self.state.session(id).filter(|s| s.origin.is_none()).map(|s| s.id.clone())
     }
 
     pub(in crate::ui) fn render_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

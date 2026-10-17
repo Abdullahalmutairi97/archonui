@@ -25,15 +25,29 @@ pub struct TabsUi {
 impl Shell {
     /// The project folder tools act on: the focused session's folder, else the current project's. A folder
     /// that is not a project (the home folder, `/`, a missing folder) is skipped. `None` when neither is
-    /// one, which the tools show as an empty state rather than listing home.
+    /// one, which the tools show as an empty state rather than listing home. `None` too while the
+    /// focused chat lives on another device: its folder is that device's, not this one's.
     pub(super) fn tool_folder(&self) -> Option<PathBuf> {
+        if self.focused_remote().is_some() {
+            return None;
+        }
         let ws = &self.state.workspace;
         let session = ws.layout.focus.as_deref().and_then(|id| self.state.session(id)).map(|s| s.cwd.clone());
         let project = ws.current_project.as_deref().and_then(|id| self.state.project(id)).map(|p| p.path.clone());
         [session, project].into_iter().flatten().find(|folder| crate::workspace::project_root(folder).is_ok())
     }
 
+    /// The device name of the focused chat, when it lives on another device.
+    pub(super) fn focused_remote(&self) -> Option<String> {
+        let id = self.state.workspace.layout.focus.as_deref()?;
+        self.chat_device(id)
+    }
+
     pub(super) fn render_tab(&mut self, tab: RightTab, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // The tools would act on this device; until they can reach the chat's own, they stay hidden.
+        if let Some(device) = self.focused_remote().filter(|_| tab != RightTab::Browser) {
+            return ide::placeholder(&remote_tools_note(&device), &self.theme);
+        }
         match tab {
             RightTab::Browser => self.render_browser(window, cx),
             RightTab::Ide => self.render_ide(window, cx),
@@ -67,4 +81,9 @@ impl Shell {
         self.git_blur(cx);
         self.terminal_blur(cx);
     }
+}
+
+/// What the Files, IDE, Git and Terminal tabs show for a chat on another device.
+fn remote_tools_note(device: &str) -> String {
+    format!("Files, git and terminal for chats on {device} aren't shown here yet.")
 }
