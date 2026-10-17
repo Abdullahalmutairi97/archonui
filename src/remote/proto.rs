@@ -23,6 +23,9 @@ pub fn fits(payload: usize) -> bool {
     payload.saturating_add(64 * 1024) <= MAX_MESSAGE_BYTES
 }
 
+/// The largest project copy (git bundle bytes, before base64) that `fits` in one message.
+pub const MAX_BUNDLE_BYTES: u64 = ((MAX_MESSAGE_BYTES - 64 * 1024) / 4 * 3) as u64;
+
 /// The WebSocket limits hosts and clients both use.
 pub fn ws_config() -> tungstenite::protocol::WebSocketConfig {
     tungstenite::protocol::WebSocketConfig::default()
@@ -570,6 +573,13 @@ mod tests {
         assert!(!is_unknown_request("bad message: missing field `session` at line 1 column 17"));
         assert!(!is_unknown_request("There is no chat s1 on this device"));
         assert!(!is_unknown_request("git fetch: fatal: bad object"));
+    }
+
+    #[test]
+    fn the_largest_bundle_just_fits() {
+        let base64 = |n: u64| (n as usize).div_ceil(3) * 4;
+        assert!(fits(base64(MAX_BUNDLE_BYTES)));
+        assert!(!fits(base64(MAX_BUNDLE_BYTES + 1)));
     }
 
     #[test]
