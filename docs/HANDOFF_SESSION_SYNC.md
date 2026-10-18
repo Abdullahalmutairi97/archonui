@@ -127,8 +127,9 @@ listens on 7420 (`ss -ltn`), and `tailscale` is never run.
 - "+ New on <device>" sends `NewSession` with an empty agent and folder; the host fills in its own
   defaults. Check the new chat opens in the focused tile on the asking device.
 - Not built: the other device's files, git and terminal in the side panel.
-- Secrets that were ever committed, or copied while "Copy secret files" was on, stay in the cloud
-  copy's history; turning the setting off doesn't remove them. Needs a product decision.
+- A project whose git history ever held a secret is now copied without that history. Secrets
+  already in a cloud (copied by an older build, or while "Copy secret files" was on) stay there;
+  turning the setting off doesn't remove them.
 - Building on a machine where rustc crashes with SIGSEGV: use `RUST_MIN_STACK=67108864 cargo build
   --release` (seen on ashpc).
 - Tests in `engine::skills` and `engine::discover::tests::run_text_output_is_private` fail when
