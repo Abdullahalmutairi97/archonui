@@ -1817,18 +1817,26 @@ mod tests {
         let id = chat.id.clone();
         app.put_remote(chat, "pc", false);
         let new_id = app.adopt_remote(&id, "/home/laptop/app".into(), "pc").expect("adopts remote");
-        // The pc comes back and tries to continue its own copy of the chat.
-        // But the adopted local chat (new_id) is not affected by that.
+        app.dirty.clear();
+        // The pc comes back and goes on with its own copy: that copy changes, the one continued here doesn't.
+        app.remote_started(&id, "and the tests?");
+        app.remote_event(&id, Out::Text("Done.".into()));
+        app.remote_finished(&id, None, false);
+        assert_eq!(app.session(&id).unwrap().messages.len(), 4, "the pc's copy follows the pc");
+        let local = app.session(&new_id).unwrap();
+        assert_eq!(local.messages.len(), 2, "the chat continued here keeps only its own messages");
+        assert!(local.origin.is_none());
+        // Turns are never applied to a chat of this device, even one named by id.
+        assert_eq!(app.remote_event(&new_id, Out::Text("x".into())), Applied::default());
+        assert_eq!(app.remote_finished(&new_id, None, false), Applied::default());
+        assert_eq!(app.session(&new_id).unwrap().messages.len(), 2);
+        assert!(!app.dirty.contains(&new_id), "nothing of this device's chat changed");
+        // Nor can a remote chat's agent be switched here: it runs on its device.
         let remote = Session::new("claude", "/home/pc".into());
         let remote_id = remote.id.clone();
         app.put_remote(remote, "pc", false);
         assert!(!app.switch_agent(&remote_id, "codex", None, None, Mode::default()));
         assert_eq!(app.session(&remote_id).unwrap().agent, "claude");
-        // Verify the adopted local chat keeps its messages and is local.
-        let local = app.session(&new_id).unwrap();
-        assert_eq!(local.messages.len(), 2, "the adopted local chat keeps its history");
-        assert!(local.origin.is_none(), "adopted chat is local");
-        assert!(local.handoff, "adopted chat marked as handoff");
     }
 
     #[test]
