@@ -1015,62 +1015,39 @@ impl Shell {
         let secrets = self.state.settings.sync.copy_secrets;
         // The copies are made against what this cloud confirmed; another one would refuse them.
         let cloud = self.state.settings.sync.cloud.clone();
+        // One project at a time, each sent as soon as it is ready, so only one copy is in memory
+        // here at once; the frame is built off the UI thread.
         cx.spawn(async move |this, cx| {
-            let (ready, too_big) = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut out = Vec::new();
-                    let mut too_big = Vec::new();
-                    for (id, name, path, pushed) in projects {
-                        let made = snapshot::take(&path, &id, &device, secrets).map(|_| snapshot::current(&path, &id, &device));
-                        let commit = match made {
-                            Ok(Some(commit)) => commit,
-                            Ok(None) => continue,
-                            Err(e) => {
-                                eprintln!("archonui: could not snapshot {name}: {e}");
-                                continue;
-                            }
-                        };
-                        if pushed.as_deref() == Some(commit.as_str()) {
-                            continue;
-                        }
-                        match snapshot::bundle(&path, &id, &device, pushed.as_deref(), proto::MAX_BUNDLE_BYTES) {
-                            // Sent anyway, it would only drop the connection to the cloud.
-                            Ok(snapshot::Bundle::TooBig(bytes)) => too_big.push((id, name, bytes)),
-                            Ok(snapshot::Bundle::Ready(bytes)) => out.push(ClientMsg::PutProject {
-                                project: id,
-                                name,
-                                device: device.clone(),
-                                commit,
-                                bundle: STANDARD.encode(bytes),
-                            }),
-                            Err(e) => eprintln!("archonui: could not pack {name}: {e}"),
-                        }
+            for (id, name, path, pushed) in projects {
+                let device = device.clone();
+                let made = cx.background_executor().spawn(async move { project_copy(&path, id, name, &device, pushed, secrets) }).await;
+                let go_on = this.update(cx, |this, cx| {
+                    if this.state.settings.sync.cloud != cloud {
+                        // Made for a cloud since replaced: copy again, whole, to the new one.
+                        this.remote.backup_again = true;
+                        return false;
                     }
-                    (out, too_big)
-                })
-                .await;
+                    match made {
+                        ProjectCopy::Frame { project, frame } => {
+                            if this.cloud_client().is_some_and(|c| c.send_frame(frame).is_ok()) {
+                                this.remote.sending.insert(project);
+                            }
+                        }
+                        ProjectCopy::TooBig { project, name, bytes } => {
+                            if let Some(text) = this.remote.copy_too_big(project, &name, bytes) {
+                                this.toast(text, cx);
+                            }
+                        }
+                        ProjectCopy::Nothing => {}
+                    }
+                    true
+                });
+                if !matches!(go_on, Ok(true)) {
+                    break;
+                }
+            }
             let _ = this.update(cx, |this, cx| {
                 this.remote.backing_up = false;
-                if this.state.settings.sync.cloud == cloud {
-                    for (project, name, bytes) in too_big {
-                        if let Some(text) = this.remote.copy_too_big(project, &name, bytes) {
-                            this.toast(text, cx);
-                        }
-                    }
-                }
-                let mut sent = Vec::new();
-                if this.state.settings.sync.cloud != cloud {
-                    // Made for a cloud since replaced: copy again, whole, to the new one.
-                    this.remote.backup_again = true;
-                } else if let Some(cloud) = this.cloud_client() {
-                    for msg in &ready {
-                        if let (Ok(()), ClientMsg::PutProject { project, .. }) = (cloud.send(msg), msg) {
-                            sent.push(project.clone());
-                        }
-                    }
-                }
-                this.remote.sending.extend(sent);
                 if std::mem::take(&mut this.remote.backup_again) {
                     this.backup(cx);
                 }
@@ -1135,6 +1112,44 @@ impl Shell {
             });
         })
         .detach();
+    }
+}
+
+/// One project's copy for the cloud, as `project_copy` made it.
+enum ProjectCopy {
+    /// The `PutProject` frame, ready to send.
+    Frame { project: String, frame: String },
+    /// Over the most one message carries.
+    TooBig { project: String, name: String, bytes: u64 },
+    /// Unchanged since the cloud's copy, or it failed (logged).
+    Nothing,
+}
+
+/// Snapshots project `id` at `path` and packs what the cloud, which holds `pushed`, lacks. Blocking.
+fn project_copy(path: &std::path::Path, id: String, name: String, device: &str, pushed: Option<String>, secrets: bool) -> ProjectCopy {
+    let made = snapshot::take(path, &id, device, secrets).map(|_| snapshot::current(path, &id, device));
+    let commit = match made {
+        Ok(Some(commit)) => commit,
+        Ok(None) => return ProjectCopy::Nothing,
+        Err(e) => {
+            eprintln!("archonui: could not snapshot {name}: {e}");
+            return ProjectCopy::Nothing;
+        }
+    };
+    if pushed.as_deref() == Some(commit.as_str()) {
+        return ProjectCopy::Nothing;
+    }
+    match snapshot::bundle(path, &id, device, pushed.as_deref(), proto::MAX_BUNDLE_BYTES) {
+        // Sent anyway, it would only drop the connection to the cloud.
+        Ok(snapshot::Bundle::TooBig(bytes)) => ProjectCopy::TooBig { project: id, name, bytes },
+        Ok(snapshot::Bundle::Ready(bytes)) => {
+            let frame = proto::put_project_frame(&id, &name, device, &commit, &bytes);
+            ProjectCopy::Frame { project: id, frame }
+        }
+        Err(e) => {
+            eprintln!("archonui: could not pack {name}: {e}");
+            ProjectCopy::Nothing
+        }
     }
 }
 
@@ -1326,6 +1341,24 @@ mod tests {
         assert_eq!(r.copy_too_big("pa".into(), "big", 1000 << 20), None, "shown once");
         r.forget_copies();
         assert!(r.too_big.is_empty(), "a new cloud tries again");
+    }
+
+    #[test]
+    fn a_project_copy_is_a_ready_frame_and_nothing_once_the_cloud_has_it() {
+        let dir = std::env::temp_dir().join(format!("archonui-project-copy-{}", crate::store::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        let ProjectCopy::Frame { project, frame } = project_copy(&dir, "p1".into(), "app".into(), "n1", None, false) else {
+            panic!("expected a frame");
+        };
+        assert_eq!(project, "p1");
+        let Ok(ClientMsg::PutProject { project, name, device, commit, bundle }) = proto::decode::<ClientMsg>(&frame) else {
+            panic!("not a put_project: {frame}");
+        };
+        assert_eq!((project.as_str(), name.as_str(), device.as_str()), ("p1", "app", "n1"));
+        assert!(!bundle.is_empty());
+        assert!(matches!(project_copy(&dir, "p1".into(), "app".into(), "n1", Some(commit), false), ProjectCopy::Nothing));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
