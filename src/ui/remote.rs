@@ -801,15 +801,13 @@ impl Shell {
             };
             let cwd = self.default_folder();
             let name = self.chat_device_name(&device);
-            if self.state.adopt_remote(id, cwd, &name) {
-                if let Some(other) = takeover {
-                    self.switch_agent(id, other, cx);
-                }
-                self.toast(format!("{name} is away, so this chat continues here"), cx);
-                self.flush_sessions(cx);
-                return self.send_now(id, text, cx);
+            let Some(new_id) = self.state.adopt_remote(id, cwd, &name) else { return false };
+            if let Some(other) = takeover {
+                self.switch_agent(&new_id, other, cx);
             }
-            return false;
+            self.toast(format!("{name} is away, so this chat continues here"), cx);
+            self.flush_sessions(cx);
+            return self.send_now(&new_id, text, cx);
         }
         let files = match self.pending_as_remote_files(id) {
             Ok(files) => files,
