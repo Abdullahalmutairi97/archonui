@@ -163,9 +163,10 @@ fn take_with(repo: &Repo, r: &str, index: &Path, secrets: bool) -> Result<Option
         }
     }
     // A subfolder's snapshot starts its own history: HEAD's would carry the whole repository.
+    // HEAD's history comes too, unless it ever held a secret that is left out of the copy.
     let parent = match prev {
         Some(p) => Some(p),
-        None if has_head && repo.prefix.is_none() => Some(run(repo.git().args(["rev-parse", "HEAD"]))?),
+        None if has_head && repo.prefix.is_none() && (secrets || !history_has_secrets(repo)?) => Some(run(repo.git().args(["rev-parse", "HEAD"]))?),
         None => None,
     };
 
@@ -462,6 +463,29 @@ fn drop_secrets(repo: &Repo, index: &Path) -> Result<(), String> {
     );
     let _ = fs::remove_file(&list);
     result.map(|_| ())
+}
+
+/// Whether any commit reachable from HEAD ever held a file whose name is a secret.
+fn history_has_secrets(repo: &Repo) -> Result<bool, String> {
+    let out = repo
+        .git()
+        .args(["log", "--format=", "--name-only", "-z", "--no-renames", "HEAD"])
+        .output()
+        .map_err(|e| format!("git log: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("git log: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    // Git separates commits with newlines even with -z, so split on both.
+    for entry in out.stdout.split(|b| *b == b'\0' || *b == b'\n') {
+        if entry.is_empty() {
+            continue;
+        }
+        let name = entry.rsplit(|b| *b == b'/').next().unwrap_or(entry);
+        if is_secret(&String::from_utf8_lossy(name)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Paths in the temporary index, from the top of the repository, whose file name is a secret.
@@ -1007,6 +1031,96 @@ mod tests {
         for name in [".env.example", ".env.sample", ".env.template", "environment.txt", "id_rsa.pub", "main.rs", "service-account.txt", "keys.json", "credentials.toml"] {
             assert!(!is_secret(name), "{name}");
         }
+    }
+
+    #[test]
+    fn a_secret_ever_committed_keeps_the_history_out() {
+        if !git_available() {
+            return;
+        }
+        let base = root("secret-history");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        fs::write(proj.join("a.txt"), "first\n").unwrap();
+        git(&proj, &["add", "a.txt"]);
+        git(&proj, &["commit", "-q", "-m", "first"]);
+        fs::write(proj.join(".env"), "SECRET=1\n").unwrap();
+        git(&proj, &["add", ".env"]);
+        git(&proj, &["commit", "-q", "-m", "secret"]);
+        git(&proj, &["rm", "-q", ".env"]);
+        git(&proj, &["commit", "-q", "-m", "remove-secret"]);
+        fs::write(proj.join("a.txt"), "changed\n").unwrap();
+
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot with secrets=false");
+        // The snapshot commit should have no parent.
+        let parent_check = Command::new("git")
+            .arg("-C").arg(&proj)
+            .args(["rev-parse", "-q", "--verify", format!("{c}^").as_str()])
+            .output()
+            .unwrap();
+        assert!(!parent_check.status.success(), "snapshot should have no parent when history had a secret");
+        // The snapshot's history should not contain .env.
+        let log_output = git(&proj, &["log", "--name-only", "--format=", c.as_str()]);
+        assert!(!log_output.contains(".env"), "history should not contain .env: {log_output}");
+
+        // Also test the restored copy: make a full bundle and restore it.
+        let full = bundle_in(&proj, "p1", "n1", None, &snaps).unwrap();
+        let dest = base.join("restored");
+        restore(&full, &c, &dest).unwrap();
+        let restored_log = git(&dest, &["log", "--all", "--name-only", "--format="]);
+        assert!(!restored_log.contains(".env"), "restored copy history should not contain .env: {restored_log}");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_clean_history_still_comes_along() {
+        if !git_available() {
+            return;
+        }
+        let base = root("clean-history");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        fs::write(proj.join("tracked.txt"), "second\n").unwrap();
+        git(&proj, &["add", "-A"]);
+        git(&proj, &["commit", "-q", "-m", "second"]);
+
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
+        // The snapshot commit should have a parent (the HEAD).
+        let parent = format!("{c}^");
+        let head = git(&proj, &["rev-parse", "HEAD"]);
+        assert_eq!(git(&proj, &["rev-parse", parent.as_str()]), head, "parent should be HEAD when history is clean");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn with_secrets_copied_the_history_comes_along() {
+        if !git_available() {
+            return;
+        }
+        let base = root("secrets-history-on");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        fs::write(proj.join("a.txt"), "first\n").unwrap();
+        git(&proj, &["add", "a.txt"]);
+        git(&proj, &["commit", "-q", "-m", "first"]);
+        fs::write(proj.join(".env"), "SECRET=1\n").unwrap();
+        git(&proj, &["add", ".env"]);
+        git(&proj, &["commit", "-q", "-m", "secret"]);
+        git(&proj, &["rm", "-q", ".env"]);
+        git(&proj, &["commit", "-q", "-m", "remove-secret"]);
+
+        let c = take_in(&proj, "p1", "n1", &snaps, true).unwrap().expect("snapshot with secrets=true");
+        // The snapshot commit should have a parent (the HEAD) because secrets=true.
+        let parent = format!("{c}^");
+        let head = git(&proj, &["rev-parse", "HEAD"]);
+        assert_eq!(git(&proj, &["rev-parse", parent.as_str()]), head, "parent should be HEAD when secrets=true");
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

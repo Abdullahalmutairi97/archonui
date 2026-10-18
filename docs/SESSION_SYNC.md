@@ -95,6 +95,8 @@ resolve (MagicDNS off), it is looked up in `tailscale status` by host name.
   device can't read the copies.
 - Secret-looking files (`.env`, keys, certificates, credential files) are left out of the cloud copy
   unless Settings → Devices → "Copy secret files" is on. `.env.example` and the like are kept.
+- A project whose git history ever held a secret file is copied without that history (just the current files),
+  unless "Copy secret files" is on.
 
 ## Not done yet
 
