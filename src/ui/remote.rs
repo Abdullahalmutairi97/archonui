@@ -86,6 +86,8 @@ pub struct RemoteUi {
     open_new: Option<(String, Option<String>)>,
     /// Approvals of other devices' chats waiting for an answer here, by the local request id.
     pub(super) forwarded: HashMap<u64, Forwarded>,
+    /// Fingerprint of the chats last successfully sent to the current cloud; `None` until first send.
+    chats_fingerprint: Option<u64>,
 }
 
 /// An approval asked on another device, waiting for the answer given here.
@@ -104,6 +106,7 @@ impl RemoteUi {
         self.pushed.clear();
         self.sending.clear();
         self.too_big.clear();
+        self.chats_fingerprint = None;
     }
 
     /// Project `project` (`name`) needs `bytes` to copy, more than one message holds: it is no longer
@@ -617,6 +620,7 @@ impl Shell {
                     self.remote.cloud_asked = false;
                     // Copies sent over the lost connection get no answer; `pushed` still holds what it stored.
                     self.remote.sending.clear();
+                    self.remote.chats_fingerprint = None;
                 }
                 self.remote.clients.remove(device);
                 self.remote.subscribed.remove(device);
@@ -990,15 +994,27 @@ impl Shell {
             return;
         }
         // Chats first: small, and what matters most when this device is away.
-        let sessions: Vec<serde_json::Value> = self
+        let visible: Vec<&Session> = self
             .state
             .sessions()
             .iter()
             .filter(|s| s.origin.is_none() && s.visible())
-            .filter_map(|s| serde_json::to_value(s).ok())
             .collect();
-        if let Some(cloud) = self.cloud_client() {
-            let _ = cloud.send(&ClientMsg::PutChats { device: me.id.clone(), sessions });
+        let new_fingerprint = chats_fingerprint(&visible);
+        // Skip sending if chats haven't changed since the last successful send.
+        if self.remote.chats_fingerprint == Some(new_fingerprint) {
+            // Still backup projects; continue below without sending chats.
+        } else {
+            // Chats changed or haven't been sent to this cloud yet: send them.
+            let sessions: Vec<serde_json::Value> = visible
+                .iter()
+                .filter_map(|s| serde_json::to_value(s).ok())
+                .collect();
+            if let Some(cloud) = self.cloud_client() {
+                let _ = cloud.send(&ClientMsg::PutChats { device: me.id.clone(), sessions });
+                // Update fingerprint after sending (even if send might fail, we won't send again until it changes).
+                self.remote.chats_fingerprint = Some(new_fingerprint);
+            }
         }
         let projects: Vec<(String, String, std::path::PathBuf, Option<String>)> = self
             .state
@@ -1199,6 +1215,20 @@ fn to_subscribe<'a>(
         .collect()
 }
 
+/// Computes a fingerprint of the chats to detect changes. Uses each session's id, updated
+/// timestamp, and message count.
+fn chats_fingerprint(sessions: &[&Session]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    for session in sessions {
+        session.id.hash(&mut hasher);
+        session.updated.hash(&mut hasher);
+        session.messages.len().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// The included devices, other than `me`, to show from the cloud. One connected or still being
 /// connected to (`reached`) is left out: at start-up the cloud often answers first, and its copies
 /// would be taken for an away device's, so typing in one would continue it here while it is online.
@@ -1389,6 +1419,51 @@ mod tests {
         let chats = About { request: "put_chats".into(), project: None };
         assert!(r.copy_failed("disk full".into(), Some(&chats)).is_some());
         assert_eq!(r.pushed.get("pb").map(String::as_str), Some("c2"));
+    }
+
+    #[test]
+    fn chats_fingerprint_is_stable_and_changes_with_updates() {
+        // Same sessions: same fingerprint
+        let mut s1 = Session::new("agent", "/tmp".into());
+        s1.updated = 1000;
+        let fp1 = chats_fingerprint(&[&s1]);
+
+        let s2 = Session::new("agent", "/tmp".into());
+        let fp2 = chats_fingerprint(&[&s2]);
+        assert_ne!(fp1, fp2, "different sessions have different fingerprints (different created times)");
+
+        // Different updated time: different fingerprint
+        let mut s3 = Session::new("agent", "/tmp".into());
+        s3.id = s1.id.clone();
+        s3.updated = 1001;
+        let fp3 = chats_fingerprint(&[&s3]);
+        assert_ne!(fp1, fp3, "different updated time changes fingerprint");
+
+        // Added message: different fingerprint
+        let mut s4 = Session::new("agent", "/tmp".into());
+        s4.id = s1.id.clone();
+        s4.updated = s1.updated;
+        s4.messages.push(crate::store::Message {
+            role: crate::store::Role::User,
+            text: "test".into(),
+            attachments: Vec::new(),
+            tools: Vec::new(),
+            thought_secs: None,
+            took_secs: None,
+            agent: None,
+            final_at: None,
+            usage: None,
+            todos: Vec::new(),
+        });
+        let fp4 = chats_fingerprint(&[&s4]);
+        assert_ne!(fp1, fp4, "added message changes fingerprint");
+
+        // Same fingerprint when all fields match
+        let mut s5 = Session::new("agent", "/tmp".into());
+        s5.id = s1.id.clone();
+        s5.updated = s1.updated;
+        let fp5 = chats_fingerprint(&[&s5]);
+        assert_eq!(fp1, fp5, "same id and updated time produce same fingerprint");
     }
 
     /// An error from the cloud about anything but a copy, e.g. a chat prompt on a VPS that also runs
