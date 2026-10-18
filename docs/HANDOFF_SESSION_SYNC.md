@@ -20,9 +20,20 @@ without Tailscale must behave exactly as before. That is a hard requirement from
 
 - Every commit builds and passes `cargo test` on GitHub CI (`.github/workflows/ci.yml` runs on
   `feature/**`; failing test names show up as check annotations).
-- **None of it has run on real devices yet.** The previous agent's sandbox could not reach the
-  tailnet. Expect bugs in the networking and UI parts; the unit-tested parts (protocol, snapshots,
-  cloud store, state) are likely solid.
+- Ran on real devices on 2026-10-17 (minipc headless host, ashpc desktop, vps cloud as root), all on
+  commit 85619cf or later. Step 1 passed (after fixing "~" folders and replies printed twice). Step 2
+  passed: a non-tailnet source (docker 172.17.0.3) was refused, loopback accepted, a browser-style
+  handshake with an Origin header gets 403. Step 4 passed from the command line (new/ask into the
+  ashpc app's chats). Step 6 passed: the vps copy held modified, staged and untracked files, `.env`
+  was left out, the project's git status, index and HEAD were unchanged, and the cloud folder is 0700.
+  Step 8 passed: fresh config, nothing listening, a fake `tailscale` first on PATH was never called.
+- Partly checked: step 3 (another device's chats appear labelled with the device name; typing and Esc
+  in the window not yet driven), step 7 (an away device's chats show from the cloud; continuing one
+  and "Open copy" not yet driven). Not run: step 5 (approvals in the window). These need someone to
+  click in the app.
+- Old and new builds (0dce615, d30ae41, current) were checked against each other on loopback; every
+  message decodes both ways and the cloud round trip works. Wire JSON of every message is pinned by
+  tests in src/remote/proto.rs.
 - Also built: attachments in remote chats (`ClientMsg::Prompt.files`), secret files (`.env`, keys)
   left out of the cloud copy by default (`SyncSettings::copy_secrets`), and "+ New on <device>"
   buttons in the sidebar to start a chat on another device.
@@ -116,11 +127,15 @@ listens on 7420 (`ss -ltn`), and `tailscale` is never run.
 - "+ New on <device>" sends `NewSession` with an empty agent and folder; the host fills in its own
   defaults. Check the new chat opens in the focused tile on the asking device.
 - Not built: the other device's files, git and terminal in the side panel.
-- The Devices page sends `ListCloud` on each render until the cloud answers. Fine while connected;
-  worth tidying.
-- A cloud copy that fails falls back to a full one on the next round: any error from the cloud
-  while copies are unconfirmed clears `pushed` for those projects. Its toast shows once per
-  distinct error; `git …` errors are only logged.
+- Secrets that were ever committed, or copied while "Copy secret files" was on, stay in the cloud
+  copy's history; turning the setting off doesn't remove them. Needs a product decision.
+- A chat continued here from an away device keeps its id; if the away device comes back and also
+  continues it, each device hides the other's version.
+- A connection drop closes open tiles of that device's chats.
+- Building on a machine where rustc crashes with SIGSEGV: use `RUST_MIN_STACK=67108864 cargo build
+  --release` (seen on ashpc).
+- Tests in `engine::skills` and `engine::discover::tests::run_text_output_is_private` fail when
+  TMPDIR is under $HOME; unrelated to sync; CI passes them.
 
 ## Working conventions
 
