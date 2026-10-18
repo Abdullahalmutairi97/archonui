@@ -381,21 +381,34 @@ impl AppState {
         self.remote_busy.insert(id.to_string());
     }
 
-    /// Makes remote chat `id` one of this device's own, to continue it here while its device is
-    /// away. The agent's session stays on the other device, so the next message carries the chat so
-    /// far (as after an agent switch), saying it comes from `device` (its name), where its files are.
-    /// Runs in `cwd` from now on. Returns false if `id` isn't remote.
-    pub fn adopt_remote(&mut self, id: &str, cwd: PathBuf, device: &str) -> bool {
-        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id && s.origin.is_some()) else { return false };
-        s.origin = None;
-        s.agent_session = None;
-        s.handoff = !s.messages.is_empty();
-        s.handoff_from = s.handoff.then(|| device.to_string());
-        s.cwd = cwd;
-        s.project = None;
-        self.remote_busy.remove(id);
-        self.dirty.insert(id.to_string());
-        true
+    /// Continuing a remote chat `id` here makes a new local session. Copies the remote chat's
+    /// history, model, effort, and mode; sets handoff true and handoff_from to `device` (its name).
+    /// The remote session stays untouched. Returns the new session's id, or `None` if `id` isn't remote.
+    pub fn adopt_remote(&mut self, id: &str, cwd: PathBuf, device: &str) -> Option<String> {
+        let remote = self.sessions.iter().find(|s| s.id == id && s.origin.is_some()).cloned()?;
+        let mut new = Session::new(&remote.agent, cwd);
+        new.title = remote.title;
+        new.title_auto = remote.title_auto;
+        new.icon = remote.icon;
+        new.messages = remote.messages;
+        new.model = remote.model;
+        new.effort = remote.effort;
+        new.mode = remote.mode;
+        new.handoff = !new.messages.is_empty();
+        new.handoff_from = new.handoff.then(|| device.to_string());
+        let new_id = new.id.clone();
+        self.sessions.push(new);
+        self.dirty.insert(new_id.clone());
+        // Update tiles and focus to point to the new id.
+        for tile in &mut self.workspace.layout.tiles {
+            if tile == id {
+                *tile = new_id.clone();
+            }
+        }
+        if self.workspace.layout.focus.as_deref() == Some(id) {
+            self.workspace.layout.focus = Some(new_id.clone());
+        }
+        Some(new_id)
     }
 
     /// Folds one event of a remote turn into chat `id`. Returns what the caller should do next.
@@ -1783,13 +1796,16 @@ mod tests {
         chat.push(Role::Agent, "Fixed.");
         let id = chat.id.clone();
         app.put_remote(chat, "pc", false);
-        assert!(app.adopt_remote(&id, "/home/laptop/app".into(), "pc"));
-        let s = app.session(&id).unwrap();
+        let new_id = app.adopt_remote(&id, "/home/laptop/app".into(), "pc").expect("adopts remote chat");
+        assert_ne!(new_id, id, "new id differs from old");
+        let s = app.session(&new_id).unwrap();
         assert!(s.origin.is_none() && s.handoff && s.agent_session.is_none());
         assert_eq!(s.handoff_from.as_deref(), Some("pc"), "the agent is told the files are on the pc");
         assert_eq!(s.cwd, PathBuf::from("/home/laptop/app"));
-        assert!(app.dirty.contains(&id), "saved here from now on");
-        assert!(!app.adopt_remote(&id, "/x".into(), "pc"), "already local");
+        assert_eq!(s.messages.len(), 2, "history copied");
+        assert!(app.dirty.contains(&new_id), "saved here from now on");
+        let remote = app.session(&id).unwrap();
+        assert_eq!(remote.origin.as_deref(), Some("pc"), "original remote session untouched");
     }
 
     #[test]
@@ -1800,23 +1816,19 @@ mod tests {
         chat.push(Role::Agent, "Fixed.");
         let id = chat.id.clone();
         app.put_remote(chat, "pc", false);
-        assert!(app.adopt_remote(&id, "/home/laptop/app".into(), "pc"));
-        app.dirty.clear();
-        // The pc comes back and goes on with its own copy of the chat.
-        app.remote_started(&id, "and the tests?");
-        let applied = app.remote_event(&id, Out::Text("Done.".into()));
-        assert_eq!(applied, Applied::default());
-        assert_eq!(app.remote_finished(&id, None, false), Applied::default());
-        let s = app.session(&id).unwrap();
-        assert_eq!(s.messages.len(), 2, "the adopted chat keeps only its own messages");
-        assert!(!app.busy(&id));
-        assert!(app.dirty.is_empty());
-        // Nor can a remote chat's agent be switched here: it runs on its device.
+        let new_id = app.adopt_remote(&id, "/home/laptop/app".into(), "pc").expect("adopts remote");
+        // The pc comes back and tries to continue its own copy of the chat.
+        // But the adopted local chat (new_id) is not affected by that.
         let remote = Session::new("claude", "/home/pc".into());
         let remote_id = remote.id.clone();
         app.put_remote(remote, "pc", false);
         assert!(!app.switch_agent(&remote_id, "codex", None, None, Mode::default()));
         assert_eq!(app.session(&remote_id).unwrap().agent, "claude");
+        // Verify the adopted local chat keeps its messages and is local.
+        let local = app.session(&new_id).unwrap();
+        assert_eq!(local.messages.len(), 2, "the adopted local chat keeps its history");
+        assert!(local.origin.is_none(), "adopted chat is local");
+        assert!(local.handoff, "adopted chat marked as handoff");
     }
 
     #[test]
@@ -1828,7 +1840,7 @@ mod tests {
             chat.id = bad.into();
             app.put_remote(chat, "pc", false);
             assert!(app.session(bad).is_none(), "{bad:?} is refused");
-            assert!(!app.adopt_remote(bad, "/tmp".into(), "pc"));
+            assert!(app.adopt_remote(bad, "/tmp".into(), "pc").is_none());
         }
         let local = app.new_session("pi", "/tmp".into(), Placement::Focused);
         let mut chat = Session::new("pi", "/home/host".into());
@@ -1865,7 +1877,7 @@ mod tests {
         let cloud_id = from_cloud.id.clone();
         from_cloud.title = "Cloud Copy".into();
         app.put_remote(from_cloud, "pc", false);
-        let mut busy_chat = Session::new("pi", "/home/host".into());
+        let busy_chat = Session::new("pi", "/home/host".into());
         let busy_id = busy_chat.id.clone();
         app.put_remote(busy_chat, "pc", true);
         app.workspace.layout = Layout { tiles: vec![local.clone(), cloud_id.clone(), busy_id.clone()], focus: Some(busy_id.clone()), ..Layout::default() };
@@ -1877,5 +1889,38 @@ mod tests {
         assert_eq!(app.workspace.layout.tiles, [local.as_str(), cloud_id.as_str(), busy_id.as_str()], "tiles unchanged");
         assert_eq!(app.workspace.layout.focus.as_deref(), Some(busy_id.as_str()), "focus unchanged");
         assert!(app.session(&local).is_some(), "this device's chats stay");
+    }
+
+    #[test]
+    fn adopting_a_remote_chat_creates_a_new_local_one_keeping_the_remote() {
+        let mut app = state();
+        let mut chat = Session::new("claude", "/home/pc/app".into());
+        chat.push(Role::User, "fix the bug");
+        chat.push(Role::Agent, "Fixed.");
+        let old_id = chat.id.clone();
+        app.put_remote(chat, "pc", false);
+        // Put the remote chat in a tile with focus.
+        app.workspace.layout = Layout {
+            tiles: vec![old_id.clone()],
+            focus: Some(old_id.clone()),
+            ..Layout::default()
+        };
+        let new_id = app.adopt_remote(&old_id, "/home/laptop/app".into(), "pc").expect("adopts remote chat");
+        // New id differs from old.
+        assert_ne!(new_id, old_id);
+        // New session has the expected properties.
+        let new_sess = app.session(&new_id).unwrap();
+        assert!(new_sess.origin.is_none(), "origin is None");
+        assert_eq!(new_sess.messages.len(), 2, "same messages");
+        assert!(new_sess.handoff, "handoff is true");
+        assert_eq!(new_sess.handoff_from.as_deref(), Some("pc"));
+        // Old remote session still exists untouched.
+        let old_sess = app.session(&old_id).unwrap();
+        assert_eq!(old_sess.origin.as_deref(), Some("pc"), "origin unchanged");
+        // Tile and focus point to the new id.
+        assert_eq!(app.workspace.layout.tiles, vec![new_id.clone()]);
+        assert_eq!(app.workspace.layout.focus.as_deref(), Some(new_id.as_str()));
+        // New id is marked dirty for saving.
+        assert!(app.dirty.contains(&new_id));
     }
 }

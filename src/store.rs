@@ -24,7 +24,7 @@ pub enum Role {
     Error,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub text: String,
@@ -160,7 +160,7 @@ fn unassigned_icon() -> u16 {
     UNASSIGNED_ICON
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     /// Registry id of the agent this session talks to.
