@@ -12,13 +12,8 @@ const MAX_MESSAGE_CHARS: usize = 6_000;
 const MAX_TOOLS: usize = 20;
 
 /// `prompt` with the conversation in `messages` in front of it, for an agent that takes over the chat.
-/// `messages` is what was said before `prompt`. Error rows and empty replies are left out.
-pub fn prompt(messages: &[Message], prompt: &str) -> String {
-    prompt_from(messages, prompt, None)
-}
-
-/// `prompt`, for a chat continued here from `device` (its name) when set: its files are on that
-/// device, so the agent is not told they are already changed on this disk.
+/// `messages` is what was said before `prompt`. Error rows and empty replies are left out. For a chat
+/// continued here from `device` (its name), the agent is not told its files are changed on this disk.
 pub fn prompt_from(messages: &[Message], prompt: &str, device: Option<&str>) -> String {
     let mut parts: Vec<String> = messages.iter().filter_map(entry).collect();
     let mut omitted = 0;
@@ -118,7 +113,7 @@ mod tests {
         let mut reply = msg(Role::Agent, "Done.", Some("claude"));
         reply.tools.push(ToolCall { kind: ToolKind::Edit, target: "src/a.rs".into(), detail: None, ok: Some(true) });
         let history = [msg(Role::User, "fix a.rs", None), reply, msg(Role::Error, "boom", None)];
-        let p = prompt(&history, "now test it");
+        let p = prompt_from(&history, "now test it", None);
         assert!(p.contains("[User]\nfix a.rs"), "{p}");
         assert!(p.contains("[Claude Code]\n(tools used:\n- edit src/a.rs)\nDone."), "{p}");
         assert!(!p.contains("boom"), "error rows are left out");
@@ -132,20 +127,20 @@ mod tests {
         assert!(p.contains("another device (pc)"), "{p}");
         assert!(!p.contains("already changed on disk"), "{p}");
         assert!(p.contains("[User]\nfix a.rs") && p.ends_with("now test it"), "{p}");
-        assert!(prompt(&history, "x").contains("already changed on disk"));
+        assert!(prompt_from(&history, "x", None).contains("already changed on disk"));
     }
 
     #[test]
     fn nothing_to_hand_over_leaves_the_prompt_alone() {
-        assert_eq!(prompt(&[], "hi"), "hi");
-        assert_eq!(prompt(&[msg(Role::Agent, "  ", Some("codex"))], "hi"), "hi");
+        assert_eq!(prompt_from(&[], "hi", None), "hi");
+        assert_eq!(prompt_from(&[msg(Role::Agent, "  ", Some("codex"))], "hi", None), "hi");
     }
 
     #[test]
     fn long_chats_keep_the_newest_messages() {
         let big = "x".repeat(MAX_MESSAGE_CHARS);
         let history: Vec<Message> = (0..20).map(|i| msg(Role::User, &format!("{i}{big}"), None)).collect();
-        let p = prompt(&history, "go");
+        let p = prompt_from(&history, "go", None);
         assert!(p.len() < MAX_CHARS + 2_000, "{}", p.len());
         assert!(p.contains("earlier messages left out"));
         assert!(p.contains("19x"), "the newest message is kept");
