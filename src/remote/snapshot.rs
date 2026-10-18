@@ -469,7 +469,7 @@ fn drop_secrets(repo: &Repo, index: &Path) -> Result<(), String> {
 fn history_has_secrets(repo: &Repo) -> Result<bool, String> {
     let out = repo
         .git()
-        .args(["log", "--format=", "--name-only", "-z", "--no-renames", "HEAD"])
+        .args(["log", "--format=", "--name-only", "-z", "--no-renames", "--diff-merges=separate", "HEAD"])
         .output()
         .map_err(|e| format!("git log: {e}"))?;
     if !out.status.success() {
@@ -1071,6 +1071,36 @@ mod tests {
         let restored_log = git(&dest, &["log", "--all", "--name-only", "--format="]);
         assert!(!restored_log.contains(".env"), "restored copy history should not contain .env: {restored_log}");
 
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_secret_added_in_a_merge_keeps_the_history_out() {
+        if !git_available() {
+            return;
+        }
+        let base = root("secret-merge");
+        let proj = base.join("proj");
+        let snaps = base.join("snaps");
+        init_repo(&proj);
+        let main = git(&proj, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        git(&proj, &["checkout", "-q", "-b", "side"]);
+        fs::write(proj.join("b.txt"), "side\n").unwrap();
+        git(&proj, &["add", "b.txt"]);
+        git(&proj, &["commit", "-q", "-m", "side"]);
+        git(&proj, &["checkout", "-q", main.as_str()]);
+        fs::write(proj.join("c.txt"), "main\n").unwrap();
+        git(&proj, &["add", "c.txt"]);
+        git(&proj, &["commit", "-q", "-m", "main"]);
+        // The secret appears only in the merge commit, and is still there.
+        git(&proj, &["merge", "-q", "--no-commit", "side"]);
+        fs::write(proj.join(".env"), "SECRET=1\n").unwrap();
+        git(&proj, &["add", ".env"]);
+        git(&proj, &["commit", "-q", "-m", "merge"]);
+
+        let c = take_in(&proj, "p1", "n1", &snaps, false).unwrap().expect("snapshot");
+        let parent = Command::new("git").arg("-C").arg(&proj).args(["rev-parse", "-q", "--verify", format!("{c}^").as_str()]).output().unwrap();
+        assert!(!parent.status.success(), "a secret added in a merge keeps the history out");
         let _ = fs::remove_dir_all(&base);
     }
 
