@@ -33,6 +33,8 @@ const LIST_EVERY: Duration = Duration::from_secs(20);
 const RETRY_AFTER: Duration = Duration::from_secs(15);
 /// How often projects and chats are copied to the cloud, besides after each reply.
 const BACKUP_EVERY: Duration = Duration::from_secs(5 * 60);
+/// Grace period after a device drops its connection; typing into a chat from it within this window is blocked.
+const RECONNECT_GRACE: Duration = Duration::from_secs(60);
 
 /// Sharing state of the window. Not saved.
 #[derive(Default)]
@@ -88,6 +90,8 @@ pub struct RemoteUi {
     pub(super) forwarded: HashMap<u64, Forwarded>,
     /// `chats_fingerprint` of the chats last sent to the current cloud; `None` sends them next round.
     chats_fingerprint: Option<u64>,
+    /// Device connections that dropped, by device id -> when they closed. Prevents local continuation within the grace period.
+    dropped: HashMap<String, Instant>,
 }
 
 /// An approval asked on another device, waiting for the answer given here.
@@ -107,6 +111,7 @@ impl RemoteUi {
         self.sending.clear();
         self.too_big.clear();
         self.chats_fingerprint = None;
+        self.dropped.clear();
     }
 
     /// Project `project` (`name`) needs `bytes` to copy, more than one message holds: it is no longer
@@ -558,6 +563,7 @@ impl Shell {
                             }
                             let events = client.events.clone();
                             this.remote.clients.insert(device.id.clone(), client);
+                            this.remote.dropped.remove(&device.id);
                             this.remote.subscribed.remove(&device.id);
                             if is_cloud {
                                 this.ask_cloud_for_away_devices();
@@ -626,7 +632,8 @@ impl Shell {
                 }
                 self.remote.clients.remove(device);
                 self.remote.subscribed.remove(device);
-                self.state.remove_remote(device);
+                self.state.remote_away(device);
+                self.remote.dropped.insert(device.to_string(), Instant::now());
                 self.drop_device_approvals(device);
                 self.ask_cloud_for_chats(device);
                 self.retry_later(cx);
@@ -776,6 +783,11 @@ impl Shell {
         if !self.remote.clients.contains_key(&device) {
             // The device is away (this copy came from the cloud): continue the chat here instead.
             // Its agent may not be installed here: the default one takes over, with the chat so far.
+            if reconnecting(self.remote.dropped.get(&device), Instant::now()) {
+                let name = self.chat_device_name(&device);
+                self.toast(format!("{name} is reconnecting; try again in a moment"), cx);
+                return false;
+            }
             let agent = self.state.session(id).map(|s| s.agent.clone()).unwrap_or_default();
             let installed = self.agents.iter().any(|a| a.harness.id() == agent);
             let takeover = match super::shell::pick_harness(self.state.settings.default_harness.as_deref(), &self.agents) {
@@ -1221,6 +1233,11 @@ fn chats_fingerprint(sessions: &[serde_json::Value]) -> u64 {
     hasher.finish()
 }
 
+/// Whether a device's connection closed within the grace period, so local continuation is blocked.
+fn reconnecting(dropped: Option<&Instant>, now: Instant) -> bool {
+    dropped.is_some_and(|then| now.duration_since(*then) < RECONNECT_GRACE)
+}
+
 /// The included devices, other than `me`, to show from the cloud. One connected or still being
 /// connected to (`reached`) is left out: at start-up the cloud often answers first, and its copies
 /// would be taken for an away device's, so typing in one would continue it here while it is online.
@@ -1447,5 +1464,13 @@ mod tests {
         for request in ["prompt", "subscribe", "get_project", "list_cloud", "new_session", ""] {
             assert!(!is_copy(&About { request: request.into(), project: None }), "{request}");
         }
+    }
+
+    #[test]
+    fn reconnecting_checks_the_grace_period() {
+        let now = Instant::now();
+        assert!(!reconnecting(None, now), "never dropped means not reconnecting");
+        assert!(reconnecting(Some(&now.checked_sub(Duration::from_secs(10)).unwrap()), now), "10s ago is within 60s grace");
+        assert!(!reconnecting(Some(&now.checked_sub(Duration::from_secs(61)).unwrap()), now), "61s ago is past the grace period");
     }
 }

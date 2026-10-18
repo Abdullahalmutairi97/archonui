@@ -340,6 +340,16 @@ impl AppState {
         }
     }
 
+    /// Marks every chat from `origin` as away: nothing runs or streams, but the chats and their tiles stay until a copy replaces them.
+    pub fn remote_away(&mut self, origin: &str) {
+        let away: Vec<String> = self.sessions.iter().filter(|s| s.origin.as_deref() == Some(origin)).map(|s| s.id.clone()).collect();
+        for id in &away {
+            self.live.remove(id);
+            self.remote_busy.remove(id);
+            self.dirty.remove(id);
+        }
+    }
+
     /// The device a chat lives on, for a chat shown from another device. `None` for this device's own chats.
     pub fn is_remote(&self, id: &str) -> Option<&str> {
         self.session(id)?.origin.as_deref()
@@ -1845,5 +1855,27 @@ mod tests {
         assert!(app.workspace.layout.focus.is_none(), "focus left the removed tile");
         assert!(app.session(&local).is_some(), "this device's chats stay");
         assert!(app.removed.is_empty(), "nothing to delete on disk");
+    }
+
+    #[test]
+    fn marking_a_device_away_keeps_its_chats_and_tiles() {
+        let mut app = state();
+        let local = app.new_session("pi", "/tmp".into(), Placement::Focused);
+        let mut from_cloud = Session::new("pi", "/home/host".into());
+        let cloud_id = from_cloud.id.clone();
+        from_cloud.title = "Cloud Copy".into();
+        app.put_remote(from_cloud, "pc", false);
+        let mut busy_chat = Session::new("pi", "/home/host".into());
+        let busy_id = busy_chat.id.clone();
+        app.put_remote(busy_chat, "pc", true);
+        app.workspace.layout = Layout { tiles: vec![local.clone(), cloud_id.clone(), busy_id.clone()], focus: Some(busy_id.clone()), ..Layout::default() };
+
+        app.remote_away("pc");
+        assert!(app.session(&cloud_id).is_some(), "cloud chat stays");
+        assert!(app.session(&busy_id).is_some(), "busy chat stays");
+        assert!(!app.busy(&busy_id), "busy mark removed");
+        assert_eq!(app.workspace.layout.tiles, [local.as_str(), cloud_id.as_str(), busy_id.as_str()], "tiles unchanged");
+        assert_eq!(app.workspace.layout.focus.as_deref(), Some(busy_id.as_str()), "focus unchanged");
+        assert!(app.session(&local).is_some(), "this device's chats stay");
     }
 }
