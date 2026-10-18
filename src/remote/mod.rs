@@ -16,6 +16,8 @@ pub mod cloud;
 pub mod hub;
 pub mod host;
 pub mod lock;
+#[cfg(test)]
+mod perf;
 pub mod proto;
 pub mod snapshot;
 pub mod tailscale;

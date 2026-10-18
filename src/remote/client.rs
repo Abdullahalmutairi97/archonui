@@ -68,6 +68,11 @@ impl Client {
     pub fn send(&self, msg: &ClientMsg) -> Result<(), String> {
         self.tx.send(encode(msg)).map_err(|_| "connection closed".to_string())
     }
+
+    /// Queues a message already encoded, e.g. by `proto::put_project_frame` off the UI thread.
+    pub fn send_frame(&self, text: String) -> Result<(), String> {
+        self.tx.send(text).map_err(|_| "connection closed".to_string())
+    }
 }
 
 /// The URL of a host: `ws://addr:port`, with an IPv6 address in brackets.

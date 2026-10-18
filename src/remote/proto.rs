@@ -276,6 +276,26 @@ pub fn encode<T: Serialize>(msg: &T) -> String {
     serde_json::to_string(msg).expect("protocol messages always serialize")
 }
 
+/// `encode(&ClientMsg::PutProject { .. })` with `bundle` base64-encoded straight into the frame, so a
+/// big copy is not held twice more (as base64, then as JSON) and can be built off the UI thread.
+pub fn put_project_frame(project: &str, name: &str, device: &str, commit: &str, bundle: &[u8]) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let field = |s: &str| serde_json::Value::from(s).to_string();
+    let mut out = String::with_capacity(bundle.len().div_ceil(3) * 4 + 256);
+    out.push_str(r#"{"type":"put_project","project":"#);
+    out.push_str(&field(project));
+    out.push_str(r#","name":"#);
+    out.push_str(&field(name));
+    out.push_str(r#","device":"#);
+    out.push_str(&field(device));
+    out.push_str(r#","commit":"#);
+    out.push_str(&field(commit));
+    out.push_str(r#","bundle":""#);
+    STANDARD.encode_string(bundle, &mut out);
+    out.push_str(r#""}"#);
+    out
+}
+
 pub fn decode<T: DeserializeOwned>(text: &str) -> Result<T, String> {
     serde_json::from_str(text).map_err(|e| format!("bad message: {e}"))
 }
@@ -573,6 +593,22 @@ mod tests {
         assert!(!is_unknown_request("bad message: missing field `session` at line 1 column 17"));
         assert!(!is_unknown_request("There is no chat s1 on this device"));
         assert!(!is_unknown_request("git fetch: fatal: bad object"));
+    }
+
+    #[test]
+    fn a_put_project_frame_is_what_encode_makes() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        for bundle in [&b""[..], b"x", b"\x00\xffbundle\n\"bytes\"", &[7u8; 1000][..]] {
+            let (project, name, device, commit) = ("p1", "my \"app\" \\ é", "n1", "abc123");
+            let msg = ClientMsg::PutProject {
+                project: project.into(),
+                name: name.into(),
+                device: device.into(),
+                commit: commit.into(),
+                bundle: STANDARD.encode(bundle),
+            };
+            assert_eq!(put_project_frame(project, name, device, commit, bundle), encode(&msg));
+        }
     }
 
     #[test]
