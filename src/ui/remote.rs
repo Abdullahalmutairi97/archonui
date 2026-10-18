@@ -1056,21 +1056,20 @@ impl Shell {
         .detach();
     }
 
+    /// The name the cloud lists for `project` from `device`, else its id.
+    fn cloud_project_name(&self, project: &str, device: &str) -> String {
+        self.remote
+            .cloud_projects
+            .iter()
+            .flatten()
+            .find(|p| p.project == project && p.device == device)
+            .map_or_else(|| project.to_string(), |p| p.name.clone())
+    }
+
     /// Asks the cloud for a project's latest copy from `device`; it is restored when it arrives.
     pub(super) fn open_from_cloud(&mut self, project: &str, device: &str, cx: &mut Context<Self>) {
         if let Some(store) = self.remote.cloud.clone() {
-            // Get the project name for the toast message.
-            let name = self
-                .remote
-                .cloud_projects
-                .as_ref()
-                .and_then(|list| list.iter().find(|p| p.project == project && p.device == device))
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| project.to_string());
-
-            // Show a toast message right when the restore starts.
-            self.toast(format!("Opening a copy of {name}…"), cx);
-
+            self.toast(format!("Opening a copy of {}…", self.cloud_project_name(project, device)), cx);
             // This device is the cloud: read the copy straight from the store, off the UI thread.
             let (project, device) = (project.to_string(), device.to_string());
             cx.spawn(async move |this, cx| {
@@ -1086,18 +1085,7 @@ impl Shell {
             })
             .detach();
         } else if let Some(cloud) = self.cloud_client() {
-            // Get the project name for the toast message.
-            let name = self
-                .remote
-                .cloud_projects
-                .as_ref()
-                .and_then(|list| list.iter().find(|p| p.project == project && p.device == device))
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| project.to_string());
-
-            // Show a toast message right when the request is sent.
-            self.toast(format!("Opening a copy of {name}…"), cx);
-
+            self.toast(format!("Opening a copy of {}…", self.cloud_project_name(project, device)), cx);
             let _ = cloud.send(&ClientMsg::GetProject { project: project.to_string(), device: device.to_string() });
         } else {
             self.toast("The cloud device is not connected", cx);

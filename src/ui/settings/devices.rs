@@ -185,29 +185,16 @@ impl Shell {
     /// What the cloud holds: each project copy, with a button that opens it in a new folder here.
     fn cloud_section(&mut self, weak: &gpui::WeakEntity<Shell>, _cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let sync = self.state.settings.sync.clone();
         self.ask_cloud_list_once();
         let mut rows: Vec<SettingRow> = Vec::new();
-
-        // Check if the cloud device is valid
-        let cloud_device_missing = if let Some(cloud_id) = &sync.cloud {
-            if let Some(Ok(net)) = &self.settings.tailnet {
-                // Cloud device is missing if it's not the current device and not in the included devices
-                cloud_id != &net.me.id && !sync.devices.iter().any(|d| &d.id == cloud_id)
-            } else {
-                // Can't determine if it's missing without tailnet data
-                false
-            }
-        } else {
-            false
+        // A cloud that is neither this device nor ticked is never connected to, so nothing is copied.
+        let sync = &self.state.settings.sync;
+        let cloud_left_out = match (&sync.cloud, &self.settings.tailnet) {
+            (Some(cloud), Some(Ok(net))) => *cloud != net.me.id && !sync.devices.iter().any(|d| d.id == *cloud),
+            _ => false,
         };
-
-        if cloud_device_missing {
-            rows.push(SettingRow::new(
-                "The cloud device isn't included above. Tick it to copy to it.",
-                "",
-                &theme,
-            ));
+        if cloud_left_out {
+            rows.push(SettingRow::new("The cloud device isn't included above. Tick it to copy to it.", "", &theme));
         }
 
         for p in self.remote.cloud_projects.clone().unwrap_or_default() {
