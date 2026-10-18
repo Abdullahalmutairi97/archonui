@@ -33,7 +33,7 @@ const LIST_EVERY: Duration = Duration::from_secs(20);
 const RETRY_AFTER: Duration = Duration::from_secs(15);
 /// How often projects and chats are copied to the cloud, besides after each reply.
 const BACKUP_EVERY: Duration = Duration::from_secs(5 * 60);
-/// Grace period after a device drops its connection; typing into a chat from it within this window is blocked.
+/// How long after a device's connection drops its chats wait for it rather than continue here.
 const RECONNECT_GRACE: Duration = Duration::from_secs(60);
 
 /// Sharing state of the window. Not saved.
@@ -90,7 +90,7 @@ pub struct RemoteUi {
     pub(super) forwarded: HashMap<u64, Forwarded>,
     /// `chats_fingerprint` of the chats last sent to the current cloud; `None` sends them next round.
     chats_fingerprint: Option<u64>,
-    /// Device connections that dropped, by device id -> when they closed. Prevents local continuation within the grace period.
+    /// When each device's connection last dropped, for `RECONNECT_GRACE`.
     dropped: HashMap<String, Instant>,
 }
 
@@ -111,7 +111,6 @@ impl RemoteUi {
         self.sending.clear();
         self.too_big.clear();
         self.chats_fingerprint = None;
-        self.dropped.clear();
     }
 
     /// Project `project` (`name`) needs `bytes` to copy, more than one message holds: it is no longer
@@ -211,6 +210,7 @@ impl Shell {
         for id in dropped_devices(&sync, self.remote.clients.keys().cloned().chain(shown)) {
             self.remote.clients.remove(&id);
             self.remote.subscribed.remove(&id);
+            self.remote.dropped.remove(&id);
             self.state.remove_remote(&id);
             self.drop_device_approvals(&id);
         }
@@ -310,6 +310,7 @@ impl Shell {
         r.cloud = None;
         r.cloud_jobs = None;
         r.forget_copies();
+        r.dropped.clear();
         r.copy_errors.clear();
         r.backup_again = false;
         r.cloud_projects = None;
@@ -1233,7 +1234,7 @@ fn chats_fingerprint(sessions: &[serde_json::Value]) -> u64 {
     hasher.finish()
 }
 
-/// Whether a device's connection closed within the grace period, so local continuation is blocked.
+/// Whether a connection that dropped at `dropped` may still come back, so its chats wait for it.
 fn reconnecting(dropped: Option<&Instant>, now: Instant) -> bool {
     dropped.is_some_and(|then| now.duration_since(*then) < RECONNECT_GRACE)
 }
