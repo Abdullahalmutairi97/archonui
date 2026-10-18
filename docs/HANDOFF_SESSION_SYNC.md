@@ -129,9 +129,6 @@ listens on 7420 (`ss -ltn`), and `tailscale` is never run.
 - Not built: the other device's files, git and terminal in the side panel.
 - Secrets that were ever committed, or copied while "Copy secret files" was on, stay in the cloud
   copy's history; turning the setting off doesn't remove them. Needs a product decision.
-- A chat continued here from an away device keeps its id; if the away device comes back and also
-  continues it, each device hides the other's version.
-- A connection drop closes open tiles of that device's chats.
 - Building on a machine where rustc crashes with SIGSEGV: use `RUST_MIN_STACK=67108864 cargo build
   --release` (seen on ashpc).
 - Tests in `engine::skills` and `engine::discover::tests::run_text_output_is_private` fail when
