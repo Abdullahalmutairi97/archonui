@@ -310,10 +310,11 @@ impl Shell {
             ("This device keeps the copies".to_string(), true)
         } else if left_out {
             ("Not shared with — turn its switch on above to copy to it".to_string(), false)
-        } else if self.device_connected(&cloud) {
-            ("Connected · copies every few minutes and after each reply".to_string(), true)
         } else {
-            ("Not connected · copies resume when it's back".to_string(), false)
+            let (running, last, next) = self.backup_status();
+            let next = next.map(|at| at.saturating_duration_since(std::time::Instant::now()));
+            let connected = self.device_connected(&cloud);
+            (backup_line(connected, running, last, next, crate::store::now()), connected)
         };
         let back_up = Button::new("cloud-backup", "Back up now", &theme).style(ButtonStyle::Outline).on_click(act(weak, |this, cx| {
             this.refresh_cloud_list();
@@ -458,6 +459,30 @@ fn card(glyph: &'static str, lit: bool, title: &str, subtitle: &str, ok: Option<
         .into_any_element()
 }
 
+/// The cloud card's status line: when the last full backup was and when the next timed one is.
+/// Times are whole minutes; `now` and `last` are seconds since the epoch.
+fn backup_line(connected: bool, running: bool, last: Option<u64>, next: Option<std::time::Duration>, now: u64) -> String {
+    let ago = |at: u64| match now.saturating_sub(at) / 60 {
+        0 => "just now".to_string(),
+        m if m < 60 => format!("{m} min ago"),
+        m if m < 60 * 24 => format!("{} h ago", m / 60),
+        m => format!("{} d ago", m / (60 * 24)),
+    };
+    let next = next.map(|d| match d.as_secs().div_ceil(60) {
+        0 | 1 => "in under a minute".to_string(),
+        m => format!("in {m} min"),
+    });
+    match (connected, running, last, next) {
+        (false, _, Some(at), _) => format!("Not connected · last backup {}", ago(at)),
+        (false, _, None, _) => "Not connected · copies start when it's back".to_string(),
+        (true, true, _, _) => "Backing up…".to_string(),
+        (true, false, Some(at), Some(next)) => format!("Backed up {} · next {next}", ago(at)),
+        (true, false, Some(at), None) => format!("Backed up {}", ago(at)),
+        (true, false, None, Some(next)) => format!("Connected · first backup {next}"),
+        (true, false, None, None) => "Connected · first backup soon".to_string(),
+    }
+}
+
 /// A muted line inside a list box.
 fn note(text: &str, theme: &Theme) -> AnyElement {
     div().px(px(16.)).py(px(14.)).text_size(px(12.)).text_color(theme.muted.to_hsla()).child(text.to_string()).into_any_element()
@@ -574,6 +599,19 @@ mod tests {
         );
         let hidden: Vec<&str> = rows.iter().filter(|r| hidden_unless_asked(r)).map(|r| r.device.id.as_str()).collect();
         assert_eq!(hidden, ["phone"], "a shared device stays listed even while offline");
+    }
+
+    #[test]
+    fn the_cloud_card_says_when_it_last_backed_up_and_when_next() {
+        use std::time::Duration;
+        let now = 1_000_000;
+        let min = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(backup_line(true, false, Some(now - 120), Some(min(3)), now), "Backed up 2 min ago · next in 3 min");
+        assert_eq!(backup_line(true, false, Some(now - 10), Some(Duration::from_secs(40)), now), "Backed up just now · next in under a minute");
+        assert_eq!(backup_line(true, true, Some(now - 120), Some(min(3)), now), "Backing up…");
+        assert_eq!(backup_line(true, false, None, Some(min(5)), now), "Connected · first backup in 5 min");
+        assert_eq!(backup_line(false, false, Some(now - 2 * 3600), None, now), "Not connected · last backup 2 h ago");
+        assert_eq!(backup_line(false, false, None, None, now), "Not connected · copies start when it's back");
     }
 
     #[test]
