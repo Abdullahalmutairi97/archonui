@@ -344,7 +344,13 @@ impl Shell {
             Some(path) if path.is_file() => WallpaperSource::File(path.clone()),
             _ => WallpaperSource::theme(&self.theme),
         };
-        self.with_filter(base, filter)
+        let filtered = self.with_filter(base, filter);
+        if self.state.settings.wallpaper_fade {
+            let bg = self.theme.bg;
+            WallpaperSource::Faded(Box::new(filtered), (u32::from(bg.r) << 16) | (u32::from(bg.g) << 8) | u32::from(bg.b))
+        } else {
+            filtered
+        }
     }
 
     /// `base` through `filter`, in this theme's colours.
@@ -361,6 +367,7 @@ impl Shell {
             F::Warm => return WallpaperSource::Graded(Box::new(base), Grade::Warm),
             F::Cool => return WallpaperSource::Graded(Box::new(base), Grade::Cool),
             F::Soft => return WallpaperSource::Graded(Box::new(base), Grade::Soft),
+            F::DuotoneGrey => vec![0x0e0e0e, 0xd4d4d4],
         };
         let pixel = settings.filter_pixel.round() as u32;
         WallpaperSource::Dithered(Box::new(base), crate::ui::glass::Dither { palette, pixel })

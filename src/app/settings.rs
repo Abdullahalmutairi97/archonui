@@ -43,6 +43,8 @@ pub enum BackgroundFilter {
     Cool,
     /// Blurred into soft shapes.
     Soft,
+    /// Ordered dither in near-black and light grey, whatever the theme's colours.
+    DuotoneGrey,
 }
 pub const TEXT_SIZE: (f32, f32) = (13., 19.);
 pub const TERMINAL_SIZE: (f32, f32) = (10., 24.);
@@ -87,6 +89,8 @@ pub struct AppSettings {
     pub filter: BackgroundFilter,
     /// Width of the filter's dots, px.
     pub filter_pixel: f32,
+    /// Fade the bottom of the wallpaper into the theme's background colour.
+    pub wallpaper_fade: bool,
     /// Give unfocused tiles the focused tile's tint.
     pub tint_all: bool,
     /// Draw the accent gradient ring around the focused session. Off, it gets the same plain border
@@ -186,6 +190,7 @@ impl Default for AppSettings {
             wallpaper_dim: 0.,
             window_opacity: 100.,
             filter: BackgroundFilter::Off,
+            wallpaper_fade: false,
             filter_pixel: 3.,
             tint_all: false,
             session_ring: true,
