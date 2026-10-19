@@ -60,10 +60,12 @@ impl Shell {
         }
         let current = self.state.workspace.current_project.clone();
         let rename = self.sidebar.rename.as_ref().map(|r| (r.target.clone(), r.input.clone()));
+        let hidden = self.state.settings.hidden_projects.clone();
         let cards: Vec<AnyElement> = self
             .state
             .projects()
             .iter()
+            .filter(|p| !hidden.contains(&p.id))
             .map(|project| {
                 let renaming = rename.as_ref().and_then(|(target, input)| match target {
                     Target::Project(id) if *id == project.id => Some(input),
@@ -77,7 +79,7 @@ impl Shell {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(px(6.))
             .children(cards)
             .child(self.open_folder_button(cx))
             .children(remote)
@@ -180,8 +182,7 @@ impl Shell {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .font_family(theme.display_font.clone())
-                .text_size(px(20.))
+                .text_size(px(14.))
                 .text_color(theme.fg.to_hsla())
                 .child(project.name.clone())
                 .into_any_element(),
@@ -191,9 +192,10 @@ impl Shell {
             .id(ElementId::Name(format!("project-{}", project.id).into()))
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .p(px(14.))
-            .rounded(px(9.))
+            .gap(px(4.))
+            .px(px(12.))
+            .py(px(9.))
+            .rounded(px(8.))
             .border_1()
             .border_color(if active { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
             .when(active, |d| d.bg(theme.soft.to_hsla()))
@@ -224,7 +226,7 @@ impl Shell {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_size(px(12.))
+                    .text_size(px(11.))
                     .text_color(theme.muted.to_hsla())
                     .child(project.path.display().to_string()),
             )
@@ -236,11 +238,11 @@ impl Shell {
                     .when_some(info.and_then(|i| i.branch.clone()), |row, branch| {
                         row.child(
                             div()
-                                .px(px(8.))
-                                .py(px(3.))
-                                .rounded(px(5.))
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(px(4.))
                                 .bg(theme.line2.to_hsla())
-                                .text_size(px(11.))
+                                .text_size(px(10.5))
                                 .text_color(theme.alt.to_hsla())
                                 .child(format!("⎇ {branch}")),
                         )

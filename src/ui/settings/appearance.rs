@@ -2,7 +2,7 @@
 
 use super::{
     colour::{token_colour, HSL_CHANNELS},
-    controls::{button_row, caption, heading, listen, section, segmented_row, toggle_row},
+    controls::{caption, heading, listen, section, segmented_row, toggle_row},
     FontSlot, Slide,
 };
 use crate::{
@@ -12,10 +12,8 @@ use crate::{
     },
     ui::{
         anim,
-        fonts::FontChoice,
         shell::Shell,
         theme::{self, presets, BackgroundStyle, EDITABLE_TOKENS},
-        tiling::LayoutMode,
         widgets::{
             button::{Button, ButtonStyle},
             section::SettingRow,
@@ -45,12 +43,8 @@ const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
 ];
 
 /// The background filters in picker order.
-const FILTERS: [(BackgroundFilter, &str); 8] = [
+const FILTERS: [(BackgroundFilter, &str); 4] = [
     (BackgroundFilter::Off, "Original"),
-    (BackgroundFilter::Mono, "Mono"),
-    (BackgroundFilter::Warm, "Warm"),
-    (BackgroundFilter::Cool, "Cool"),
-    (BackgroundFilter::Soft, "Soft"),
     (BackgroundFilter::Duotone, "Duotone"),
     (BackgroundFilter::DuotoneGrey, "Duotone B&W"),
     (BackgroundFilter::Tritone, "Tritone"),
@@ -704,34 +698,13 @@ impl Shell {
         .detach();
     }
 
-    /// The theme's pairings as a segmented control, the Titles or Text slot, then a chip per font.
+    /// The Titles or Text slot, then a chip per font.
     fn typography_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let weak = cx.entity().downgrade();
         let key = theme_key(&self.state.settings.theme);
         let choice = self.state.settings.fonts.get(key).cloned().unwrap_or_default();
         let preset = theme::preset(&self.state.settings.theme);
-        let custom = choice.display.is_some() || choice.ui.is_some();
         let pairing = preset.pairings[choice.pairing % 3];
-        let pairing_names: Vec<&str> = preset.pairings.iter().map(|p| p.label).collect();
-        // A custom font clears the pairing highlight, as the pairing cards did.
-        let pairing_index = if custom { pairing_names.len() } else { choice.pairing % 3 };
-
-        let pairing_row = segmented_row(
-            "font-pairing",
-            "Pairing",
-            "Titles and Text together",
-            &pairing_names,
-            pairing_index,
-            &weak,
-            &theme,
-            |this, i, cx| {
-                let key = theme_key(&this.state.settings.theme).to_string();
-                this.state.settings.fonts.insert(key, FontChoice { pairing: i, display: None, ui: None });
-                this.refresh_theme(cx);
-            },
-            None,
-        );
         let titles = choice.display.clone().unwrap_or_else(|| pairing.display.to_string());
         let text = choice.ui.clone().unwrap_or_else(|| pairing.ui.to_string());
         let open = self.settings.font_open;
@@ -816,7 +789,7 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(section("FONTS", vec![pairing_row, titles_row, text_row], &theme))
+            .child(section("FONTS", vec![titles_row, text_row], &theme))
             .when_some(list, |d, list| d.child(list))
             .into_any_element()
     }
@@ -933,27 +906,12 @@ impl Shell {
     fn layout_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let weak = cx.entity().downgrade();
-        let master = matches!(self.state.workspace.layout.mode, LayoutMode::Master);
         let gaps = self.state.settings.gaps;
         let radius = self.state.settings.radius;
         let flush = self.state.settings.flush;
         let gaps_slider = self.slide(Slide::Gaps, gaps, range(GAPS, 1.), "px", cx);
         let radius_slider = self.slide(Slide::Radius, radius, range(RADIUS, 1.), "px", cx);
         let rows = vec![
-            segmented_row(
-                "tiling",
-                "Tiling",
-                "",
-                &["Dwindle", "Master"],
-                usize::from(master),
-                &weak,
-                &theme,
-                |this, i, cx| {
-                    this.state.workspace.layout.mode = if i == 1 { LayoutMode::Master } else { LayoutMode::Dwindle };
-                    this.save(cx);
-                },
-                None,
-            ),
             toggle_row(
                 "flush",
                 "Edge to edge",
@@ -969,21 +927,6 @@ impl Shell {
             ),
             SettingRow::new("Gaps", "", &theme).control(gaps_slider),
             SettingRow::new("Corner radius", "", &theme).control(radius_slider),
-            button_row(
-                "reset-sizes",
-                "Tile and panel sizes",
-                "Drag a gap to resize",
-                "Reset sizes",
-                ButtonStyle::Outline,
-                &weak,
-                &theme,
-                |this, cx| {
-                    this.state.workspace.layout.ratios.clear();
-                    this.state.workspace.layout.master_ratio = 0.56;
-                    this.state.workspace.right_width = 480.;
-                    this.widths_changed(false, cx);
-                },
-            ),
         ];
         section("LAYOUT", rows, &theme)
     }

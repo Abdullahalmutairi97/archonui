@@ -116,6 +116,8 @@ pub struct AppSettings {
     /// Reopen the tiles that were open when ArchonUI last quit.
     pub restore: bool,
     pub default_project: Option<String>,
+    /// Projects left out of the sidebar's Projects list (unpinned in General). Empty: all show.
+    pub hidden_projects: Vec<String>,
     pub default_mode: Mode,
     /// Auto runs shell commands in the CLI's sandbox. Off leaves the harness config as it is.
     pub sandbox: bool,
@@ -189,6 +191,7 @@ impl Default for AppSettings {
             panel_blur: 24.,
             wallpaper_dim: 0.,
             window_opacity: 100.,
+            hidden_projects: Vec::new(),
             filter: BackgroundFilter::Off,
             wallpaper_fade: false,
             filter_pixel: 3.,
@@ -240,6 +243,10 @@ impl Default for AppSettings {
 impl AppSettings {
     /// Brings values back into their ranges and fills in keybindings the file left out.
     pub fn normalize(&mut self) {
+        // Filters that were offered for a while and then dropped show the wallpaper as it is.
+        if matches!(self.filter, BackgroundFilter::Mono | BackgroundFilter::Warm | BackgroundFilter::Cool | BackgroundFilter::Soft) {
+            self.filter = BackgroundFilter::Off;
+        }
         // A NaN would be saved as `null`, which no longer parses, so it goes back to the default.
         let d = Self::default();
         self.gaps = fit(self.gaps, GAPS, d.gaps);

@@ -104,19 +104,14 @@ enum NavEntry {
     Page(Page),
 }
 
-const NAV: [NavEntry; 13] = [
-    NavEntry::Head("APP"),
+/// The pages in the nav. Models are part of Agents, and Skills and Extensions part of Tools; their
+/// own `Page` values still open those pages, scrolled from the top.
+const NAV: [NavEntry; 6] = [
     NavEntry::Page(Page::General),
     NavEntry::Page(Page::Appearance),
-    NavEntry::Page(Page::Keyboard),
-    NavEntry::Head("AI"),
     NavEntry::Page(Page::Harnesses),
-    NavEntry::Page(Page::Models),
-    NavEntry::Head("CAPABILITIES"),
     NavEntry::Page(Page::Tools),
-    NavEntry::Page(Page::Skills),
-    NavEntry::Page(Page::Extensions),
-    NavEntry::Head("NETWORK"),
+    NavEntry::Page(Page::Keyboard),
     NavEntry::Page(Page::Devices),
 ];
 
@@ -143,7 +138,7 @@ impl Page {
             Page::General => "General",
             Page::Appearance => "Appearance",
             Page::Keyboard => "Keyboard",
-            Page::Harnesses => "Harnesses",
+            Page::Harnesses => "Agents",
             Page::Models => "Models",
             Page::Tools => "Tools",
             Page::Skills => "Skills",
@@ -157,11 +152,11 @@ impl Page {
             Page::General => "Startup, agents and notifications",
             Page::Appearance => "Themes, wallpaper and layout",
             Page::Keyboard => "Shortcuts",
-            Page::Harnesses => "The agent apps archonui runs",
-            Page::Models => "Models in the message box",
-            Page::Tools => "Tools agents can use",
-            Page::Skills => "Instructions agents load on demand",
-            Page::Extensions => "Plugins",
+            Page::Harnesses => "Agent apps and their models",
+            Page::Models => "Agent apps and their models",
+            Page::Tools => "Tools, skills and plugins",
+            Page::Skills => "Tools, skills and plugins",
+            Page::Extensions => "Tools, skills and plugins",
             Page::Devices => "Share chats over Tailscale",
         }
     }
@@ -398,11 +393,19 @@ impl Shell {
             Page::General => self.general_page(cx),
             Page::Appearance => self.appearance_page(cx),
             Page::Keyboard => self.keyboard_page(cx),
-            Page::Harnesses => self.harnesses_page(cx),
-            Page::Models => self.models_page(cx),
-            Page::Tools => self.tools_page(cx),
-            Page::Skills => self.skills_page(cx),
-            Page::Extensions => self.extensions_page(cx),
+            Page::Harnesses | Page::Models => {
+                let mut blocks = self.harnesses_page(cx);
+                blocks.extend(self.models_page(cx));
+                blocks
+            }
+            Page::Tools | Page::Skills | Page::Extensions => {
+                let mut blocks = self.tools_page(cx);
+                blocks.push(controls::heading("SKILLS", None, &theme));
+                blocks.extend(self.skills_page(cx));
+                blocks.push(controls::heading("EXTENSIONS", None, &theme));
+                blocks.extend(self.extensions_page(cx));
+                blocks
+            }
             Page::Devices => self.devices_page(cx),
         };
         let nav = if compact { self.settings_strip(cx) } else { self.settings_nav(nav_width, cx) };
@@ -547,12 +550,7 @@ impl Shell {
                 .px(px(12.))
                 .text_size(px(11.))
                 .text_color(theme.muted.to_hsla())
-                .child(format!(
-                    "{} {} · {}",
-                    self.state.settings.app_name,
-                    env!("CARGO_PKG_VERSION"),
-                    channel_name(self.state.settings.update_channel)
-                )),
+                .child(format!("{} {}", self.state.settings.app_name, env!("CARGO_PKG_VERSION"))),
         )
         .into_any_element()
     }
