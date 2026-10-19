@@ -185,9 +185,6 @@ impl Shell {
         let support = self.tool_support();
         let enabled = self.state.settings.mcp_servers.iter().filter(|s| s.enabled).count();
 
-        let add = Button::new("add-mcp", "+ Add server", &theme).style(ButtonStyle::Outline).on_click(listen(cx, |this, cx| {
-            this.toast("Adding a server from here isn't available yet. Add it to settings.json.", cx);
-        }));
         let mut list = div()
             .flex()
             .flex_col()
@@ -221,7 +218,7 @@ impl Shell {
                     // How many enabled servers each installed agent receives.
                     .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(mcp_summary(&support, enabled)))
                     .child(div().flex_1())
-                    .child(add),
+                    
             )
             .child(list)
             .into_any_element();

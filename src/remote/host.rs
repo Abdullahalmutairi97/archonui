@@ -1013,8 +1013,9 @@ mod tests {
     #[test]
     fn a_request_from_a_newer_client_gets_an_error() {
         use crate::remote::client::{Client, ClientEvent};
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let (hub, requests) = Hub::start(SocketAddr::from(([127, 0, 0, 1], port)), "host".into(), Default::default()).unwrap();
+        // Port 0 and then the port it got: picking a free port first races the other tests for it.
+        let (hub, requests) = Hub::start(SocketAddr::from(([127, 0, 0, 1], 0)), "host".into(), Default::default()).unwrap();
+        let port = hub.local_addr().port();
         let client = Client::connect("127.0.0.1", port, "newer").unwrap();
         // The frame a newer client would send, as this version reads it.
         let req: ClientMsg = crate::remote::proto::decode(r#"{"type":"something_new","session":"s1"}"#).unwrap();

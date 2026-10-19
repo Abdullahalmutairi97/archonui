@@ -1,13 +1,14 @@
-//! The General page: startup, agent behaviour, notifications, updates and data. Spec: settings.md §2.
+//! The General page: startup, projects in the sidebar, agent behaviour, notifications and data.
 
 use super::{
     controls::{button_row, listen, section, segmented_row, toggle_row},
     Slide,
 };
 use crate::{
-    app::settings::{AppSettings, McpTransport, UpdateChannel, MAX_STEPS},
+    app::settings::{AppSettings, McpTransport, MAX_STEPS},
     engine::Mode,
     ui::{
+        composer::icons::stroke_icon,
         shell::Shell,
         theme::Theme,
         widgets::{
@@ -20,8 +21,8 @@ use crate::{
 use gpui::{div, prelude::*, AnyElement, Context, PathPromptOptions};
 use crate::ui::scale::px;
 
-/// The channels in the order the segmented control lists them.
-const CHANNELS: [UpdateChannel; 3] = [UpdateChannel::Stable, UpdateChannel::Beta, UpdateChannel::Nightly];
+/// A pin, for the projects shown in the sidebar.
+const PIN: &str = "M6 2h4M7 2v4.5L4.5 9h7L9 6.5V2M8 9v5";
 
 /// `settings` with every MCP secret blanked, so an export can be shared. Key and
 /// header names are kept; only their values are replaced.
@@ -117,13 +118,10 @@ impl Shell {
             self.state.projects().iter().map(|p| (p.id.clone(), p.name.clone())).collect();
         let s = &self.state.settings;
         let restore = s.restore;
-        let default_project = s.default_project.as_ref().and_then(|id| projects.iter().position(|(pid, _)| pid == id));
         let mode = Mode::ALL.iter().position(|m| *m == s.default_mode).unwrap_or(0);
         let (sandbox, ask_network, show_tools) = (s.sandbox, s.ask_network, s.show_tools);
         let max_steps = s.max_steps;
         let (notify, sound) = (s.notify, s.sound);
-        let channel = CHANNELS.iter().position(|c| *c == s.update_channel).unwrap_or(0);
-        let analytics = s.analytics;
         let steps = self.slide(
             Slide::MaxSteps,
             max_steps as f32,
@@ -131,27 +129,6 @@ impl Shell {
             "",
             cx,
         );
-
-        let project_names: Vec<&str> = projects.iter().map(|(_, name)| name.as_str()).collect();
-        let project_row = if project_names.is_empty() {
-            SettingRow::new("Default project", "When nothing is focused", &theme)
-                .control(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child("No projects yet"))
-        } else {
-            segmented_row(
-                "default-project",
-                "Default project",
-                "When nothing is focused",
-                &project_names,
-                default_project.unwrap_or(usize::MAX),
-                &weak,
-                &theme,
-                |this, i, cx| {
-                    this.state.settings.default_project = this.state.projects().get(i).map(|p| p.id.clone());
-                    this.save(cx);
-                },
-                None,
-            )
-        };
 
         let folder = self.state.settings.default_folder.clone();
         let folder_text = folder.as_ref().map_or_else(|| "Not set".to_string(), |p| p.display().to_string());
@@ -215,7 +192,6 @@ impl Shell {
                     },
                     None,
                 ),
-                project_row,
                 folder_row,
             ],
             &theme,
@@ -322,42 +298,6 @@ impl Shell {
             &theme,
         );
 
-        let updates = section(
-            "UPDATES AND PRIVACY",
-            vec![
-                segmented_row(
-                    "update-channel",
-                    "Update channel",
-                    "Beta and Nightly may be unstable",
-                    &["Stable", "Beta", "Nightly"],
-                    channel,
-                    &weak,
-                    &theme,
-                    |this, i, cx| {
-                        if let Some(channel) = CHANNELS.get(i).copied() {
-                            this.state.settings.update_channel = channel;
-                            this.save(cx);
-                        }
-                    },
-                    Some("Update channels are not available in this build."),
-                ),
-                toggle_row(
-                    "analytics",
-                    "Share anonymous usage data",
-                    "Never prompts or code",
-                    analytics,
-                    &weak,
-                    &theme,
-                    |this, on, cx| {
-                        this.state.settings.analytics = on;
-                        this.save(cx);
-                    },
-                    Some("Anonymous usage data is not sent in this build."),
-                ),
-            ],
-            &theme,
-        );
-
         let data = section(
             "DATA",
             vec![
@@ -392,7 +332,41 @@ impl Shell {
             &theme,
         );
 
-        vec![startup, agent, notifications, updates, data]
+        let pins = self.project_pins(&projects, cx);
+        vec![startup, pins, agent, notifications, data]
+    }
+
+    /// Every project with a pin: pinned ones show in the sidebar's Projects list.
+    fn project_pins(&self, projects: &[(String, String)], cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let hidden = &self.state.settings.hidden_projects;
+        let mut rows = Vec::new();
+        if projects.is_empty() {
+            rows.push(SettingRow::new("No projects yet", "", theme));
+        }
+        for (id, name) in projects {
+            let pinned = !hidden.contains(id);
+            let id = id.clone();
+            let colour = if pinned { theme.acc2 } else { theme.faint };
+            let pin = div()
+                .id(gpui::SharedString::from(format!("pin-{id}")))
+                .p(px(6.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(theme.line2.to_hsla()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let hidden = &mut this.state.settings.hidden_projects;
+                    if let Some(i) = hidden.iter().position(|h| *h == id) {
+                        hidden.remove(i);
+                    } else {
+                        hidden.push(id.clone());
+                    }
+                    this.save(cx);
+                }))
+                .child(stroke_icon(PIN, 15., 1.4, colour.to_hsla()));
+            rows.push(SettingRow::new(name.clone(), if pinned { "" } else { "Hidden from the sidebar" }, theme).control(pin));
+        }
+        section("PROJECTS", rows, theme)
     }
 
     /// Opens a folder picker and stores it as the folder new sessions run in.

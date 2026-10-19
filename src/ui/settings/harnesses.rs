@@ -68,15 +68,14 @@ impl Shell {
                         .child(if self.settings.testing == Some(id) { "Testing…" } else { "Test" }),
                 );
             }
-            let (label, style) = match (installed, on) {
-                (true, true) => ("Disable", ButtonStyle::Outline),
-                (true, false) => ("Enable", ButtonStyle::Filled),
-                (false, _) => ("Install", ButtonStyle::Filled),
-            };
-            let action = Button::new(SharedString::from(format!("harness-action-{id}")), label, &theme)
-                .style(style)
-                .on_click(listen(cx, move |this, cx| this.harness_action(id, installed, on, cx)));
-            footer = footer.child(action);
+            // Not installed: the status says so; there is nothing to press until it is on PATH.
+            if installed {
+                let (label, style) = if on { ("Disable", ButtonStyle::Outline) } else { ("Enable", ButtonStyle::Filled) };
+                let action = Button::new(SharedString::from(format!("harness-action-{id}")), label, &theme)
+                    .style(style)
+                    .on_click(listen(cx, move |this, cx| this.harness_action(id, installed, on, cx)));
+                footer = footer.child(action);
+            }
 
             grid = grid.child(
                 div()
@@ -134,23 +133,6 @@ impl Shell {
                     .child(footer),
             );
         }
-        grid = grid.child(
-            div()
-                .col_span_full()
-                .p(px(16.))
-                .rounded(px(12.))
-                .border_1()
-                .border_dashed()
-                .border_color(theme.line2.to_hsla())
-                .text_size(px(13.))
-                .text_color(theme.muted.to_hsla())
-                .cursor_pointer()
-                .id("add-harness")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.toast("Add any ACP-compatible CLI", cx);
-                }))
-                .child("+ Add harness"),
-        );
         vec![grid.into_any_element()]
     }
 
