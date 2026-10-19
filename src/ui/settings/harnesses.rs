@@ -26,7 +26,9 @@ fn harness_blurb(id: &str) -> &'static str {
 impl Shell {
     pub(super) fn harnesses_page(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = self.theme.clone();
-        let mut grid = div().grid().grid_cols(2).gap(px(14.)).pt(px(18.));
+        // Two cards a row while each gets room for its name, blurb and status; one below that.
+        let cols = super::columns(self.settings.body_w, 340., 14., 2);
+        let mut grid = div().grid().grid_cols(cols).gap(px(14.)).pt(px(18.));
         for id in HARNESS_IDS {
             let Some(harness) = engine::harness(id) else { continue };
             let agent = self.agents.iter().find(|a| a.harness.id() == id);
@@ -47,9 +49,10 @@ impl Shell {
 
             let mut footer = div()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(8.))
-                .child(div().flex_1().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(summary));
+                .child(div().flex_1().min_w(px(0.)).text_size(px(12.)).text_color(theme.muted.to_hsla()).child(summary));
             if on {
                 footer = footer.child(
                     div()
@@ -77,6 +80,7 @@ impl Shell {
 
             grid = grid.child(
                 div()
+                    .min_w(px(0.))
                     .flex()
                     .flex_col()
                     .gap(px(14.))
@@ -88,10 +92,12 @@ impl Shell {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap(px(14.))
                             .child(
                                 div()
+                                    .flex_none()
                                     .w(px(42.))
                                     .h(px(42.))
                                     .rounded(px(10.))
@@ -104,6 +110,8 @@ impl Shell {
                             .child(
                                 div()
                                     .flex_1()
+                                    .flex_basis(px(140.))
+                                    .min_w(px(0.))
                                     .flex()
                                     .flex_col()
                                     .child(div().text_size(px(16.)).child(harness.name()))
@@ -111,6 +119,7 @@ impl Shell {
                             )
                             .child(
                                 div()
+                                    .flex_none()
                                     .flex()
                                     .items_center()
                                     .gap(px(7.))

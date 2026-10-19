@@ -92,7 +92,7 @@ impl Shell {
             list = list.child(extension_row(ext, &theme, toggle, cx));
         }
 
-        let mut browse = div().grid().grid_cols(3).gap(px(12.));
+        let mut browse = div().grid().grid_cols(super::columns(self.settings.body_w, 220., 12., 3)).gap(px(12.));
         let candidates: Vec<&Extension> = available.iter().filter(|e| !e.installed && matches(e, &query)).collect();
         if candidates.is_empty() {
             browse = browse.col_span_full().child(

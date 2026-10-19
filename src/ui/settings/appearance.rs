@@ -12,7 +12,7 @@ use crate::{
     },
     ui::{
         anim,
-        fonts::{self, FontChoice},
+        fonts::FontChoice,
         shell::Shell,
         theme::{self, presets, BackgroundStyle, EDITABLE_TOKENS},
         tiling::LayoutMode,
@@ -51,20 +51,17 @@ const FILTERS: [(BackgroundFilter, &str); 3] =
 /// Captions over the colour swatches with how many of `EDITABLE_TOKENS`, in order, each holds.
 const COLOUR_GROUPS: [(&str, usize); 4] = [("Surfaces", 4), ("Text", 4), ("Accents", 4), ("Lines and highlights", 5)];
 
+/// The bundled families by kind, in the order the font list shows them. Display faces come last: they
+/// suit titles more than running text.
+const FONT_GROUPS: [(&str, &[&str]); 4] = [
+    ("Sans", &["Geist", "IBM Plex Sans", "DM Sans", "Instrument Sans", "Manrope", "Space Grotesk"]),
+    ("Serif", &["Young Serif", "Cormorant Garamond", "Bodoni Moda", "Gloock", "Zen Old Mincho", "Italiana", "Philosopher"]),
+    ("Mono", &["JetBrains Mono", "IBM Plex Mono", "Geist Mono", "DM Mono", "Fira Code", "Space Mono"]),
+    ("Display", &["Cinzel", "Bebas Neue", "Orbitron", "UnifrakturCook", "Pirata One", "Grenze Gotisch", "Metamorphous", "Pixelify Sans", "Silkscreen", "Press Start 2P"]),
+];
+
 /// Image files the backgrounds folder offers.
 const IMAGE_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "webp", "gif"];
-
-/// The width of the wallpaper tiles' row for `tiles` tiles: one row while they fit, else the widest row
-/// that fits the cap, so the rest wrap below.
-fn wall_grid_width(tiles: usize) -> f32 {
-    const TILE: f32 = 64.;
-    const GAP: f32 = 6.;
-    const MAX: f32 = 420.;
-    let per_row = (((MAX + GAP) / (TILE + GAP)).floor() as usize).max(1);
-    let n = tiles.clamp(1, per_row) as f32;
-    // One px of slack, so rounding in the scaled layout can't push the last tile onto a new line.
-    n * TILE + (n - 1.) * GAP + 1.
-}
 
 /// A theme's background without an image, as a thumbnail: its three gradient colours.
 fn gradient_thumb(stops: [crate::ui::theme::Rgba; 3]) -> gpui::Div {
@@ -271,6 +268,7 @@ impl Shell {
             .when_some(name, |d, input| {
                 d.child(
                     div()
+                        .max_w(px(320.))
                         .px(px(10.))
                         .py(px(6.))
                         .rounded(px(8.))
@@ -344,23 +342,46 @@ impl Shell {
     fn presets_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let current = self.state.settings.theme.clone();
-        let mut grid = div().grid().grid_cols(6).gap(px(10.));
+        let mut grid = div().grid().grid_cols(super::columns(self.settings.body_w, 112., 10., 6)).gap(px(10.));
         for (i, preset) in presets().iter().enumerate() {
             let id = preset.id.to_string();
             let active = id == current;
             let edited = self.state.settings.custom_colours.get(theme_key(&id)).is_some_and(|t| !t.is_empty());
             let wall = Some(Path::new(preset.wallpaper.as_ref())).filter(|p| p.is_file()).and_then(|p| self.wall_thumb(p));
             let gradient = preset.gradient;
+            // A small picture of the theme: its background, a sidebar, a session with lines of text and
+            // an accent button, so themes with similar backgrounds still look different.
+            let look = theme::resolve(preset, &Default::default(), Default::default());
+            let line = |w: f32, c: crate::ui::theme::Rgba| div().h(px(3.)).w(gpui::relative(w)).rounded(px(2.)).bg(c.to_hsla());
             let thumb = div()
                 .relative()
-                .h(px(46.))
+                .h(px(58.))
                 .rounded(px(6.))
                 .overflow_hidden()
                 .bg(preset.bg.to_hsla())
                 .child(match wall {
                     Some(wall) => img(wall).absolute().size_full().object_fit(ObjectFit::Cover).into_any_element(),
                     None => gradient_thumb(gradient).absolute().into_any_element(),
-                });
+                })
+                .child(div().absolute().left_0().top_0().bottom_0().w(gpui::relative(0.22)).bg(look.panel.alpha(0.9).to_hsla()).p(px(5.)).flex().flex_col().gap(px(4.)).child(line(0.8, look.acc)).child(line(0.6, look.muted)).child(line(0.7, look.muted)))
+                .child(
+                    div()
+                        .absolute()
+                        .left(gpui::relative(0.28))
+                        .right(px(6.))
+                        .top(px(6.))
+                        .bottom(px(6.))
+                        .rounded(px(4.))
+                        .bg(look.tile.alpha(0.92).to_hsla())
+                        .p(px(6.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(line(0.55, look.fg))
+                        .child(line(0.85, look.muted))
+                        .child(line(0.7, look.muted))
+                        .child(div().absolute().right(px(5.)).bottom(px(5.)).w(px(14.)).h(px(6.)).rounded(px(3.)).bg(look.acc.to_hsla())),
+                );
             grid = grid.child(
                 card(("preset", i), active, &theme)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -368,7 +389,6 @@ impl Shell {
                         // The open colour editor belongs to the theme it was opened on.
                         this.settings.picker = None;
                         this.state.settings.fonts.remove(theme_key(&id));
-                        this.state.settings.wallpapers.remove(theme_key(&id));
                         this.refresh_theme(cx);
                     }))
                     .child(thumb)
@@ -396,7 +416,7 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(heading("THEME", Some("Picking a theme also resets fonts and wallpaper."), &theme))
+            .child(heading("THEME", Some("Picking a theme also resets fonts."), &theme))
             .child(grid)
             .into_any_element()
     }
@@ -431,7 +451,7 @@ impl Shell {
             None,
         );
         let images = self.wallpaper_grid(cx);
-        let image_row = SettingRow::new("Image", "Uploads are kept in the backgrounds folder.", &theme).control(images);
+        let image_row = SettingRow::new("Image", "Your pick stays when you change theme. Uploads are kept in the backgrounds folder.", &theme).below(images);
         let filter_row = segmented_row(
             "bg-filter",
             "Filter",
@@ -467,17 +487,15 @@ impl Shell {
     /// upload tile.
     fn wallpaper_grid(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let picked = self.state.settings.wallpapers.get(theme_key(&self.state.settings.theme)).filter(|p| p.is_file()).cloned();
+        let picked = self.state.settings.wallpaper.clone().filter(|p| p.is_file());
         let backgrounds = self.backgrounds();
-        // A wrapping row sized by its content shrinks to one tile wide, stacking every tile in a column that
-        // spills over the rows below. So it gets the width its tiles need, capped where it should wrap.
-        let mut grid = div().flex().flex_wrap().justify_end().gap(px(6.)).flex_none().w(px(wall_grid_width(backgrounds.len() + 2)));
+        let mut grid = div().flex().flex_wrap().gap(px(8.));
         let cell = |id: ElementId, active: bool| {
             div()
                 .id(id)
                 .relative()
-                .w(px(64.))
-                .h(px(40.))
+                .w(px(96.))
+                .h(px(58.))
                 .rounded(px(6.))
                 .overflow_hidden()
                 .cursor_pointer()
@@ -489,8 +507,7 @@ impl Shell {
         grid = grid.child(
             cell("wall-theme".into(), picked.is_none())
                 .on_click(cx.listener(|this, _, _, cx| {
-                    let key = theme_key(&this.state.settings.theme).to_string();
-                    this.state.settings.wallpapers.remove(&key);
+                    this.state.settings.wallpaper = None;
                     this.refresh_theme(cx);
                 }))
                 .child(match own {
@@ -516,8 +533,7 @@ impl Shell {
             grid = grid.child(
                 cell(("wall", i).into(), active)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let key = theme_key(&this.state.settings.theme).to_string();
-                        this.state.settings.wallpapers.insert(key, path.clone());
+                        this.state.settings.wallpaper = Some(path.clone());
                         this.refresh_theme(cx);
                     }))
                     .child(img(thumb).size_full().object_fit(ObjectFit::Cover)),
@@ -526,8 +542,8 @@ impl Shell {
         grid = grid.child(
             div()
                 .id("wall-upload")
-                .w(px(64.))
-                .h(px(40.))
+                .w(px(96.))
+                .h(px(58.))
                 .rounded(px(6.))
                 .border_1()
                 .border_dashed()
@@ -545,8 +561,7 @@ impl Shell {
         grid.into_any_element()
     }
 
-    /// Copies an uploaded image into the backgrounds folder, where it stays for every theme, and makes it
-    /// this theme's background.
+    /// Copies an uploaded image into the backgrounds folder and makes it the background for every theme.
     fn pick_wall_file(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
         let dir = self.backgrounds_dir();
@@ -556,8 +571,7 @@ impl Shell {
             let copied = cx.background_executor().spawn(async move { copy_asset(&dir, &src) }).await;
             let _ = this.update(cx, |this, cx| match copied {
                 Ok(path) => {
-                    let key = theme_key(&this.state.settings.theme).to_string();
-                    this.state.settings.wallpapers.insert(key, path);
+                    this.state.settings.wallpaper = Some(path);
                     this.refresh_theme(cx);
                 }
                 Err(e) => this.toast(format!("Wallpaper not added: {e}"), cx),
@@ -578,8 +592,6 @@ impl Shell {
         let pairing_names: Vec<&str> = preset.pairings.iter().map(|p| p.label).collect();
         // A custom font clears the pairing highlight, as the pairing cards did.
         let pairing_index = if custom { pairing_names.len() } else { choice.pairing % 3 };
-        let slot = self.settings.font_slot;
-        let slot_index = usize::from(slot == FontSlot::Text);
 
         let pairing_row = segmented_row(
             "font-pairing",
@@ -596,68 +608,92 @@ impl Shell {
             },
             None,
         );
-        let slot_row = segmented_row(
-            "font-slot",
-            "Apply to",
-            "Choose a font below for the titles, or for the chat and message text.",
-            &["Titles", "Text"],
-            slot_index,
-            &weak,
-            &theme,
-            |this, i, cx| {
-                this.settings.font_slot = if i == 1 { FontSlot::Text } else { FontSlot::Titles };
-                cx.notify();
-            },
-            None,
-        );
-
         let titles = choice.display.clone().unwrap_or_else(|| pairing.display.to_string());
         let text = choice.ui.clone().unwrap_or_else(|| pairing.ui.to_string());
-        let mut chips = div().flex().flex_wrap().gap(px(6.));
-        for (i, (label, family)) in fonts::all_fonts().into_iter().enumerate() {
-            let (is_titles, is_text) = (titles == family, text == family);
-            let editing = match slot {
-                FontSlot::Titles => is_titles,
-                FontSlot::Text => is_text,
-            };
-            let mut chip = div()
-                .id(("font", i))
+        let open = self.settings.font_open;
+        let rows = [
+            (FontSlot::Titles, "Titles", "Headings, the app name and chat titles.", titles.clone()),
+            (FontSlot::Text, "Text", "The chat, the message box and the interface.", text.clone()),
+        ]
+        .map(|(slot, name, desc, family)| {
+            let is_open = open == Some(slot);
+            let current = div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .px(px(10.))
-                .py(px(6.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(if editing { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
-                .cursor_pointer()
-                .hover(|s| s.bg(theme.line.to_hsla()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let key = theme_key(&this.state.settings.theme).to_string();
-                    let entry = this.state.settings.fonts.entry(key).or_default();
-                    match slot {
-                        FontSlot::Titles => entry.display = Some(family.to_string()),
-                        FontSlot::Text => entry.ui = Some(family.to_string()),
-                    }
-                    this.refresh_theme(cx);
-                }))
-                .child(div().text_size(px(13.)).font_family(family).child(label));
-            if is_titles {
-                chip = chip.child(badge("T", &theme));
+                .gap(px(10.))
+                .child(div().text_size(px(15.)).font_family(family.clone()).child("Aa"))
+                .child(div().text_size(px(12.5)).text_color(theme.muted.to_hsla()).child(family.clone()))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("font-change-{name}")))
+                        .px(px(10.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(if is_open { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
+                        .text_size(px(12.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.line.to_hsla()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.settings.font_open = if this.settings.font_open == Some(slot) { None } else { Some(slot) };
+                            cx.notify();
+                        }))
+                        .child(if is_open { "Done" } else { "Change" }),
+                );
+            SettingRow::new(name, desc, &theme).control(current)
+        });
+        let [titles_row, text_row] = rows;
+
+        let list = open.map(|slot| {
+            let in_use = match slot {
+                FontSlot::Titles => titles.clone(),
+                FontSlot::Text => text.clone(),
+            };
+            let mut groups = div().flex().flex_col().gap(px(12.));
+            for (group, families) in FONT_GROUPS {
+                let mut grid = div().grid().grid_cols(super::columns(self.settings.body_w, 110., 6., 5)).gap(px(6.));
+                for family in families.iter().copied() {
+                    let active = in_use == family;
+                    grid = grid.child(
+                        div()
+                            .id(SharedString::from(format!("font-{family}")))
+                            .h(px(54.))
+                            .px(px(10.))
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .gap(px(2.))
+                            .rounded(px(7.))
+                            .border_1()
+                            .border_color(if active { theme.acc.to_hsla() } else { theme.line.to_hsla() })
+                            .when(active, |d| d.bg(theme.soft.to_hsla()))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.line.to_hsla()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let key = theme_key(&this.state.settings.theme).to_string();
+                                let entry = this.state.settings.fonts.entry(key).or_default();
+                                match slot {
+                                    FontSlot::Titles => entry.display = Some(family.to_string()),
+                                    FontSlot::Text => entry.ui = Some(family.to_string()),
+                                }
+                                this.refresh_theme(cx);
+                            }))
+                            // Every sample is the same size and clipped to one line, so no face takes over.
+                            .child(div().h(px(22.)).overflow_hidden().whitespace_nowrap().text_size(px(17.)).line_height(px(22.)).font_family(family).child("Aa Bb"))
+                            .child(div().text_size(px(10.5)).text_color(theme.muted.to_hsla()).truncate().child(family)),
+                    );
+                }
+                groups = groups.child(div().flex().flex_col().gap(px(6.)).child(caption(group, &theme)).child(grid));
             }
-            if is_text {
-                chip = chip.child(badge("Aa", &theme));
-            }
-            chips = chips.child(chip);
-        }
+            groups
+        });
 
         div()
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(section("FONTS", vec![pairing_row, slot_row], &theme))
-            .child(caption(&format!("Titles: {titles} · Text (chat and message box): {text}"), &theme))
-            .child(chips)
+            .child(section("FONTS", vec![pairing_row, titles_row, text_row], &theme))
+            .when_some(list, |d, list| d.child(list))
             .into_any_element()
     }
 
@@ -902,14 +938,3 @@ impl Shell {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::wall_grid_width;
-
-    #[test]
-    fn wallpaper_tiles_get_room_for_one_row_up_to_the_cap() {
-        assert_eq!(wall_grid_width(2), 135., "the theme tile and Upload side by side");
-        assert_eq!(wall_grid_width(6), 415.);
-        assert_eq!(wall_grid_width(9), 415., "more tiles wrap instead of widening the row");
-    }
-}

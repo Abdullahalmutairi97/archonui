@@ -459,9 +459,6 @@ pub const LINE_ALPHA: f32 = 0.09;
 pub const LINE2_ALPHA: f32 = 0.22;
 pub const SOFT_ALPHA: f32 = 0.28;
 
-/// Alpha of the sidebar and session tint over the base colour when the window is see-through.
-const SEE_THROUGH_TINT: f32 = 0.35;
-
 /// Alpha of a collapsed-rail band when its session is focused, and when it is not.
 const BAND_ALPHA_FOCUSED: f32 = 0.42;
 const BAND_ALPHA_IDLE: f32 = 0.20;
@@ -740,6 +737,11 @@ pub struct TileState {
     pub tint_all: bool,
 }
 
+/// `c` with its alpha scaled by `by`.
+fn faded(c: Rgba, by: f32) -> Rgba {
+    Rgba { a: c.a * by, ..c }
+}
+
 impl BackgroundStyle {
     /// Wallpaper and sidebar surfaces for this style (themes.md §4).
     pub fn surfaces(self, theme: &Theme, effects: Effects) -> Surfaces {
@@ -756,19 +758,12 @@ impl BackgroundStyle {
             Self::Tinted => (0.5, 0.0, 1.0, panel.alpha(0.55), Some(effects.blur)),
             Self::Ambient => (1.0, 28.0, 0.55, panel.alpha(0.5), Some(effects.blur)),
         };
-        // See-through window: the desktop is the wallpaper. Only the base colour (drawn by the shell at
-        // the window opacity) covers it, and the sidebars add a light tint, so layers don't stack up
-        // into a murky, uneven cover.
-        if effects.opacity < 1.0 {
-            return Surfaces {
-                wallpaper: Wallpaper { opacity: 0.0, blur, brightness: brightness * dim },
-                side: panel.alpha(SEE_THROUGH_TINT),
-                side_blur: None,
-            };
-        }
+        // A see-through window keeps the style and fades every layer by the window opacity, so the
+        // desktop shows through the wallpaper and surfaces alike.
+        let fade = effects.opacity;
         Surfaces {
-            wallpaper: Wallpaper { opacity, blur, brightness: brightness * dim },
-            side,
+            wallpaper: Wallpaper { opacity: opacity * fade, blur, brightness: brightness * dim },
+            side: faded(side, fade),
             side_blur,
         }
     }
@@ -776,11 +771,14 @@ impl BackgroundStyle {
     /// The session tile in this style. Only Canvas varies per tile (themes.md §4.1).
     pub fn tile(self, theme: &Theme, effects: Effects, state: TileState) -> TileSurface {
         let effects = effects.clamped();
-        // See-through window: a light tint over the base colour, like the sidebars.
-        if effects.opacity < 1.0 {
-            return TileSurface { fill: TileFill::Solid(theme.tile.alpha(SEE_THROUGH_TINT)), blur: None };
-        }
-        self.opaque_tile(theme, effects, state)
+        // A see-through window fades the tile with the rest of the window, like `surfaces`.
+        let fade = effects.opacity;
+        let surface = self.opaque_tile(theme, effects, state);
+        let fill = match surface.fill {
+            TileFill::Solid(c) => TileFill::Solid(faded(c, fade)),
+            TileFill::Gradient(stops) => TileFill::Gradient(stops.map(|(c, at)| (faded(c, fade), at))),
+        };
+        TileSurface { fill, ..surface }
     }
 
     /// `tile` at full window opacity.
@@ -1153,15 +1151,23 @@ mod tests {
     }
 
     #[test]
-    fn a_see_through_window_draws_one_layer_plus_light_tints() {
+    fn a_see_through_window_keeps_the_style_and_fades_it() {
         let t = blood();
         let half = Effects { opacity: 0.5, ..Effects::default() };
-        for style in [BackgroundStyle::Canvas, BackgroundStyle::Glass, BackgroundStyle::Solid, BackgroundStyle::Ambient] {
-            let s = style.surfaces(&t, half);
-            assert_eq!((s.wallpaper.opacity, s.side, s.side_blur), (0.0, t.panel.alpha(SEE_THROUGH_TINT), None), "{style:?}");
-            let tile = style.tile(&t, half, TileState { focused: true, ..TileState::default() });
-            assert_eq!(tile, TileSurface { fill: TileFill::Solid(t.tile.alpha(SEE_THROUGH_TINT)), blur: None });
+        let state = TileState { focused: true, ..TileState::default() };
+        for style in [BackgroundStyle::Canvas, BackgroundStyle::Glass, BackgroundStyle::Solid, BackgroundStyle::Gaps, BackgroundStyle::Ambient] {
+            let (full, s) = (style.surfaces(&t, Effects::default()), style.surfaces(&t, half));
+            assert_eq!(s.wallpaper.opacity, full.wallpaper.opacity * 0.5, "{style:?}");
+            assert_eq!((s.side, s.side_blur), (faded(full.side, 0.5), full.side_blur), "{style:?}");
+            let (full_tile, tile) = (style.tile(&t, Effects::default(), state), style.tile(&t, half, state));
+            assert_eq!(tile.blur, full_tile.blur, "{style:?}");
+            if let (TileFill::Solid(a), TileFill::Solid(b)) = (full_tile.fill, tile.fill) {
+                assert_eq!(b, faded(a, 0.5), "{style:?}");
+            }
         }
+        // Gaps still shows the wallpaper and Solid still hides it.
+        assert!(BackgroundStyle::Gaps.surfaces(&t, half).wallpaper.opacity > 0.0);
+        assert_eq!(BackgroundStyle::Solid.surfaces(&t, half).wallpaper.opacity, 0.0);
         assert_eq!(Effects { opacity: 0.0, ..Effects::default() }.clamped_opacity(), 0.2, "never fully invisible");
         // At full opacity nothing changes.
         assert_eq!(BackgroundStyle::Canvas.surfaces(&t, Effects::default()).wallpaper.opacity, 1.0);
