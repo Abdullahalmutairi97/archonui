@@ -147,9 +147,9 @@ impl Shell {
                 .cursor_pointer()
                 .id("add-harness")
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.toast("Point the app at any CLI that speaks the Agent Client Protocol", cx);
+                    this.toast("Add any ACP-compatible CLI", cx);
                 }))
-                .child("+ Add harness (any CLI that speaks ACP)"),
+                .child("+ Add harness"),
         );
         vec![grid.into_any_element()]
     }

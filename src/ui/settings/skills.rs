@@ -71,7 +71,7 @@ impl Shell {
             Some(list) if list.is_empty() => div()
                 .text_size(px(12.5))
                 .text_color(theme.muted.to_hsla())
-                .child("No skills found. Import a folder that has a SKILL.md, or create one.")
+                .child("No skills found.")
                 .into_any_element(),
             Some(list) => {
                 let mut grid = div().grid().grid_cols(super::columns(self.settings.body_w, 300., 12., 2)).gap(px(12.));

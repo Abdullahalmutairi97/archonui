@@ -134,13 +134,13 @@ impl Shell {
 
         let project_names: Vec<&str> = projects.iter().map(|(_, name)| name.as_str()).collect();
         let project_row = if project_names.is_empty() {
-            SettingRow::new("Default project", "Where new sessions start when no session is focused.", &theme)
+            SettingRow::new("Default project", "When nothing is focused", &theme)
                 .control(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child("No projects yet"))
         } else {
             segmented_row(
                 "default-project",
                 "Default project",
-                "Where new sessions start when no session is focused.",
+                "When nothing is focused",
                 &project_names,
                 default_project.unwrap_or(usize::MAX),
                 &weak,
@@ -156,11 +156,11 @@ impl Shell {
         let folder = self.state.settings.default_folder.clone();
         let folder_text = folder.as_ref().map_or_else(|| "Not set".to_string(), |p| p.display().to_string());
         let folder_note = if folder.is_some() {
-            "New sessions run here, if it still exists."
+            "Runs here if it exists"
         } else {
-            "New sessions start in the folder ArchonUI was started from."
+            "Defaults to ArchonUI launch folder"
         };
-        let folder_row = SettingRow::new("Default folder for new sessions", folder_note, &theme).control(
+        let folder_row = SettingRow::new("Default folder", folder_note, &theme).control(
             div()
                 .flex()
                 .items_center()
@@ -181,7 +181,7 @@ impl Shell {
 
         let data_dir = crate::store::dir();
         let data_text = data_dir.display().to_string();
-        let data_folder_row = SettingRow::new("Data folder", "Sessions, attachments and settings are kept here.", &theme).control(
+        let data_folder_row = SettingRow::new("Data folder", "", &theme).control(
             div()
                 .flex()
                 .items_center()
@@ -205,7 +205,7 @@ impl Shell {
                 toggle_row(
                     "restore",
                     "Restore sessions on launch",
-                    "Reopen the tiles you had open when archonui last quit.",
+                    "",
                     restore,
                     &weak,
                     &theme,
@@ -227,7 +227,7 @@ impl Shell {
                 segmented_row(
                     "default-mode",
                     "Default mode",
-                    "Auto edits and runs commands. Plan proposes steps first. Ask only answers. ⇧Tab cycles in the composer.",
+                    "",
                     &["Auto", "Plan", "Ask"],
                     mode,
                     &weak,
@@ -243,7 +243,7 @@ impl Shell {
                 toggle_row(
                     "sandbox",
                     "Run commands in sandbox",
-                    "Shell commands run in an isolated container with no network by default.",
+                    "No network by default",
                     sandbox,
                     &weak,
                     &theme,
@@ -256,7 +256,7 @@ impl Shell {
                 toggle_row(
                     "ask-network",
                     "Ask before network access",
-                    "Pause and confirm when a tool wants to reach the internet.",
+                    "",
                     ask_network,
                     &weak,
                     &theme,
@@ -269,7 +269,7 @@ impl Shell {
                 toggle_row(
                     "show-tools",
                     "Show tool calls in chat",
-                    "Display reads, edits and commands above each reply.",
+                    "",
                     show_tools,
                     &weak,
                     &theme,
@@ -281,7 +281,7 @@ impl Shell {
                 ),
                 SettingRow::new(
                     "Max steps per turn",
-                    "The agent stops and asks for input after this many tool calls.",
+                    "",
                     &theme,
                 )
                 .control(steps),
@@ -295,7 +295,7 @@ impl Shell {
                 toggle_row(
                     "notify",
                     "Notify when a session finishes",
-                    "Only when archonui is not the active window.",
+                    "Only when in the background",
                     notify,
                     &weak,
                     &theme,
@@ -328,7 +328,7 @@ impl Shell {
                 segmented_row(
                     "update-channel",
                     "Update channel",
-                    "Beta and Nightly get features earlier and may be unstable.",
+                    "Beta and Nightly may be unstable",
                     &["Stable", "Beta", "Nightly"],
                     channel,
                     &weak,
@@ -344,7 +344,7 @@ impl Shell {
                 toggle_row(
                     "analytics",
                     "Share anonymous usage data",
-                    "Crash reports and feature counts. Never prompts or code.",
+                    "Never prompts or code",
                     analytics,
                     &weak,
                     &theme,
@@ -364,7 +364,7 @@ impl Shell {
                 button_row(
                     "export-settings",
                     "Export settings",
-                    "Themes, providers, tools and keybindings as JSON. API keys and MCP credentials are left out.",
+                    "Secrets left out",
                     "Export",
                     ButtonStyle::Outline,
                     &weak,
@@ -374,7 +374,7 @@ impl Shell {
                 button_row(
                     "clear-history",
                     "Clear session history",
-                    "Removes every session that is not currently tiled.",
+                    "Keeps open tiles",
                     "Clear history",
                     ButtonStyle::Danger,
                     &weak,

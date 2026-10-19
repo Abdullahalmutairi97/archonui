@@ -154,15 +154,15 @@ impl Page {
 
     fn desc(self) -> &'static str {
         match self {
-            Page::General => "Startup, agent behaviour, notifications and data.",
-            Page::Appearance => "Presets, colours, fonts, wallpaper and layout. Changes apply live.",
-            Page::Keyboard => "Shortcuts for tiling and navigation.",
-            Page::Harnesses => "Agent CLIs that this app drives. Each one brings its own models, tools and sign-in.",
-            Page::Models => "Which models appear in the composer, and the defaults for new sessions.",
-            Page::Tools => "MCP servers and built-in tools the agent can call.",
-            Page::Skills => "Reusable instructions the agent loads when a task matches.",
-            Page::Extensions => "Plugins that add panels, commands and integrations.",
-            Page::Devices => "Share chats with your other devices over Tailscale, and choose which one is the cloud.",
+            Page::General => "Startup, agents and notifications",
+            Page::Appearance => "Themes, wallpaper and layout",
+            Page::Keyboard => "Shortcuts",
+            Page::Harnesses => "The agent apps archonui runs",
+            Page::Models => "Models in the message box",
+            Page::Tools => "Tools agents can use",
+            Page::Skills => "Instructions agents load on demand",
+            Page::Extensions => "Plugins",
+            Page::Devices => "Share chats over Tailscale",
         }
     }
 }

@@ -11,6 +11,7 @@ use crate::{
     engine,
     store::{self, Role, Session},
     ui::{
+        composer::icons::stroke_icon,
         sigil,
         theme::Theme,
         tiling,
@@ -66,6 +67,10 @@ pub(in crate::ui) fn dot(theme: &Theme, state: sigil::SessionState, surface: Hsl
     };
     sigil::status_dot_sized(state, &colours, 5., 1.5)
 }
+
+/// The New session button's plus and the small screen beside "New on <device>".
+const PLUS: &str = "M8 3v10M3 8h10";
+const DEVICE: &str = "M2 3h12v8H2zM6 14h4M8 11v3";
 
 impl Shell {
     /// The whole Sessions view: the button, the search box and the groups.
@@ -148,28 +153,43 @@ impl Shell {
         }
     }
 
-    /// The accent "New session" button with its shortcut hint (the New session binding, none when
-    /// unbound). Tighter than layout.md §2.1 row
-    /// 3.1's spec padding/text size, by request.
+    /// The "New session" button: a plus in the accent colour, the label, and its shortcut as a small
+    /// key (none when unbound). Raised a little from the sidebar rather than filled with the accent.
     fn new_session_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let hint = new_session_hint(&self.state.settings.keys);
+        let (raised, hover) = (theme.line.to_hsla(), theme.line2.to_hsla());
         div()
             .id("new-session")
             .flex()
-            .justify_between()
             .items_center()
-            .px(px(12.))
+            .gap(px(8.))
+            .px(px(10.))
             .py(px(8.))
             .rounded(px(8.))
+            .border_1()
+            .border_color(hover)
+            .bg(raised)
             .text_size(px(13.))
-            .bg(theme.acc.to_hsla())
-            .text_color(theme.on.to_hsla())
-            .font_weight(FontWeight::BOLD)
+            .text_color(theme.fg.to_hsla())
             .cursor_pointer()
+            .hover(move |s| s.bg(hover))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_session(window, cx)))
-            .child("New session")
-            .when_some(hint, |d, hint| d.child(div().text_size(px(10.)).opacity(0.75).child(hint)))
+            .child(stroke_icon(PLUS, 14., 1.6, theme.acc2.to_hsla()))
+            .child(div().flex_1().child("New session"))
+            .when_some(hint, |d, hint| {
+                d.child(
+                    div()
+                        .px(px(5.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(hover)
+                        .text_size(px(10.))
+                        .text_color(theme.muted.to_hsla())
+                        .child(hint),
+                )
+            })
     }
 
     /// "New on <device>" for each connected device, under the New session button. Nothing while
@@ -180,23 +200,25 @@ impl Shell {
             return None;
         }
         let theme = &self.theme;
-        let line2 = theme.line2.to_hsla();
+        let (line2, muted, fg) = (theme.line2.to_hsla(), theme.muted.to_hsla(), theme.fg.to_hsla());
         let buttons = devices.into_iter().map(|(id, name)| {
             div()
                 .id(ElementId::Name(format!("new-on-{id}").into()))
-                .px(px(10.))
-                .py(px(5.))
-                .rounded(px(7.))
-                .border_1()
-                .border_color(line2)
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(6.))
                 .text_size(px(12.))
-                .text_color(theme.muted.to_hsla())
+                .text_color(muted)
                 .cursor_pointer()
-                .hover(move |s| s.bg(line2))
+                .hover(move |s| s.bg(line2).text_color(fg))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.new_remote_chat(&id, cx)))
-                .child(format!("+ New on {name}"))
+                .child(stroke_icon(DEVICE, 12., 1.4, muted))
+                .child(format!("New on {name}"))
         });
-        Some(div().flex().flex_wrap().gap(px(6.)).children(buttons).into_any_element())
+        Some(div().flex().flex_col().gap(px(2.)).children(buttons).into_any_element())
     }
 
     fn session_row(&self, entry: &Entry, rename: Option<&Entity<TextInput>>, cx: &mut Context<Self>) -> AnyElement {

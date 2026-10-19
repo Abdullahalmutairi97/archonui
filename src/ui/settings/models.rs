@@ -33,7 +33,7 @@ impl Shell {
         let effort_row = segmented_row(
             "default-effort",
             "Default effort",
-            "Used for new sessions. Each session can change it in the composer.",
+            "",
             &labels,
             effort_index,
             &weak,
@@ -51,7 +51,7 @@ impl Shell {
         let fast_titles = toggle_row(
             "fast-titles",
             "Use a fast model for titles and summaries",
-            "Names new sessions with the cheapest model of their harness, such as Haiku for Claude Code.",
+            "",
             self.state.settings.fast_titles,
             &weak,
             &theme,
@@ -65,7 +65,7 @@ impl Shell {
         let long_context = toggle_row(
             "long-context",
             "Prefer long-context variants",
-            "New sessions start on the 1M-token version of a model when the harness lists one.",
+            "",
             self.state.settings.long_context,
             &weak,
             &theme,
@@ -82,7 +82,7 @@ impl Shell {
                 .p(px(16.))
                 .text_size(px(12.5))
                 .text_color(theme.muted.to_hsla())
-                .child("No models yet. Enable a harness on the Harnesses page to see its models.")
+                .child("Enable a harness to see models")
                 .into_any_element()
         } else {
             div()
@@ -122,7 +122,7 @@ impl Shell {
                                 .text_right()
                                 .text_size(px(12.))
                                 .text_color(theme.muted.to_hsla())
-                                .child("The radio sets the default for new sessions. Only enabled models appear in the composer."),
+                                .child("Only enabled appear in composer"),
                         ),
                 )
                 .child(table)

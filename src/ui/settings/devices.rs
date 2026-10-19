@@ -369,7 +369,7 @@ impl Shell {
         let secrets = toggle_row(
             "sync-copy-secrets",
             "Copy secret files",
-            ".env files, keys and certificates. Off: they stay on this device.",
+            ".env files, keys and certificates",
             sync.copy_secrets,
             weak,
             &theme,
