@@ -335,17 +335,32 @@ impl Shell {
     /// The wallpaper to draw: the user's pick, else the theme's own, through the background filter if
     /// one is on.
     pub(super) fn wallpaper_source(&self) -> WallpaperSource {
-        let settings = &self.state.settings;
-        let base = match &settings.wallpaper {
+        self.filtered_wallpaper(self.state.settings.filter)
+    }
+
+    /// The wallpaper through `filter`, as the background would draw it with that filter picked.
+    pub(super) fn filtered_wallpaper(&self, filter: crate::app::settings::BackgroundFilter) -> WallpaperSource {
+        let base = match &self.state.settings.wallpaper {
             Some(path) if path.is_file() => WallpaperSource::File(path.clone()),
             _ => WallpaperSource::theme(&self.theme),
         };
+        self.with_filter(base, filter)
+    }
+
+    /// `base` through `filter`, in this theme's colours.
+    pub(super) fn with_filter(&self, base: WallpaperSource, filter: crate::app::settings::BackgroundFilter) -> WallpaperSource {
+        use crate::{app::settings::BackgroundFilter as F, ui::glass::Grade};
+        let settings = &self.state.settings;
         let t = &self.theme;
         let hex = |c: theme::Rgba| (u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b);
-        let palette = match settings.filter {
-            crate::app::settings::BackgroundFilter::Off => return base,
-            crate::app::settings::BackgroundFilter::Duotone => vec![hex(t.bg), hex(t.fg)],
-            crate::app::settings::BackgroundFilter::Tritone => vec![hex(t.bg), hex(theme::mix(t.bg, t.acc, 0.6)), hex(t.fg)],
+        let palette = match filter {
+            F::Off => return base,
+            F::Duotone => vec![hex(t.bg), hex(t.fg)],
+            F::Tritone => vec![hex(t.bg), hex(theme::mix(t.bg, t.acc, 0.6)), hex(t.fg)],
+            F::Mono => return WallpaperSource::Graded(Box::new(base), Grade::Mono),
+            F::Warm => return WallpaperSource::Graded(Box::new(base), Grade::Warm),
+            F::Cool => return WallpaperSource::Graded(Box::new(base), Grade::Cool),
+            F::Soft => return WallpaperSource::Graded(Box::new(base), Grade::Soft),
         };
         let pixel = settings.filter_pixel.round() as u32;
         WallpaperSource::Dithered(Box::new(base), crate::ui::glass::Dither { palette, pixel })

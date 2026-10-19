@@ -35,6 +35,14 @@ pub enum BackgroundFilter {
     Duotone,
     /// Ordered dither in the background, accent and text colours.
     Tritone,
+    /// Black and white.
+    Mono,
+    /// A soft amber cast.
+    Warm,
+    /// A dim blue night cast.
+    Cool,
+    /// Blurred into soft shapes.
+    Soft,
 }
 pub const TEXT_SIZE: (f32, f32) = (13., 19.);
 pub const TERMINAL_SIZE: (f32, f32) = (10., 24.);
