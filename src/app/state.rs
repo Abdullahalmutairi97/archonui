@@ -901,6 +901,16 @@ impl AppState {
         id
     }
 
+    /// Adds a project another device already has, under its id there, so this device's copy and that
+    /// one are one project in the cloud. Returns false if the id is unsafe or already a project here.
+    pub fn add_shared_project(&mut self, id: &str, name: &str, path: PathBuf) -> bool {
+        if !crate::remote::cloud::safe_id(id) || self.project(id).is_some() {
+            return false;
+        }
+        self.projects.push(Project { id: id.into(), name: name.into(), path, created: store::now() });
+        true
+    }
+
     /// Renames the project and moves it to `path`. Returns false if there is no such project.
     pub fn update_project(&mut self, id: &str, name: &str, path: PathBuf) -> bool {
         let Some(p) = self.projects.iter_mut().find(|p| p.id == id) else { return false };
@@ -966,6 +976,16 @@ fn keep_files(session: &str, files: Vec<Attachment>) -> (Vec<Attachment>, Vec<St
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_project_from_another_device_keeps_its_id_and_comes_in_once() {
+        let mut app = state();
+        assert!(app.add_shared_project("p-123", "app", "/home/me/app".into()));
+        assert_eq!(app.project("p-123").map(|p| p.name.as_str()), Some("app"));
+        assert!(!app.add_shared_project("p-123", "app", "/home/me/app-2".into()), "already here");
+        assert!(!app.add_shared_project("../x", "bad", "/tmp".into()), "unsafe id");
+        assert_eq!(app.projects().len(), 1);
+    }
+
     use super::*;
     use crate::{store::ToolKind, ui::tiling::Layout};
     use smol::channel::unbounded;

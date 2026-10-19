@@ -335,10 +335,6 @@ impl Shell {
             let from = self.chat_device_name(&p.device);
             let up_to_date = me.as_deref() == Some(p.device.as_str()) && self.copy_confirmed(&p.project, &p.commit);
             let line = copy_line(&from, p.updated, up_to_date, crate::store::now());
-            let (project, device) = (p.project.clone(), p.device.clone());
-            let open = Button::new(SharedString::from(format!("cloud-open-{}-{}", p.project, p.device)), "Open", &theme)
-                .style(ButtonStyle::Outline)
-                .on_click(act(weak, move |this, cx| this.open_from_cloud(&project, &device, cx)));
             list = list.child(
                 div()
                     .flex()
@@ -362,7 +358,6 @@ impl Shell {
                                     .child(line),
                             ),
                     )
-                    .child(open),
             );
         }
 
@@ -382,7 +377,7 @@ impl Shell {
         div()
             .flex()
             .flex_col()
-            .child(div().pt(px(22.)).pb(px(8.)).child(heading("CLOUD COPY", Some("Opens a copy in a new folder here"), &theme)))
+            .child(div().pt(px(22.)).pb(px(8.)).child(heading("CLOUD COPY", Some("Other devices' projects are in your Projects list"), &theme)))
             .child(status)
             .child(div().pt(px(10.)).child(list))
             .child(div().pt(px(10.)).child(section("", vec![secrets], &theme)))
