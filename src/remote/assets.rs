@@ -111,6 +111,11 @@ pub fn save(root: &Path, file: &AssetFile) -> Result<bool, String> {
     if bytes.len() as u64 > MAX_FILE {
         return Err(format!("{} is too big to share", file.name));
     }
+    let probe = AssetKey { dir: file.dir.clone(), name: file.name.clone(), hash: String::new(), modified: file.modified };
+    if is_deleted(&probe, &deleted(root)) {
+        // Removed since this copy last changed: an older copy doesn't bring it back.
+        return Ok(false);
+    }
     let dir = root.join(&file.dir);
     let path = dir.join(&file.name);
     if let Ok(meta) = fs::metadata(&path) {
@@ -130,8 +135,92 @@ pub fn save(root: &Path, file: &AssetFile) -> Result<bool, String> {
     Ok(true)
 }
 
+/// The file under a shared root that records deletions: one `AssetKey` per removed file, `modified`
+/// being when it was removed. Hidden, so it is never shared as a file itself.
+const DELETED: &str = ".deleted.json";
+
+/// The deletions recorded under `root`.
+pub fn deleted(root: &Path) -> Vec<AssetKey> {
+    fs::read_to_string(root.join(DELETED)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+/// Records that `dir`/`name` was removed at `when` (seconds since the epoch), keeping the latest time.
+pub fn record_deleted(root: &Path, dir: &str, name: &str, when: u64) -> Result<(), String> {
+    let mut all = deleted(root);
+    match all.iter_mut().find(|k| k.dir == dir && k.name == name) {
+        Some(k) => k.modified = k.modified.max(when),
+        None => all.push(AssetKey { dir: dir.into(), name: name.into(), hash: String::new(), modified: when }),
+    }
+    fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let text = serde_json::to_string(&all).map_err(|e| e.to_string())?;
+    fs::write(root.join(DELETED), text).map_err(|e| format!("{}: {e}", root.join(DELETED).display()))
+}
+
+/// Removes `dir`/`name` under `root` and records it, so the removal reaches the other devices.
+pub fn remove(root: &Path, dir: &str, name: &str) -> Result<(), String> {
+    if !allowed(dir, name) {
+        return Err(format!("{dir}/{name} isn't a shared file"));
+    }
+    match fs::remove_file(root.join(dir).join(name)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{name}: {e}")),
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    record_deleted(root, dir, name, now)
+}
+
+/// Whether `key` was removed after it last changed, by one of `deletions`.
+pub fn is_deleted(key: &AssetKey, deletions: &[AssetKey]) -> bool {
+    deletions.iter().any(|d| d.dir == key.dir && d.name == key.name && d.modified >= key.modified)
+}
+
+/// Removes the files under `root` that `deletions` removed after they last changed, and records those
+/// deletions here too. Returns how many files went.
+pub fn apply_deleted(root: &Path, deletions: &[AssetKey]) -> usize {
+    let mut gone = 0;
+    let mine = deleted(root);
+    for (key, path) in manifest(root) {
+        if is_deleted(&key, deletions) && fs::remove_file(&path).is_ok() {
+            gone += 1;
+        }
+    }
+    for d in deletions {
+        if !is_deleted(d, &mine) {
+            let _ = record_deleted(root, &d.dir, &d.name, d.modified);
+        }
+    }
+    gone
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_removed_file_goes_everywhere_and_an_old_copy_does_not_bring_it_back() {
+        let (here, there) = (temp("here"), temp("there"));
+        for root in [&here, &there] {
+            fs::create_dir_all(root.join("backgrounds")).unwrap();
+            fs::write(root.join("backgrounds/sea.png"), b"pixels").unwrap();
+        }
+        let old = load(&there, &manifest(&there)[0].0).unwrap();
+        remove(&here, "backgrounds", "sea.png").unwrap();
+        assert!(manifest(&here).is_empty());
+        assert!(remove(&here, "backgrounds", "../x.png").is_err());
+        // An old copy from a device that hasn't heard of the removal is turned away.
+        assert!(!save(&here, &old).unwrap());
+        assert!(!here.join("backgrounds/sea.png").exists());
+        // The other device takes the removal.
+        assert_eq!(apply_deleted(&there, &deleted(&here)), 1);
+        assert!(!there.join("backgrounds/sea.png").exists());
+        assert_eq!(deleted(&there).len(), 1, "and records it, so it doesn't send the file back");
+        // A file added again later is newer than the removal and is kept.
+        let again = AssetFile { modified: deleted(&here)[0].modified + 10, ..old };
+        assert!(save(&here, &again).unwrap());
+        assert!(here.join("backgrounds/sea.png").exists());
+        fs::remove_dir_all(here).ok();
+        fs::remove_dir_all(there).ok();
+    }
+
     use super::*;
 
     fn temp(name: &str) -> PathBuf {

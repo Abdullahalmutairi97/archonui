@@ -791,7 +791,7 @@ impl Shell {
             HostMsg::Stored { project, commit, .. } => self.remote.copy_stored(project, commit),
             HostMsg::Cloud { projects, .. } => self.remote.cloud_projects = Some(projects),
             HostMsg::ProjectData { project, device: from, commit, bundle } => self.restore_project(&project, &from, &commit, &bundle, cx),
-            HostMsg::AssetList { assets } => self.trade_assets(assets, cx),
+            HostMsg::AssetList { assets, deleted } => self.trade_assets(assets, deleted, cx),
             HostMsg::AssetData { files } => self.take_assets(files, cx),
             HostMsg::Chats { device: owner, sessions } => {
                 // Only while that device is away; when it is online its own copies are live.
@@ -1187,22 +1187,38 @@ impl Shell {
         }
     }
 
-    /// The cloud listed its appearance files: send it the ones it lacks or has older, and ask for the
-    /// ones this device lacks or has older. Reading and hashing the files runs off the UI thread.
-    fn trade_assets(&mut self, theirs: Vec<assets::AssetKey>, cx: &mut Context<Self>) {
+    /// The cloud listed its appearance files and the removals it knows of. Removals are applied here
+    /// first; then the cloud is told of removals made here, sent the files it lacks or has older, and
+    /// asked for the ones this device lacks or has older. File work runs off the UI thread.
+    fn trade_assets(&mut self, theirs: Vec<assets::AssetKey>, their_deletions: Vec<assets::AssetKey>, cx: &mut Context<Self>) {
         let config = self.paths.config.clone();
         cx.spawn(async move |this, cx| {
-            let (send, want) = cx
+            let (gone, tell, send, want) = cx
                 .background_executor()
                 .spawn(async move {
+                    let gone = assets::apply_deleted(&config, &their_deletions);
+                    let tell: Vec<assets::AssetKey> =
+                        assets::deleted(&config).into_iter().filter(|d| !assets::is_deleted(d, &their_deletions)).collect();
                     let mine: Vec<assets::AssetKey> = assets::manifest(&config).into_iter().map(|(k, _)| k).collect();
-                    let send: Vec<assets::AssetFile> = assets::newer(&theirs, &mine).into_iter().filter_map(|k| assets::load(&config, k)).collect();
+                    let send: Vec<assets::AssetFile> = assets::newer(&theirs, &mine)
+                        .into_iter()
+                        .filter(|k| !assets::is_deleted(k, &their_deletions))
+                        .filter_map(|k| assets::load(&config, k))
+                        .collect();
                     let want: Vec<assets::AssetKey> = assets::newer(&mine, &theirs).into_iter().cloned().collect();
-                    (send, want)
+                    (gone, tell, send, want)
                 })
                 .await;
-            let _ = this.update(cx, |this, _| {
+            let _ = this.update(cx, |this, cx| {
+                if gone > 0 {
+                    crate::ui::theme::reload_presets();
+                    this.settings.images.clear();
+                    this.refresh_theme(cx);
+                }
                 let Some(cloud) = this.cloud_client() else { return };
+                if !tell.is_empty() {
+                    let _ = cloud.send(&ClientMsg::DeleteAssets { assets: tell });
+                }
                 if !send.is_empty() {
                     let _ = cloud.send(&ClientMsg::PutAssets { files: send });
                 }

@@ -102,6 +102,9 @@ pub enum ClientMsg {
     PutAssets { files: Vec<AssetFile> },
     /// Cloud: send these appearance files. Answered with `AssetData`.
     GetAssets { assets: Vec<AssetKey> },
+    /// Cloud: these appearance files were removed (each `modified` is when). Copies not changed since
+    /// are removed there too, and older copies are refused from then on.
+    DeleteAssets { assets: Vec<AssetKey> },
     /// A message from a newer client that this version does not know. The host answers `Error`. Never sent.
     #[serde(other)]
     Unknown,
@@ -182,8 +185,12 @@ pub enum HostMsg {
     ProjectData { project: String, device: String, commit: String, bundle: String },
     /// Cloud: answer to `GetChats`.
     Chats { device: String, sessions: Vec<serde_json::Value> },
-    /// Cloud: answer to `ListAssets`.
-    AssetList { assets: Vec<AssetKey> },
+    /// Cloud: answer to `ListAssets`: the files, and the removals it knows of (empty from an older cloud).
+    AssetList {
+        assets: Vec<AssetKey>,
+        #[serde(default)]
+        deleted: Vec<AssetKey>,
+    },
     /// Cloud: answer to `GetAssets`.
     AssetData { files: Vec<AssetFile> },
     /// A tool use in chat `session` waits for an answer. `request` is the host's id for it.
@@ -252,6 +259,7 @@ impl ClientMsg {
             ClientMsg::ListAssets => "list_assets",
             ClientMsg::PutAssets { .. } => "put_assets",
             ClientMsg::GetAssets { .. } => "get_assets",
+            ClientMsg::DeleteAssets { .. } => "delete_assets",
             ClientMsg::Unknown => "",
         }
     }
@@ -423,6 +431,10 @@ mod tests {
                     files: Vec::new(),
                 },
                 r#"{"type":"prompt","session":"s1","text":"hi","mode":null,"model":null,"effort":null,"default_model":true,"default_effort":true,"files":[]}"#,
+            ),
+            (
+                ClientMsg::DeleteAssets { assets: vec![AssetKey { dir: "themes".into(), name: "t.json".into(), hash: String::new(), modified: 9 }] },
+                r#"{"type":"delete_assets","assets":[{"dir":"themes","name":"t.json","hash":"","modified":9}]}"#,
             ),
             (ClientMsg::ListAssets, r#"{"type":"list_assets"}"#),
             (

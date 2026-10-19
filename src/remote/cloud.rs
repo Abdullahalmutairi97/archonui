@@ -87,6 +87,18 @@ impl Store {
         super::assets::manifest(&self.root.join("assets")).into_iter().map(|(key, _)| key).collect()
     }
 
+    /// The appearance files removed on some device, each with when.
+    pub fn asset_deletions(&self) -> Vec<super::assets::AssetKey> {
+        super::assets::deleted(&self.root.join("assets"))
+    }
+
+    /// Takes removals from a device: copies not changed since go, and the removals are kept.
+    pub fn delete_assets(&self, removed: &[super::assets::AssetKey]) -> Result<(), String> {
+        self.make_private()?;
+        super::assets::apply_deleted(&self.root.join("assets"), removed);
+        Ok(())
+    }
+
     /// Keeps `files`, each unless the cloud has the same or newer. The first failure is returned.
     pub fn put_assets(&self, files: &[super::assets::AssetFile]) -> Result<(), String> {
         self.make_private()?;

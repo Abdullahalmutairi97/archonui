@@ -206,6 +206,8 @@ pub struct SettingsUi {
     pub(super) name: Option<Field>,
     /// The extension search field, made on first render.
     pub(super) search: Option<Field>,
+    /// A custom theme being renamed: its id and the name field.
+    pub(super) theme_rename: Option<(String, Field)>,
     pub(super) sliders: HashMap<Slide, Entity<Slider>>,
     /// Logos and wallpapers, decoded once, by a key such as `logo:<name>`, `wall:<name>` or `file:<path>`.
     pub(super) images: HashMap<String, Arc<Image>>,

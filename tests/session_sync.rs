@@ -675,3 +675,23 @@ fn appearance_files_round_trip_through_the_cloud() {
     assert!(env.data().join("cloud/assets/themes/custom-a.json").is_file());
     assert!(!env.data().join("cloud/assets/escape.json").exists());
 }
+
+#[test]
+fn a_removed_appearance_file_leaves_the_cloud_and_stays_removed() {
+    let env = Env::new("asset-delete");
+    let host = Host::start(&env);
+    let mut c = Ws::hello(host.port, "laptop");
+    let data = STANDARD.encode(b"pixels");
+    c.send(json!({"type": "put_assets", "files": [{"dir": "backgrounds", "name": "sea.png", "modified": 1000, "data": data}]}));
+    c.send(json!({"type": "delete_assets", "assets": [{"dir": "backgrounds", "name": "sea.png", "hash": "", "modified": 2000}]}));
+    c.send(json!({"type": "list_assets"}));
+    let m = c.expect("asset list", |m| m["type"] == "asset_list");
+    assert_eq!(m["assets"], json!([]), "{m}");
+    assert_eq!(m["deleted"][0]["name"], "sea.png");
+    // A device that hadn't heard of the removal sends its old copy: it stays out.
+    c.send(json!({"type": "put_assets", "files": [{"dir": "backgrounds", "name": "sea.png", "modified": 1000, "data": data}]}));
+    c.send(json!({"type": "list_assets"}));
+    let m = c.expect("asset list", |m| m["type"] == "asset_list");
+    assert_eq!(m["assets"], json!([]), "{m}");
+    assert!(!env.data().join("cloud/assets/backgrounds/sea.png").exists());
+}
