@@ -498,6 +498,10 @@ impl Shell {
             Some(path) if path.is_file() => path.display().to_string(),
             _ => t.wallpaper.clone(),
         };
+        // Files in the shared folders are named by file name alone, so the theme finds them on every
+        // device they are shared to; anything else keeps its full path.
+        let wallpaper = in_shared(&self.paths.config, "backgrounds", &wallpaper);
+        let logo = in_shared(&self.paths.config, "logos", &t.logo);
         let mut look = serde_json::Map::new();
         if let Ok(serde_json::Value::Object(all)) = serde_json::to_value(&self.state.settings) {
             for key in APPEARANCE_KEYS {
@@ -518,7 +522,7 @@ impl Shell {
             "tune": { "tile": css(t.tile), "panel": css(t.panel), "pop": css(t.pop) },
             "gradient": t.gradient.map(css),
             "wallpaper": wallpaper,
-            "logo": t.logo,
+            "logo": logo,
             "pixelated": t.render == crate::ui::theme::Render::Pixelated,
             "fonts": [{ "label": "Saved", "display": t.display_font, "ui": t.ui_font }],
             "appearance": look,
@@ -1064,6 +1068,16 @@ fn apply_appearance(settings: &mut crate::app::settings::AppSettings, look: &ser
     }
 }
 
+/// `path` as a theme file names it: just the file name when it is in `config/<dir>` (a shared
+/// folder), else unchanged.
+fn in_shared(config: &Path, dir: &str, path: &str) -> String {
+    let shared = config.join(dir);
+    match Path::new(path).strip_prefix(&shared) {
+        Ok(name) if name.components().count() == 1 => name.display().to_string(),
+        _ => path.to_string(),
+    }
+}
+
 /// A colour as a theme file writes it: `#rrggbb`, or `rgba(...)` when it is see-through.
 fn css(c: crate::ui::theme::Rgba) -> String {
     if c.a >= 1.0 {
@@ -1091,6 +1105,15 @@ fn small_wallpaper(source: &crate::ui::glass::WallpaperSource) -> Option<PathBuf
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_saved_theme_names_shared_files_by_name() {
+        let config = Path::new("/home/me/.config/archonui");
+        assert_eq!(in_shared(config, "backgrounds", "/home/me/.config/archonui/backgrounds/sea.jpg"), "sea.jpg");
+        assert_eq!(in_shared(config, "logos", "/home/me/.config/archonui/logos/mark.png"), "mark.png");
+        assert_eq!(in_shared(config, "backgrounds", "/srv/pics/sea.jpg"), "/srv/pics/sea.jpg");
+        assert_eq!(in_shared(config, "logos", "archonui-mark.png"), "archonui-mark.png", "an embedded logo stays as it is");
+    }
+
     use super::*;
 
     #[test]
