@@ -396,6 +396,10 @@ impl Shell {
                         // The open colour editor belongs to the theme it was opened on.
                         this.settings.picker = None;
                         this.state.settings.fonts.remove(theme_key(&id));
+                        // A theme saved with "Save as theme" brings its whole look back.
+                        if let Some(look) = theme::saved_appearance(&this.paths.config, &id) {
+                            apply_appearance(&mut this.state.settings, &look);
+                        }
                         this.refresh_theme(cx);
                     }))
                     .child(thumb)
@@ -423,7 +427,18 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(heading("THEME", Some("Picking a theme also resets fonts."), &theme))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(div().flex_1().child(heading("THEME", None, &theme)))
+                    .child(
+                        Button::new("theme-save", "Save as theme", &theme)
+                            .style(ButtonStyle::Outline)
+                            .on_click(super::controls::listen(cx, |this, cx| this.save_as_theme(cx))),
+                    ),
+            )
             .child(grid)
             .into_any_element()
     }
@@ -467,6 +482,59 @@ impl Shell {
             SettingRow::new("Window opacity", "Below 100% the desktop shows through. Text stays solid.", &theme).control(opacity_slider),
         );
         section("BACKGROUND", rows, &theme)
+    }
+
+    /// Saves what the window looks like now as a new theme file, then switches to it: the colours on
+    /// screen (edits included), wallpaper, logo, fonts, and the other appearance settings.
+    fn save_as_theme(&mut self, cx: &mut Context<Self>) {
+        let t = self.theme.clone();
+        let dir = self.paths.config.join("themes");
+        let n = (1..).find(|n| !dir.join(format!("custom-{n}.json")).exists()).unwrap_or(1);
+        let id = format!("custom-{n}");
+        let name = format!("Custom {n}");
+        let wallpaper = match &self.state.settings.wallpaper {
+            Some(path) if path.is_file() => path.display().to_string(),
+            _ => t.wallpaper.clone(),
+        };
+        let mut look = serde_json::Map::new();
+        if let Ok(serde_json::Value::Object(all)) = serde_json::to_value(&self.state.settings) {
+            for key in APPEARANCE_KEYS {
+                if let Some(v) = all.get(key) {
+                    look.insert(key.to_string(), v.clone());
+                }
+            }
+        }
+        // The file names the wallpaper itself, so picking the theme shows it rather than a separate pick.
+        look.insert("wallpaper".into(), serde_json::Value::Null);
+        let file = serde_json::json!({
+            "id": id,
+            "name": name,
+            "colors": {
+                "bg": css(t.bg), "fg": css(t.fg), "muted": css(t.muted), "faint": css(t.faint), "acc": css(t.acc),
+                "acc2": css(t.acc2), "deep": css(t.deep), "alt": css(t.alt), "on": css(t.on), "soft": css(t.soft),
+            },
+            "tune": { "tile": css(t.tile), "panel": css(t.panel), "pop": css(t.pop) },
+            "gradient": t.gradient.map(css),
+            "wallpaper": wallpaper,
+            "logo": t.logo,
+            "pixelated": t.render == crate::ui::theme::Render::Pixelated,
+            "fonts": [{ "label": "Saved", "display": t.display_font, "ui": t.ui_font }],
+            "appearance": look,
+        });
+        let written = std::fs::create_dir_all(&dir).and_then(|()| {
+            let text = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
+            std::fs::write(dir.join(format!("{id}.json")), text)
+        });
+        match written {
+            Ok(()) => {
+                theme::reload_presets();
+                self.state.settings.theme = id;
+                self.settings.picker = None;
+                self.refresh_theme(cx);
+                self.toast(format!("Saved as {name}"), cx);
+            }
+            Err(e) => self.toast(format!("Could not save the theme: {e}"), cx),
+        }
     }
 
     /// One tile per filter, each showing the current wallpaper through it. The previews are made from a
@@ -975,6 +1043,34 @@ impl Shell {
 }
 
 
+/// The settings a saved theme brings back with it, as `AppSettings` names them.
+const APPEARANCE_KEYS: [&str; 13] = [
+    "background", "filter", "filter_pixel", "gaps", "radius", "panel_blur", "wallpaper_dim", "window_opacity",
+    "tint_all", "session_ring", "borders", "flush", "text_size",
+];
+
+/// Sets the appearance settings `look` names; anything else in it, and a value that doesn't fit, is ignored.
+fn apply_appearance(settings: &mut crate::app::settings::AppSettings, look: &serde_json::Value) {
+    let (Ok(serde_json::Value::Object(mut all)), Some(look)) = (serde_json::to_value(&*settings), look.as_object()) else { return };
+    for key in APPEARANCE_KEYS.iter().copied().chain(["wallpaper"]) {
+        if let Some(v) = look.get(key) {
+            all.insert(key.to_string(), v.clone());
+        }
+    }
+    if let Ok(applied) = serde_json::from_value(serde_json::Value::Object(all)) {
+        *settings = applied;
+    }
+}
+
+/// A colour as a theme file writes it: `#rrggbb`, or `rgba(...)` when it is see-through.
+fn css(c: crate::ui::theme::Rgba) -> String {
+    if c.a >= 1.0 {
+        format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
+    } else {
+        format!("rgba({},{},{},{:.2})", c.r, c.g, c.b, c.a)
+    }
+}
+
 /// A 320 px copy of `source` in the temp folder, named by what it shows, made once. `None` if the
 /// wallpaper can't be read.
 fn small_wallpaper(source: &crate::ui::glass::WallpaperSource) -> Option<PathBuf> {
@@ -989,4 +1085,40 @@ fn small_wallpaper(source: &crate::ui::glass::WallpaperSource) -> Option<PathBuf
         std::fs::write(&path, source.preview_png(320)?).ok()?;
     }
     Some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_saved_theme_brings_its_look_back() {
+        use crate::{app::settings::{AppSettings, BackgroundFilter}, ui::theme::BackgroundStyle};
+        let config = std::env::temp_dir().join(format!("archonui-theme-save-{}", crate::store::new_id()));
+        std::fs::create_dir_all(config.join("themes")).unwrap();
+        let soft = crate::ui::theme::Rgba::new(10, 20, 30, 0.25);
+        assert_eq!(css(soft), "rgba(10,20,30,0.25)");
+        assert_eq!(css(crate::ui::theme::Rgba::hex(0x0a141e)), "#0a141e");
+        let file = serde_json::json!({
+            "id": "custom-1", "name": "Custom 1",
+            "colors": { "bg": "#101010", "fg": "#f0f0f0", "acc": "#c81e2a", "soft": css(soft) },
+            "tune": { "tile": "#181818" },
+            "appearance": { "background": "glass", "filter": "warm", "gaps": 12.0, "wallpaper": null, "app_name": "nope" },
+        });
+        std::fs::write(config.join("themes/custom-1.json"), file.to_string()).unwrap();
+        let themes = crate::ui::theme::user_themes(&config);
+        assert_eq!(themes.len(), 1);
+        assert_eq!(themes[0].name, "Custom 1");
+
+        let look = crate::ui::theme::saved_appearance(&config, "custom-1").expect("the appearance block");
+        let mut settings = AppSettings { wallpaper: Some("/old.png".into()), app_name: "mine".into(), ..Default::default() };
+        apply_appearance(&mut settings, &look);
+        assert_eq!(settings.background, BackgroundStyle::Glass);
+        assert_eq!(settings.filter, BackgroundFilter::Warm);
+        assert_eq!(settings.gaps, 12.0);
+        assert_eq!(settings.wallpaper, None, "the theme's own wallpaper shows");
+        assert_eq!(settings.app_name, "mine", "only appearance settings change");
+        assert!(crate::ui::theme::saved_appearance(&config, "other").is_none());
+        std::fs::remove_dir_all(config).ok();
+    }
 }

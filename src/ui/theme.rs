@@ -304,19 +304,42 @@ pub const BUILTIN: &[Preset] = &[
     ),
 ];
 
-/// Every theme: the built-in ones, then the theme files in the config dir's `themes` folder, read once
-/// at startup. A file whose id matches a built-in theme replaces it.
+/// Every theme: the built-in ones, then the theme files in the config dir's `themes` folder, read at
+/// startup and again by [`reload_presets`]. A file whose id matches a built-in theme replaces it.
 pub fn presets() -> &'static [Preset] {
-    static ALL: OnceLock<Vec<Preset>> = OnceLock::new();
-    ALL.get_or_init(|| {
-        let mut all: Vec<Preset> = BUILTIN.to_vec();
-        for theme in user_themes(&crate::app::persist::Paths::current().config) {
-            match all.iter_mut().find(|p| p.id == theme.id) {
-                Some(slot) => *slot = theme,
-                None => all.push(theme),
-            }
+    let guard = all_presets().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard
+}
+
+/// Reads the theme files again, so a theme saved since startup shows up. The previous list is leaked:
+/// callers hold `&'static` references into it, and it only happens when a theme is saved.
+pub fn reload_presets() {
+    let fresh: &'static [Preset] = Box::leak(load_presets().into_boxed_slice());
+    *all_presets().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+}
+
+fn all_presets() -> &'static std::sync::Mutex<&'static [Preset]> {
+    static ALL: OnceLock<std::sync::Mutex<&'static [Preset]>> = OnceLock::new();
+    ALL.get_or_init(|| std::sync::Mutex::new(Box::leak(load_presets().into_boxed_slice())))
+}
+
+fn load_presets() -> Vec<Preset> {
+    let mut all: Vec<Preset> = BUILTIN.to_vec();
+    for theme in user_themes(&crate::app::persist::Paths::current().config) {
+        match all.iter_mut().find(|p| p.id == theme.id) {
+            Some(slot) => *slot = theme,
+            None => all.push(theme),
         }
-        all
+    }
+    all
+}
+
+/// The `appearance` a saved theme file carries (background, filter, sliders…), if theme `id` has one.
+pub fn saved_appearance(config: &Path, id: &str) -> Option<serde_json::Value> {
+    let entries = std::fs::read_dir(config.join("themes")).ok()?;
+    entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).find_map(|path| {
+        let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        (file.get("id")?.as_str()? == id).then(|| file.get("appearance").cloned()).flatten()
     })
 }
 
