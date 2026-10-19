@@ -489,8 +489,10 @@ impl Shell {
     fn save_as_theme(&mut self, cx: &mut Context<Self>) {
         let t = self.theme.clone();
         let dir = self.paths.config.join("themes");
-        let n = (1..).find(|n| !dir.join(format!("custom-{n}.json")).exists()).unwrap_or(1);
-        let id = format!("custom-{n}");
+        // The id is unique to this save, so themes saved on different devices never replace each other
+        // when they are shared. The name counts the custom themes already here.
+        let id = format!("custom-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()));
+        let n = presets().iter().filter(|p| p.id.starts_with("custom-")).count() + 1;
         let name = format!("Custom {n}");
         let wallpaper = match &self.state.settings.wallpaper {
             Some(path) if path.is_file() => path.display().to_string(),

@@ -281,7 +281,10 @@ pub fn handle(
         | ClientMsg::PutChats { .. }
         | ClientMsg::ListCloud
         | ClientMsg::GetProject { .. }
-        | ClientMsg::GetChats { .. }) => handle_cloud(cloud, hub, Request { conn, msg }),
+        | ClientMsg::GetChats { .. }
+        | ClientMsg::ListAssets
+        | ClientMsg::PutAssets { .. }
+        | ClientMsg::GetAssets { .. }) => handle_cloud(cloud, hub, Request { conn, msg }),
         ClientMsg::Draft { session, text } => {
             if state.session(&session).is_none() {
                 hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device")));
@@ -354,7 +357,14 @@ pub fn expire_requested(state: &mut AppState, hub: &Hub) -> Vec<String> {
 pub fn is_cloud(msg: &ClientMsg) -> bool {
     matches!(
         msg,
-        ClientMsg::PutProject { .. } | ClientMsg::PutChats { .. } | ClientMsg::ListCloud | ClientMsg::GetProject { .. } | ClientMsg::GetChats { .. }
+        ClientMsg::PutProject { .. }
+            | ClientMsg::PutChats { .. }
+            | ClientMsg::ListCloud
+            | ClientMsg::GetProject { .. }
+            | ClientMsg::GetChats { .. }
+            | ClientMsg::ListAssets
+            | ClientMsg::PutAssets { .. }
+            | ClientMsg::GetAssets { .. }
     )
 }
 
@@ -412,6 +422,28 @@ pub fn handle_cloud(cloud: Option<&Store>, hub: &Hub, req: Request) {
             };
             hub.reply(conn, &reply);
         }
+        ClientMsg::ListAssets => {
+            let reply = match cloud {
+                None => no_cloud(&about),
+                Some(store) => HostMsg::AssetList { assets: store.asset_list() },
+            };
+            hub.reply(conn, &reply);
+        }
+        ClientMsg::PutAssets { files } => match cloud {
+            None => hub.reply(conn, &no_cloud(&about)),
+            Some(store) => {
+                if let Err(message) = store.put_assets(&files) {
+                    hub.reply(conn, &HostMsg::error(&about, message));
+                }
+            }
+        },
+        ClientMsg::GetAssets { assets } => {
+            let reply = match cloud {
+                None => no_cloud(&about),
+                Some(store) => HostMsg::AssetData { files: store.get_assets(&assets) },
+            };
+            hub.reply(conn, &reply);
+        }
         _ => {}
     }
 }
@@ -435,6 +467,9 @@ fn target(msg: &ClientMsg) -> Option<&str> {
         | ClientMsg::ListCloud
         | ClientMsg::GetProject { .. }
         | ClientMsg::GetChats { .. }
+        | ClientMsg::ListAssets
+        | ClientMsg::PutAssets { .. }
+        | ClientMsg::GetAssets { .. }
         | ClientMsg::Unknown => None,
     }
 }

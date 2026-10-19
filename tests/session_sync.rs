@@ -648,3 +648,30 @@ fn cloud_store_round_trip() {
     assert!(env.data().join("cloud/projects/p1.git").is_dir());
     assert!(env.data().join("cloud/chats/dev1/c1.json").is_file());
 }
+
+#[test]
+fn appearance_files_round_trip_through_the_cloud() {
+    let env = Env::new("assets");
+    let host = Host::start(&env);
+    let mut c = Ws::hello(host.port, "laptop");
+    let theme = STANDARD.encode(br##"{"id":"custom-a","colors":{"bg":"#000000","fg":"#ffffff","acc":"#ff0000"}}"##);
+    c.send(json!({"type": "put_assets", "files": [
+        {"dir": "themes", "name": "custom-a.json", "modified": 1000, "data": theme},
+        {"dir": "themes", "name": "../escape.json", "modified": 1000, "data": theme},
+    ]}));
+    // The bad name is refused; the good one is kept.
+    let m = c.expect("error", |m| m["type"] == "error");
+    assert!(m["message"].as_str().unwrap().contains("can't be shared"), "{m}");
+
+    c.send(json!({"type": "list_assets"}));
+    let m = c.expect("asset list", |m| m["type"] == "asset_list");
+    let assets = m["assets"].as_array().unwrap();
+    assert_eq!(assets.len(), 1, "{m}");
+    assert_eq!((assets[0]["dir"].as_str(), assets[0]["name"].as_str(), assets[0]["modified"].as_u64()), (Some("themes"), Some("custom-a.json"), Some(1000)));
+
+    c.send(json!({"type": "get_assets", "assets": assets}));
+    let m = c.expect("asset data", |m| m["type"] == "asset_data");
+    assert_eq!(m["files"][0]["data"], json!(theme));
+    assert!(env.data().join("cloud/assets/themes/custom-a.json").is_file());
+    assert!(!env.data().join("cloud/assets/escape.json").exists());
+}

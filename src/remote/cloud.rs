@@ -82,6 +82,34 @@ impl Store {
     }
 
     /// Every stored snapshot, one per project and device, newest first.
+    /// The shared appearance files the cloud holds.
+    pub fn asset_list(&self) -> Vec<super::assets::AssetKey> {
+        super::assets::manifest(&self.root.join("assets")).into_iter().map(|(key, _)| key).collect()
+    }
+
+    /// Keeps `files`, each unless the cloud has the same or newer. The first failure is returned.
+    pub fn put_assets(&self, files: &[super::assets::AssetFile]) -> Result<(), String> {
+        self.make_private()?;
+        let root = self.root.join("assets");
+        let mut first = Ok(());
+        for file in files {
+            if let Err(e) = super::assets::save(&root, file) {
+                first = first.and(Err(e));
+            }
+        }
+        first
+    }
+
+    /// The files `keys` names that the cloud has. Ones it lacks are left out.
+    pub fn get_assets(&self, keys: &[super::assets::AssetKey]) -> Vec<super::assets::AssetFile> {
+        let root = self.root.join("assets");
+        let have = super::assets::manifest(&root);
+        keys.iter()
+            .filter_map(|k| have.iter().find(|(h, _)| h.dir == k.dir && h.name == k.name))
+            .filter_map(|(key, _)| super::assets::load(&root, key))
+            .collect()
+    }
+
     pub fn projects(&self) -> Vec<CloudProject> {
         let mut out = Vec::new();
         let Ok(entries) = fs::read_dir(self.root.join("projects")) else { return out };
