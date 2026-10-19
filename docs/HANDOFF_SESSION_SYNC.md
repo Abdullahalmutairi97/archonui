@@ -27,10 +27,12 @@ without Tailscale must behave exactly as before. That is a hard requirement from
   ashpc app's chats). Step 6 passed: the vps copy held modified, staged and untracked files, `.env`
   was left out, the project's git status, index and HEAD were unchanged, and the cloud folder is 0700.
   Step 8 passed: fresh config, nothing listening, a fake `tailscale` first on PATH was never called.
-- Partly checked: step 3 (another device's chats appear labelled with the device name; typing and Esc
-  in the window not yet driven), step 7 (an away device's chats show from the cloud; continuing one
-  and "Open copy" not yet driven). Not run: step 5 (approvals in the window). These need someone to
-  click in the app.
+- 2026-10-19, driven in the ashpc app with `wtype` (Ctrl+K to open a chat): step 3 passed (a
+  prompt typed on ashpc ran on the minipc and streamed back; Esc stopped it there and it shows as
+  Stopped). Step 7 passed (minipc went away; typing within 60 s says it is reconnecting; after
+  that the chat continued on ashpc as a new chat with the history). "Open copy" was not driven
+  (needs a mouse). Step 5 can't run: no agent asks for approvals today (Claude is started without
+  `--permission-prompt-tool` in every mode), so forwarding approvals is covered only by tests.
 - Old and new builds (0dce615, d30ae41, current) were checked against each other on loopback; every
   message decodes both ways and the cloud round trip works. Wire JSON of every message is pinned by
   tests in src/remote/proto.rs.
