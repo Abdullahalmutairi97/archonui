@@ -45,13 +45,14 @@ const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
 ];
 
 /// The background filters in picker order.
-const FILTERS: [(BackgroundFilter, &str); 7] = [
+const FILTERS: [(BackgroundFilter, &str); 8] = [
     (BackgroundFilter::Off, "Original"),
     (BackgroundFilter::Mono, "Mono"),
     (BackgroundFilter::Warm, "Warm"),
     (BackgroundFilter::Cool, "Cool"),
     (BackgroundFilter::Soft, "Soft"),
     (BackgroundFilter::Duotone, "Duotone"),
+    (BackgroundFilter::DuotoneGrey, "Duotone B&W"),
     (BackgroundFilter::Tritone, "Tritone"),
 ];
 
@@ -472,7 +473,20 @@ impl Shell {
         let image_row = SettingRow::new("Image", "", &theme).below(images);
         let filters = self.filter_grid(cx);
         let filter_row = SettingRow::new("Filter", "", &theme).below(filters);
-        let mut rows = vec![style_row, image_row, filter_row];
+        let fade_row = super::controls::toggle_row(
+            "bg-fade",
+            "Fade at the bottom",
+            "",
+            self.state.settings.wallpaper_fade,
+            &weak,
+            &theme,
+            |this, on, cx| {
+                this.state.settings.wallpaper_fade = on;
+                this.refresh_theme(cx);
+            },
+            None,
+        );
+        let mut rows = vec![style_row, image_row, filter_row, fade_row];
         let dim_slider = self.slide(Slide::Dim, dim, range(WALLPAPER_DIM, 5.), "%", cx);
         let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
         let opacity_slider = self.slide(Slide::Opacity, opacity, range(crate::app::settings::WINDOW_OPACITY, 5.), "%", cx);
@@ -1050,8 +1064,8 @@ impl Shell {
 
 
 /// The settings a saved theme brings back with it, as `AppSettings` names them.
-const APPEARANCE_KEYS: [&str; 13] = [
-    "background", "filter", "filter_pixel", "gaps", "radius", "panel_blur", "wallpaper_dim", "window_opacity",
+const APPEARANCE_KEYS: [&str; 14] = [
+    "background", "filter", "filter_pixel", "wallpaper_fade", "gaps", "radius", "panel_blur", "wallpaper_dim", "window_opacity",
     "tint_all", "session_ring", "borders", "flush", "text_size",
 ];
 

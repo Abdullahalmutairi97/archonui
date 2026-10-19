@@ -68,6 +68,8 @@ pub enum WallpaperSource {
     Dithered(Box<WallpaperSource>, Dither),
     /// Another source with a colour grade that keeps the picture: black and white, warmer, cooler or soft.
     Graded(Box<WallpaperSource>, Grade),
+    /// Another source whose lower part fades into a `0xrrggbb` colour.
+    Faded(Box<WallpaperSource>, u32),
 }
 
 /// A one-step colour grade for the wallpaper. Unlike a dither, the picture stays recognisable.
@@ -110,6 +112,7 @@ impl WallpaperSource {
             Self::Gradient(stops) => return Some(gradient_image(*stops)),
             Self::Dithered(base, dither) => return Some(dither_image(&base.decode()?, dither)),
             Self::Graded(base, grade) => return Some(grade_image(&base.decode()?, *grade)),
+            Self::Faded(base, colour) => return Some(fade_image(&base.decode()?, *colour)),
         }
         .ok()?
         .into_rgba8();
@@ -133,6 +136,24 @@ impl WallpaperSource {
         small.write_to(&mut out, image::ImageFormat::Png).ok()?;
         Some(out.into_inner())
     }
+}
+
+/// `image` with its lower part blended into `colour`: nothing at 55% of the height, nearly all of it at
+/// the bottom, eased so there is no visible edge.
+fn fade_image(image: &RgbaImage, colour: u32) -> RgbaImage {
+    let target = [(colour >> 16) as u8, (colour >> 8) as u8, colour as u8].map(f32::from);
+    let height = image.height().max(1) as f32;
+    let mut out = image.clone();
+    for (_, y, p) in out.enumerate_pixels_mut() {
+        let t = ((y as f32 / height - 0.55) / 0.45).clamp(0., 1.);
+        let t = t * t * (3. - 2. * t) * 0.92;
+        if t > 0. {
+            for c in 0..3 {
+                p.0[c] = (f32::from(p.0[c]) * (1. - t) + target[c] * t).round() as u8;
+            }
+        }
+    }
+    out
 }
 
 /// `image` with `grade` applied. Colour grades work per pixel; Soft blurs by a share of the width,
