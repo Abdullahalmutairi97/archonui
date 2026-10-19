@@ -5,8 +5,24 @@ use super::{Probe, Shell, Target};
 use crate::{
     app::workspace::Project,
     git,
-    ui::widgets::text_input::{text_input, TextInput},
+    ui::{
+        composer::icons::stroke_icon,
+        widgets::text_input::{text_input, TextInput},
+    },
 };
+
+/// A cloud with an arrow down: a project to download.
+const CLOUD_DOWN: &str = "M4.5 12a3 3 0 0 1-.4-6 4 4 0 0 1 7.8.6 2.7 2.7 0 0 1-.4 5.4M8 7.5v6M6 11.5l2 2 2-2";
+
+/// How long ago `at` was, in words, for a project's last change.
+fn changed_ago(at: u64, now: u64) -> String {
+    match now.saturating_sub(at) / 60 {
+        0 => "just now".to_string(),
+        m if m < 60 => format!("{m} min ago"),
+        m if m < 60 * 24 => format!("{} h ago", m / 60),
+        m => format!("{} d ago", m / (60 * 24)),
+    }
+}
 use gpui::{
     div, prelude::*, AnyElement, ClickEvent, Context, ElementId, Entity, MouseButton, MouseDownEvent,
     PathPromptOptions,
@@ -57,13 +73,71 @@ impl Shell {
                 self.project_card(project, active, renaming, cx)
             })
             .collect();
+        let remote = self.remote_project_cards(cx);
         div()
             .flex()
             .flex_col()
             .gap(px(10.))
             .children(cards)
             .child(self.open_folder_button(cx))
+            .children(remote)
             .into_any_element()
+    }
+
+    /// Projects on the user's other devices that aren't here yet, from the cloud's list. Clicking one
+    /// downloads its latest copy into a new folder and opens it as the same project.
+    fn remote_project_cards(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let projects = self.remote_projects();
+        if projects.is_empty() {
+            return None;
+        }
+        let theme = &self.theme;
+        let (line2, muted, fg) = (theme.line2.to_hsla(), theme.muted.to_hsla(), theme.fg.to_hsla());
+        let now = crate::store::now();
+        let cards = projects.into_iter().map(|p| {
+            let from = self.chat_device_name(&p.device);
+            let busy = self.remote.downloading.contains(&p.project);
+            let detail = if busy {
+                "Downloading…".to_string()
+            } else {
+                format!("On {from} · changed {}", changed_ago(p.updated, now))
+            };
+            let (project, device) = (p.project.clone(), p.device.clone());
+            div()
+                .id(ElementId::Name(format!("remote-project-{}", p.project).into()))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(14.))
+                .py(px(10.))
+                .rounded(px(9.))
+                .border_1()
+                .border_dashed()
+                .border_color(line2)
+                .cursor_pointer()
+                .hover(move |s| s.bg(line2))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_from_cloud(&project, &device, cx)))
+                .child(stroke_icon(CLOUD_DOWN, 16., 1.4, muted))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(14.)).text_color(fg).child(p.name.clone()))
+                        .child(div().text_size(px(11.5)).text_color(muted).child(detail)),
+                )
+        });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .pt(px(8.))
+                .child(div().text_size(px(11.)).text_color(muted).child("ON YOUR OTHER DEVICES"))
+                .children(cards)
+                .into_any_element(),
+        )
     }
 
     /// Starts the probe for `path` once. The card redraws when it finishes.

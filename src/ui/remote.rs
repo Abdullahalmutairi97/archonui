@@ -80,6 +80,8 @@ pub struct RemoteUi {
     last_backup: Option<u64>,
     /// When the five-minute backup timer fires next.
     next_backup: Option<Instant>,
+    /// Projects being downloaded from the cloud, by project id, so a second click doesn't fetch again.
+    pub(super) downloading: HashSet<String>,
     /// A reply ended while a copy was being prepared: copy again once it is sent.
     backup_again: bool,
     /// What the cloud holds, for Settings → Devices; `None` until asked.
@@ -241,6 +243,10 @@ impl Shell {
                 let alive = this.update(cx, |this, cx| {
                     for client in this.remote.clients.values() {
                         let _ = client.send(&ClientMsg::ListSessions);
+                    }
+                    // What the cloud holds, for the Projects list's other-device projects.
+                    if this.state.settings.sync.cloud.is_some() {
+                        this.refresh_cloud_list();
                     }
                     // Empty chats other devices asked for here and then left.
                     if let Some(hub) = this.remote.hub.clone() {
@@ -764,7 +770,13 @@ impl Shell {
                 eprintln!("archonui: cloud copy from {device}: {message}");
                 self.remote.pushed.clear();
             }
-            HostMsg::Error { message, .. } => self.toast(message, cx),
+            HostMsg::Error { message, about } => {
+                // A download the cloud couldn't serve can be tried again.
+                if let Some(About { project: Some(project), .. }) = about.as_ref().filter(|a| a.request == "get_project") {
+                    self.remote.downloading.remove(project);
+                }
+                self.toast(message, cx)
+            }
             HostMsg::Welcome { .. } | HostMsg::Unknown => {}
             HostMsg::Stored { project, commit, .. } => self.remote.copy_stored(project, commit),
             HostMsg::Cloud { projects, .. } => self.remote.cloud_projects = Some(projects),
@@ -1121,8 +1133,19 @@ impl Shell {
 
     /// Asks the cloud for a project's latest copy from `device`; it is restored when it arrives.
     pub(super) fn open_from_cloud(&mut self, project: &str, device: &str, cx: &mut Context<Self>) {
+        if self.state.project(project).is_some() {
+            // Already here: downloaded before, or this device's own.
+            self.state.workspace.current_project = Some(project.to_string());
+            self.save(cx);
+            return;
+        }
+        if !self.remote.downloading.insert(project.to_string()) {
+            return;
+        }
+        let name = self.cloud_project_name(project, device);
+        let from = self.chat_device_name(device);
+        self.toast(format!("Downloading {name} from {from}…"), cx);
         if let Some(store) = self.remote.cloud.clone() {
-            self.toast(format!("Opening a copy of {}…", self.cloud_project_name(project, device)), cx);
             // This device is the cloud: read the copy straight from the store, off the UI thread.
             let (project, device) = (project.to_string(), device.to_string());
             cx.spawn(async move |this, cx| {
@@ -1138,46 +1161,73 @@ impl Shell {
             })
             .detach();
         } else if let Some(cloud) = self.cloud_client() {
-            self.toast(format!("Opening a copy of {}…", self.cloud_project_name(project, device)), cx);
             let _ = cloud.send(&ClientMsg::GetProject { project: project.to_string(), device: device.to_string() });
         } else {
+            self.remote.downloading.remove(project);
             self.toast("The cloud device is not connected", cx);
         }
     }
 
+    /// Other devices' projects this device doesn't have yet, one per project (its most recently
+    /// changed copy), newest first. Empty until the cloud has said what it holds.
+    pub(super) fn remote_projects(&self) -> Vec<CloudProject> {
+        let me = self.remote.me.as_ref().map(|d| d.id.as_str());
+        other_devices_projects(self.remote.cloud_projects.as_deref().unwrap_or_default(), me, |id| self.state.project(id).is_some())
+    }
+
     /// Writes a project copy from the cloud into a new folder next to the default folder, and adds it
-    /// as a project. Never writes into an existing folder.
+    /// as the same project here (its id and name), then makes it the current one. Never writes into an
+    /// existing folder.
     fn restore_project(&mut self, project: &str, device: &str, commit: &str, bundle: &str, cx: &mut Context<Self>) {
-        let name = self
-            .remote
-            .cloud_projects
-            .as_ref()
-            .and_then(|list| list.iter().find(|p| p.project == project && p.device == device))
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| project.to_string());
+        let name = self.cloud_project_name(project, device);
         let from = self.chat_device_name(device);
         let base = self.default_folder();
         let safe = |s: &str| s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect::<String>();
-        let stem = format!("{}-from-{}", safe(&name), safe(&from));
+        let stem = safe(&name);
         let Ok(bytes) = STANDARD.decode(bundle) else {
+            self.remote.downloading.remove(project);
             self.toast("The cloud sent a broken copy", cx);
             return;
         };
         let commit = commit.to_string();
+        let project = project.to_string();
         cx.spawn(async move |this, cx| {
-            // The folder is picked as it is made, so a second "Open copy" still running gets another one.
+            // The folder is picked as it is made, so it never lands in one that exists.
             let done = cx.background_executor().spawn(async move { snapshot::restore_new(&bytes, &commit, &base, &stem) }).await;
-            let _ = this.update(cx, |this, cx| match done {
-                Ok(dest) => {
-                    this.state.add_project(&format!("{name} (from {from})"), dest.clone());
-                    this.save(cx);
-                    this.toast(format!("Opened {name} from the cloud in {}", dest.display()), cx);
+            let _ = this.update(cx, |this, cx| {
+                this.remote.downloading.remove(&project);
+                match done {
+                    Ok(dest) => {
+                        if this.state.add_shared_project(&project, &name, dest.clone()) {
+                            this.state.workspace.current_project = Some(project.clone());
+                        }
+                        this.save(cx);
+                        this.toast(format!("{name} from {from} is in {}", dest.display()), cx);
+                    }
+                    Err(e) => this.toast(format!("Could not download {name}: {e}"), cx),
                 }
-                Err(e) => this.toast(format!("Could not open {name}: {e}"), cx),
             });
         })
         .detach();
     }
+}
+
+/// The projects in `cloud` that are on devices other than `me` and not here (`here`), one per
+/// project id (the most recently changed copy), newest first.
+fn other_devices_projects(cloud: &[CloudProject], me: Option<&str>, here: impl Fn(&str) -> bool) -> Vec<CloudProject> {
+    let mut out: Vec<CloudProject> = Vec::new();
+    for p in cloud {
+        if Some(p.device.as_str()) == me || here(&p.project) {
+            continue;
+        }
+        match out.iter_mut().find(|q| q.project == p.project) {
+            Some(q) if q.updated >= p.updated => {}
+            Some(q) => *q = p.clone(),
+            None => out.push(p.clone()),
+        }
+    }
+    out.sort_by(|a, b| b.updated.cmp(&a.updated));
+    out
 }
 
 /// One project's copy for the cloud, as `project_copy` made it.
@@ -1302,6 +1352,21 @@ fn dropped_devices(sync: &crate::remote::SyncSettings, known: impl Iterator<Item
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn other_devices_projects_list_each_project_once_and_skip_what_is_here() {
+        let copy = |project: &str, device: &str, updated: u64| CloudProject {
+            project: project.into(),
+            name: project.into(),
+            device: device.into(),
+            commit: "abc".into(),
+            updated,
+        };
+        let cloud = [copy("app", "pc", 10), copy("app", "laptop", 30), copy("site", "pc", 20), copy("mine", "me", 50), copy("local", "pc", 40)];
+        let list = other_devices_projects(&cloud, Some("me"), |id| id == "local");
+        let got: Vec<(&str, &str)> = list.iter().map(|p| (p.project.as_str(), p.device.as_str())).collect();
+        assert_eq!(got, [("app", "laptop"), ("site", "pc")], "newest copy of each, none of mine or ones already here");
+    }
+
     use super::*;
     use crate::remote::SyncSettings;
 
