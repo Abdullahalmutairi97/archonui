@@ -66,6 +66,21 @@ pub enum WallpaperSource {
     Gradient([u32; 3]),
     /// Another source redrawn with an ordered dither in a few colours.
     Dithered(Box<WallpaperSource>, Dither),
+    /// Another source with a colour grade that keeps the picture: black and white, warmer, cooler or soft.
+    Graded(Box<WallpaperSource>, Grade),
+}
+
+/// A one-step colour grade for the wallpaper. Unlike a dither, the picture stays recognisable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Grade {
+    /// Black and white.
+    Mono,
+    /// A soft amber cast.
+    Warm,
+    /// A dim blue night cast.
+    Cool,
+    /// Blurred into soft shapes.
+    Soft,
 }
 
 /// An ordered (Bayer) dither: the image's brightness drawn with only `palette`'s colours, darkest
@@ -94,6 +109,7 @@ impl WallpaperSource {
             Self::File(path) => image::open(path),
             Self::Gradient(stops) => return Some(gradient_image(*stops)),
             Self::Dithered(base, dither) => return Some(dither_image(&base.decode()?, dither)),
+            Self::Graded(base, grade) => return Some(grade_image(&base.decode()?, *grade)),
         }
         .ok()?
         .into_rgba8();
@@ -104,6 +120,41 @@ impl WallpaperSource {
         let scaled_height = (u64::from(height) * u64::from(MAX_WIDTH) / u64::from(width)).max(1) as u32;
         Some(image::imageops::resize(&decoded, MAX_WIDTH, scaled_height, FilterType::Triangle))
     }
+}
+
+impl WallpaperSource {
+    /// A small PNG of this source, `width` px wide, for a picker tile. `None` if it can't be read.
+    pub fn preview_png(&self, width: u32) -> Option<Vec<u8>> {
+        let full = self.decode()?;
+        let (w, h) = full.dimensions();
+        let height = (u64::from(h) * u64::from(width) / u64::from(w.max(1))).max(1) as u32;
+        let small = image::imageops::resize(&full, width, height, FilterType::Triangle);
+        let mut out = std::io::Cursor::new(Vec::new());
+        small.write_to(&mut out, image::ImageFormat::Png).ok()?;
+        Some(out.into_inner())
+    }
+}
+
+/// `image` with `grade` applied. Colour grades work per pixel; Soft blurs by a share of the width,
+/// so it looks the same on a thumbnail and a full wallpaper.
+fn grade_image(image: &RgbaImage, grade: Grade) -> RgbaImage {
+    if grade == Grade::Soft {
+        let sigma = (image.width() as f32 / 90.).max(1.);
+        return image::imageops::blur(image, sigma);
+    }
+    let mut out = image.clone();
+    for p in out.pixels_mut() {
+        let [r, g, b, a] = p.0.map(f32::from);
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let [r, g, b] = match grade {
+            Grade::Mono => [luma; 3],
+            Grade::Warm => [r * 0.9 + luma * 0.1 + 18., g * 0.92 + luma * 0.08 + 6., b * 0.72],
+            Grade::Cool => [r * 0.62 + luma * 0.1, g * 0.72 + luma * 0.1 + 4., b * 0.85 + luma * 0.1 + 22.],
+            Grade::Soft => [r, g, b],
+        };
+        p.0 = [r, g, b, a].map(|c| c.round().clamp(0., 255.) as u8);
+    }
+    out
 }
 
 /// Size of a generated gradient background. Soft blends scale up without visible steps.

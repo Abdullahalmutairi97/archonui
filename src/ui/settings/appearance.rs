@@ -8,7 +8,7 @@ use super::{
 use crate::{
     app::{
         persist::copy_asset,
-        settings::{theme_key, AppIcon, BackgroundFilter, FILTER_PIXEL, GAPS, PANEL_BLUR, RADIUS, TEXT_SIZE, WALLPAPER_DIM},
+        settings::{theme_key, AppIcon, BackgroundFilter, GAPS, PANEL_BLUR, RADIUS, TEXT_SIZE, WALLPAPER_DIM},
     },
     ui::{
         anim,
@@ -44,9 +44,16 @@ const BACKGROUNDS: [(BackgroundStyle, &str, &str); 6] = [
     (BackgroundStyle::Ambient, "Ambient", "Blurred and dark"),
 ];
 
-/// The background filters in segment order.
-const FILTERS: [(BackgroundFilter, &str); 3] =
-    [(BackgroundFilter::Off, "Off"), (BackgroundFilter::Duotone, "Duotone"), (BackgroundFilter::Tritone, "Tritone")];
+/// The background filters in picker order.
+const FILTERS: [(BackgroundFilter, &str); 7] = [
+    (BackgroundFilter::Off, "Original"),
+    (BackgroundFilter::Mono, "Mono"),
+    (BackgroundFilter::Warm, "Warm"),
+    (BackgroundFilter::Cool, "Cool"),
+    (BackgroundFilter::Soft, "Soft"),
+    (BackgroundFilter::Duotone, "Duotone"),
+    (BackgroundFilter::Tritone, "Tritone"),
+];
 
 /// Captions over the colour swatches with how many of `EDITABLE_TOKENS`, in order, each holds.
 const COLOUR_GROUPS: [(&str, usize); 4] = [("Surfaces", 4), ("Text", 4), ("Accents", 4), ("Lines and highlights", 5)];
@@ -428,10 +435,6 @@ impl Shell {
         let current = self.state.settings.background;
         let style_index = BACKGROUNDS.iter().position(|(s, _, _)| *s == current).unwrap_or(0);
         let style_names: Vec<&str> = BACKGROUNDS.iter().map(|(_, name, _)| *name).collect();
-        let filter = self.state.settings.filter;
-        let filter_index = FILTERS.iter().position(|(f, _)| *f == filter).unwrap_or(0);
-        let filter_names: Vec<&str> = FILTERS.iter().map(|(_, name)| *name).collect();
-        let pixel = self.state.settings.filter_pixel;
         let dim = self.state.settings.wallpaper_dim;
         let blur = self.state.settings.panel_blur;
         let opacity = self.state.settings.window_opacity;
@@ -452,26 +455,9 @@ impl Shell {
         );
         let images = self.wallpaper_grid(cx);
         let image_row = SettingRow::new("Image", "Your pick stays when you change theme. Uploads are kept in the backgrounds folder.", &theme).below(images);
-        let filter_row = segmented_row(
-            "bg-filter",
-            "Filter",
-            "Dithers the background into a few colours.",
-            &filter_names,
-            filter_index,
-            &weak,
-            &theme,
-            |this, i, cx| {
-                this.state.settings.filter = FILTERS[i].0;
-                this.refresh_theme(cx);
-            },
-            None,
-        );
-
+        let filters = self.filter_grid(cx);
+        let filter_row = SettingRow::new("Filter", "", &theme).below(filters);
         let mut rows = vec![style_row, image_row, filter_row];
-        if filter != BackgroundFilter::Off {
-            let pixel_slider = self.slide(Slide::FilterPixel, pixel, range(FILTER_PIXEL, 1.), "px", cx);
-            rows.push(SettingRow::new("Dot size", "Size of each dot in the filter.", &theme).control(pixel_slider));
-        }
         let dim_slider = self.slide(Slide::Dim, dim, range(WALLPAPER_DIM, 5.), "%", cx);
         let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
         let opacity_slider = self.slide(Slide::Opacity, opacity, range(crate::app::settings::WINDOW_OPACITY, 5.), "%", cx);
@@ -481,6 +467,56 @@ impl Shell {
             SettingRow::new("Window opacity", "Below 100% the desktop shows through. Text stays solid.", &theme).control(opacity_slider),
         );
         section("BACKGROUND", rows, &theme)
+    }
+
+    /// One tile per filter, each showing the current wallpaper through it. The previews are made from a
+    /// small copy of the wallpaper, written once to the temp folder, so opening the page stays quick.
+    fn filter_grid(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme.clone();
+        let current = self.state.settings.filter;
+        let base = self.filtered_wallpaper(BackgroundFilter::Off);
+        let small = small_wallpaper(&base);
+        let mut grid = div().flex().flex_wrap().gap(px(8.));
+        for (i, (filter, name)) in FILTERS.into_iter().enumerate() {
+            let thumb = small.as_ref().and_then(|small| {
+                let source = self.with_filter(crate::ui::glass::WallpaperSource::File(small.clone()), filter);
+                self.cached_image(format!("filter:{}:{source:?}", small.display()), || {
+                    Some(Arc::new(Image::from_bytes(ImageFormat::Png, source.preview_png(192)?)))
+                })
+            });
+            let active = filter == current;
+            grid = grid.child(
+                div()
+                    .id(("bg-filter", i))
+                    .relative()
+                    .w(px(96.))
+                    .h(px(58.))
+                    .rounded(px(6.))
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .border_2()
+                    .border_color(if active { theme.acc.to_hsla() } else { gpui::transparent_black() })
+                    .bg(theme.line2.to_hsla())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.settings.filter = filter;
+                        this.refresh_theme(cx);
+                    }))
+                    .children(thumb.map(|t| img(t).size_full().object_fit(ObjectFit::Cover)))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(4.))
+                            .bottom(px(3.))
+                            .px(px(4.))
+                            .rounded(px(3.))
+                            .bg(gpui::hsla(0., 0., 0., 0.55))
+                            .text_size(px(9.))
+                            .text_color(gpui::white())
+                            .child(name),
+                    ),
+            );
+        }
+        grid.into_any_element()
     }
 
     /// The image tiles: the theme's own background, every image in the backgrounds folder, and an
@@ -938,3 +974,19 @@ impl Shell {
     }
 }
 
+
+/// A 320 px copy of `source` in the temp folder, named by what it shows, made once. `None` if the
+/// wallpaper can't be read.
+fn small_wallpaper(source: &crate::ui::glass::WallpaperSource) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    if let crate::ui::glass::WallpaperSource::File(path) = source {
+        std::fs::metadata(path).and_then(|m| m.modified()).ok().hash(&mut hasher);
+    }
+    let path = std::env::temp_dir().join(format!("archonui-wallpaper-{:016x}.png", hasher.finish()));
+    if !path.is_file() {
+        std::fs::write(&path, source.preview_png(320)?).ok()?;
+    }
+    Some(path)
+}
