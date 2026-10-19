@@ -18,7 +18,7 @@ use crate::{
             button::{Button, ButtonStyle},
             section::SettingRow,
             slider::{slider, SliderRange},
-            text_input::text_input,
+            text_input::{text_input, TextInput, TextInputConfig, TextInputEvent},
         },
     },
 };
@@ -384,6 +384,28 @@ impl Shell {
                         .child(line(0.7, look.muted))
                         .child(div().absolute().right(px(5.)).bottom(px(5.)).w(px(14.)).h(px(6.)).rounded(px(3.)).bg(look.acc.to_hsla())),
                 );
+            // A theme file (saved here or shared from another device) can be renamed and removed.
+            let own = !theme::is_builtin(&id);
+            let renaming = self.settings.theme_rename.as_ref().filter(|(r, _)| *r == id).map(|(_, (input, _))| input.clone());
+            let thumb = thumb.when(own, |t| {
+                let (rid, did) = (id.clone(), id.clone());
+                t.child(
+                    div()
+                        .absolute()
+                        .top(px(3.))
+                        .right(px(3.))
+                        .flex()
+                        .gap(px(3.))
+                        .child(corner_button(("theme-rename", i), "✎", &theme).on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.start_theme_rename(&rid, window, cx);
+                        })))
+                        .child(corner_button(("theme-remove", i), "×", &theme).on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.remove_theme(&did, cx);
+                        }))),
+                )
+            });
             grid = grid.child(
                 card(("preset", i), active, &theme)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -404,16 +426,18 @@ impl Shell {
                             .items_center()
                             .gap(px(6.))
                             .min_w_0()
-                            .child(
-                                div()
+                            .child(match renaming {
+                                Some(input) => div().flex_1().min_w_0().child(text_input(&input, &theme)).into_any_element(),
+                                None => div()
                                     .flex_1()
                                     .min_w_0()
                                     .text_size(px(12.))
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .whitespace_nowrap()
-                                    .child(preset.name.to_string()),
-                            )
+                                    .child(preset.name.to_string())
+                                    .into_any_element(),
+                            })
                             .when(edited, |d| d.child(div().flex_none().w(px(6.)).h(px(6.)).rounded_full().bg(theme.acc2.to_hsla()))),
                     ),
             );
@@ -490,6 +514,92 @@ impl Shell {
             SettingRow::new("Window opacity", "Text stays solid", &theme).control(opacity_slider),
         );
         section("BACKGROUND", rows, &theme)
+    }
+
+    /// Removes a background. One in the backgrounds folder is removed on every device it is shared to;
+    /// an older one kept elsewhere is only taken off the list. A picked one goes back to the theme's own.
+    fn remove_background(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let dir = self.backgrounds_dir();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let result = if path.parent() == Some(dir.as_path()) {
+            crate::remote::assets::remove(&self.paths.config, "backgrounds", &name)
+        } else {
+            self.state.settings.user_wallpapers.retain(|p| p != path);
+            Ok(())
+        };
+        if let Err(e) = result {
+            self.toast(format!("Could not remove {name}: {e}"), cx);
+            return;
+        }
+        if self.state.settings.wallpaper.as_deref() == Some(path) {
+            self.state.settings.wallpaper = None;
+        }
+        self.settings.images.clear();
+        self.refresh_theme(cx);
+    }
+
+    /// Removes a theme file, on every device it is shared to. If it was the theme in use, the default
+    /// theme takes over.
+    fn remove_theme(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(file) = theme::theme_file(&self.paths.config, id) else { return };
+        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Err(e) = crate::remote::assets::remove(&self.paths.config, "themes", &name) {
+            self.toast(format!("Could not remove the theme: {e}"), cx);
+            return;
+        }
+        theme::reload_presets();
+        if self.state.settings.theme == id {
+            self.state.settings.theme = theme::DEFAULT_THEME.to_string();
+        }
+        self.settings.theme_rename = None;
+        self.refresh_theme(cx);
+    }
+
+    /// Turns a custom theme's name into a field. Enter keeps the new name; leaving the field drops it.
+    fn start_theme_rename(&mut self, id: &str, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let current = presets().iter().find(|p| p.id == id).map(|p| p.name.to_string()).unwrap_or_default();
+        let config = TextInputConfig { placeholder: "Theme name".into(), max_len: Some(40), font_size: px(12.), line_height: px(16.), ..Default::default() };
+        let input = cx.new(|cx| TextInput::new(config, window, cx));
+        input.update(cx, |input, cx| input.set_text(&current, cx));
+        input.read(cx).focus(window);
+        let theme_id = id.to_string();
+        let subscription = cx.subscribe(&input, move |this, input, event: &TextInputEvent, cx| match event {
+            TextInputEvent::Submit => {
+                let name = input.read(cx).text().trim().to_string();
+                this.settings.theme_rename = None;
+                if !name.is_empty() {
+                    this.rename_theme(&theme_id, &name, cx);
+                }
+                cx.notify();
+            }
+            TextInputEvent::Blur => {
+                this.settings.theme_rename = None;
+                cx.notify();
+            }
+            TextInputEvent::Changed => {}
+        });
+        self.settings.theme_rename = Some((id.to_string(), (input, subscription)));
+        cx.notify();
+    }
+
+    /// Writes a new name into the theme's file; the change reaches the other devices like any edit.
+    fn rename_theme(&mut self, id: &str, name: &str, cx: &mut Context<Self>) {
+        let Some(path) = theme::theme_file(&self.paths.config, id) else { return };
+        let renamed = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).map_err(|e| e.to_string()))
+            .and_then(|mut file| {
+                file["name"] = serde_json::Value::from(name);
+                let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+                std::fs::write(&path, text).map_err(|e| e.to_string())
+            });
+        match renamed {
+            Ok(()) => {
+                theme::reload_presets();
+                self.refresh_theme(cx);
+            }
+            Err(e) => self.toast(format!("Could not rename the theme: {e}"), cx),
+        }
     }
 
     /// Saves what the window looks like now as a new theme file, then switches to it: the colours on
@@ -648,13 +758,22 @@ impl Shell {
         for (i, path) in backgrounds.into_iter().enumerate() {
             let Some(thumb) = self.wall_thumb(&path) else { continue };
             let active = picked.as_ref() == Some(&path);
+            let gone = path.clone();
             grid = grid.child(
                 cell(("wall", i).into(), active)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.state.settings.wallpaper = Some(path.clone());
                         this.refresh_theme(cx);
                     }))
-                    .child(img(thumb).size_full().object_fit(ObjectFit::Cover)),
+                    .child(img(thumb).size_full().object_fit(ObjectFit::Cover))
+                    .child(
+                        div().absolute().top(px(3.)).right(px(3.)).child(
+                            corner_button(("wall-remove", i), "×", &theme).on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.remove_background(&gone, cx);
+                            })),
+                        ),
+                    ),
             );
         }
         grid = grid.child(
@@ -1042,6 +1161,25 @@ fn css(c: crate::ui::theme::Rgba) -> String {
     } else {
         format!("rgba({},{},{},{:.2})", c.r, c.g, c.b, c.a)
     }
+}
+
+/// A small round button for a tile's corner, such as × to remove it.
+fn corner_button(id: impl Into<ElementId>, label: &'static str, theme: &crate::ui::theme::Theme) -> Stateful<gpui::Div> {
+    let fg = theme.fg.to_hsla();
+    div()
+        .id(id)
+        .w(px(16.))
+        .h(px(16.))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui::hsla(0., 0., 0., 0.6))
+        .text_size(px(10.))
+        .text_color(gpui::white())
+        .cursor_pointer()
+        .hover(move |s| s.bg(gpui::hsla(0., 0., 0., 0.85)).text_color(fg))
+        .child(label)
 }
 
 /// A 320 px copy of `source` in the temp folder, named by what it shows, made once. `None` if the

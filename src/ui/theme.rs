@@ -334,6 +334,22 @@ fn load_presets() -> Vec<Preset> {
     all
 }
 
+/// Whether `id` is one of the themes that come with the app (not a theme file).
+pub fn is_builtin(id: &str) -> bool {
+    BUILTIN.iter().any(|p| p.id == id)
+}
+
+/// The theme file in `config/themes` whose id is `id`, if there is one.
+pub fn theme_file(config: &Path, id: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(config.join("themes")).ok()?;
+    entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).find(|path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|file| file.get("id").and_then(|v| v.as_str()) == Some(id))
+    })
+}
+
 /// The `appearance` a saved theme file carries (background, filter, sliders…), if theme `id` has one.
 pub fn saved_appearance(config: &Path, id: &str) -> Option<serde_json::Value> {
     let entries = std::fs::read_dir(config.join("themes")).ok()?;
