@@ -13,6 +13,7 @@ use crate::{
         cloud::Store,
         host,
         hub::{Hub, Request},
+        assets,
         proto::{self, About, ClientMsg, CloudProject, HostMsg, RemoteFile, MAX_REMOTE_FILES_BYTES},
         snapshot, tailscale, Device,
     },
@@ -82,6 +83,8 @@ pub struct RemoteUi {
     next_backup: Option<Instant>,
     /// Projects being downloaded from the cloud, by project id, so a second click doesn't fetch again.
     pub(super) downloading: HashSet<String>,
+    /// The cloud doesn't know the appearance-file requests (an older archonUI): they aren't sent again.
+    assets_unsupported: bool,
     /// A reply ended while a copy was being prepared: copy again once it is sent.
     backup_again: bool,
     /// What the cloud holds, for Settings → Devices; `None` until asked.
@@ -118,6 +121,7 @@ impl RemoteUi {
         self.too_big.clear();
         self.chats_fingerprint = None;
         self.last_backup = None;
+        self.assets_unsupported = false;
     }
 
     /// Project `project` (`name`) needs `bytes` to copy, more than one message holds: it is no longer
@@ -744,6 +748,12 @@ impl Shell {
             HostMsg::ApprovalDone { session, request } => {
                 self.drop_forwarded(|f| f.device == device && f.session == session && f.request == request);
             }
+            // A cloud older than the appearance-file requests: stop asking, quietly.
+            HostMsg::Error { message, about: Some(about) }
+                if proto::is_unknown_request(&message) && about.request.ends_with("_assets") =>
+            {
+                self.remote.assets_unsupported = true;
+            }
             // A host older than the request (rename or delete, say). Not a failed copy: the cloud knows those.
             HostMsg::Error { message, .. } if proto::is_unknown_request(&message) => {
                 let name = self.chat_device_name(device);
@@ -781,6 +791,8 @@ impl Shell {
             HostMsg::Stored { project, commit, .. } => self.remote.copy_stored(project, commit),
             HostMsg::Cloud { projects, .. } => self.remote.cloud_projects = Some(projects),
             HostMsg::ProjectData { project, device: from, commit, bundle } => self.restore_project(&project, &from, &commit, &bundle, cx),
+            HostMsg::AssetList { assets } => self.trade_assets(assets, cx),
+            HostMsg::AssetData { files } => self.take_assets(files, cx),
             HostMsg::Chats { device: owner, sessions } => {
                 // Only while that device is away; when it is online its own copies are live.
                 if !self.remote.clients.contains_key(&owner) && self.state.settings.sync.devices.iter().any(|d| d.id == owner) {
@@ -1043,6 +1055,13 @@ impl Shell {
         if self.state.settings.sync.is_cloud(&me.id) || self.cloud_client().is_none() {
             return;
         }
+        // Appearance files (themes, backgrounds, logos): the cloud's list first, then each side takes
+        // what it lacks or has older.
+        if !self.remote.assets_unsupported {
+            if let Some(cloud) = self.cloud_client() {
+                let _ = cloud.send(&ClientMsg::ListAssets);
+            }
+        }
         // Chats first: small, and what matters most when this device is away. Sent only when they
         // differ from what this cloud last got.
         let sessions: Vec<serde_json::Value> = self
@@ -1166,6 +1185,55 @@ impl Shell {
             self.remote.downloading.remove(project);
             self.toast("The cloud device is not connected", cx);
         }
+    }
+
+    /// The cloud listed its appearance files: send it the ones it lacks or has older, and ask for the
+    /// ones this device lacks or has older. Reading and hashing the files runs off the UI thread.
+    fn trade_assets(&mut self, theirs: Vec<assets::AssetKey>, cx: &mut Context<Self>) {
+        let config = self.paths.config.clone();
+        cx.spawn(async move |this, cx| {
+            let (send, want) = cx
+                .background_executor()
+                .spawn(async move {
+                    let mine: Vec<assets::AssetKey> = assets::manifest(&config).into_iter().map(|(k, _)| k).collect();
+                    let send: Vec<assets::AssetFile> = assets::newer(&theirs, &mine).into_iter().filter_map(|k| assets::load(&config, k)).collect();
+                    let want: Vec<assets::AssetKey> = assets::newer(&mine, &theirs).into_iter().cloned().collect();
+                    (send, want)
+                })
+                .await;
+            let _ = this.update(cx, |this, _| {
+                let Some(cloud) = this.cloud_client() else { return };
+                if !send.is_empty() {
+                    let _ = cloud.send(&ClientMsg::PutAssets { files: send });
+                }
+                if !want.is_empty() {
+                    let _ = cloud.send(&ClientMsg::GetAssets { assets: want });
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Appearance files from the cloud: kept unless this device has the same or newer, then the theme
+    /// list is read again so a theme saved on another device shows up.
+    fn take_assets(&mut self, files: Vec<assets::AssetFile>, cx: &mut Context<Self>) {
+        let config = self.paths.config.clone();
+        cx.spawn(async move |this, cx| {
+            let written = cx
+                .background_executor()
+                .spawn(async move {
+                    files.iter().filter(|f| assets::save(&config, f).map_err(|e| eprintln!("archonui: appearance file {e}")).unwrap_or(false)).count()
+                })
+                .await;
+            if written > 0 {
+                let _ = this.update(cx, |this, cx| {
+                    crate::ui::theme::reload_presets();
+                    this.settings.images.clear();
+                    this.refresh_theme(cx);
+                });
+            }
+        })
+        .detach();
     }
 
     /// Other devices' projects this device doesn't have yet, one per project (its most recently
@@ -1334,7 +1402,10 @@ fn device_name(sync: &crate::remote::SyncSettings, me: Option<&Device>, id: &str
 
 /// Whether `msg` answers a cloud request, so only the cloud's own count.
 fn cloud_reply(msg: &HostMsg) -> bool {
-    matches!(msg, HostMsg::Stored { .. } | HostMsg::Cloud { .. } | HostMsg::ProjectData { .. } | HostMsg::Chats { .. })
+    matches!(
+        msg,
+        HostMsg::Stored { .. } | HostMsg::Cloud { .. } | HostMsg::ProjectData { .. } | HostMsg::Chats { .. } | HostMsg::AssetList { .. } | HostMsg::AssetData { .. }
+    )
 }
 
 /// Whether an error answers a copy to the cloud: a `PutProject` or `PutChats`.

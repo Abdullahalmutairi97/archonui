@@ -5,6 +5,7 @@
 //! chats, subscribe to one (the host sends a `Snapshot`, then every `Event` of its turns), send
 //! prompts (with files) and stop turns.
 
+pub use super::assets::{AssetFile, AssetKey};
 use crate::engine::{Mode, Out};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use std::path::PathBuf;
@@ -95,6 +96,12 @@ pub enum ClientMsg {
     Rename { session: String, title: String },
     /// Delete a chat on the host, unless a reply is running in it. Followers are sent `Deleted`.
     Delete { session: String },
+    /// Cloud: list the shared appearance files (themes, backgrounds, logos). Answered with `AssetList`.
+    ListAssets,
+    /// Cloud: keep these appearance files, unless it has the same or newer. Nothing is sent back on success.
+    PutAssets { files: Vec<AssetFile> },
+    /// Cloud: send these appearance files. Answered with `AssetData`.
+    GetAssets { assets: Vec<AssetKey> },
     /// A message from a newer client that this version does not know. The host answers `Error`. Never sent.
     #[serde(other)]
     Unknown,
@@ -175,6 +182,10 @@ pub enum HostMsg {
     ProjectData { project: String, device: String, commit: String, bundle: String },
     /// Cloud: answer to `GetChats`.
     Chats { device: String, sessions: Vec<serde_json::Value> },
+    /// Cloud: answer to `ListAssets`.
+    AssetList { assets: Vec<AssetKey> },
+    /// Cloud: answer to `GetAssets`.
+    AssetData { files: Vec<AssetFile> },
     /// A tool use in chat `session` waits for an answer. `request` is the host's id for it.
     Approval { session: String, request: u64, tool: String, input: serde_json::Value },
     /// Request `request` in chat `session` was answered or dropped, so clients clear its card.
@@ -238,6 +249,9 @@ impl ClientMsg {
             ClientMsg::Answer { .. } => "answer",
             ClientMsg::Rename { .. } => "rename",
             ClientMsg::Delete { .. } => "delete",
+            ClientMsg::ListAssets => "list_assets",
+            ClientMsg::PutAssets { .. } => "put_assets",
+            ClientMsg::GetAssets { .. } => "get_assets",
             ClientMsg::Unknown => "",
         }
     }
@@ -409,6 +423,15 @@ mod tests {
                     files: Vec::new(),
                 },
                 r#"{"type":"prompt","session":"s1","text":"hi","mode":null,"model":null,"effort":null,"default_model":true,"default_effort":true,"files":[]}"#,
+            ),
+            (ClientMsg::ListAssets, r#"{"type":"list_assets"}"#),
+            (
+                ClientMsg::PutAssets { files: vec![AssetFile { dir: "themes".into(), name: "t.json".into(), modified: 5, data: "e30=".into() }] },
+                r#"{"type":"put_assets","files":[{"dir":"themes","name":"t.json","modified":5,"data":"e30="}]}"#,
+            ),
+            (
+                ClientMsg::GetAssets { assets: vec![AssetKey { dir: "logos".into(), name: "m.png".into(), hash: "ab".into(), modified: 7 }] },
+                r#"{"type":"get_assets","assets":[{"dir":"logos","name":"m.png","hash":"ab","modified":7}]}"#,
             ),
             (ClientMsg::Cancel { session: "s1".into() }, r#"{"type":"cancel","session":"s1"}"#),
             (ClientMsg::Draft { session: "s1".into(), text: "d".into() }, r#"{"type":"draft","session":"s1","text":"d"}"#),
