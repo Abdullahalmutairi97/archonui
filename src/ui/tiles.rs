@@ -447,14 +447,21 @@ impl Shell {
         }
     }
 
-    /// Where a session runs: its project's name, else its folder's name.
+    /// Where a session runs: its project's name, else its folder's name, after its device's name
+    /// for a chat on another device.
     pub(super) fn session_place(&self, s: &Session) -> String {
-        s.project
+        let place = s
+            .project
             .as_deref()
             .and_then(|p| self.state.project(p))
             .map(|p| p.name.clone())
             .or_else(|| s.cwd.file_name().map(|name| name.to_string_lossy().into_owned()))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        match &s.origin {
+            Some(device) if place.is_empty() => self.chat_device_name(device),
+            Some(device) => format!("{} · {place}", self.chat_device_name(device)),
+            None => place,
+        }
     }
 
     /// The header's meta line: project, model, effort, mode and running state. Spec: chat.md §0.5.
