@@ -45,6 +45,19 @@ const DIALOG_MARGIN: f32 = 24.;
 /// The sidebar's width range, in design px. It is a share of the dialog width, so it narrows with the window.
 const NAV_WIDTH: (f32, f32) = (168., 236.);
 
+/// The page body's side padding, in design px: roomy beside the sidebar, tighter in a compact dialog.
+const BODY_PAD: f32 = 36.;
+const COMPACT_PAD: f32 = 20.;
+/// Below this dialog width, in design px, the sidebar becomes a strip of pages across the top, so the
+/// page gets the whole width.
+const COMPACT_BELOW: f32 = 720.;
+
+/// How many columns of at least `min` wide, `gap` apart, fit in `width`: from 1 up to `max`.
+pub(super) fn columns(width: f32, min: f32, gap: f32, max: u16) -> u16 {
+    let fit = ((width + gap) / (min + gap)).floor();
+    if fit.is_finite() { (fit as u16).clamp(1, max.max(1)) } else { 1 }
+}
+
 /// `ideal` clamped to `avail` and floored at `min`, but never wider than `avail`.
 fn fit(ideal: f32, min: f32, avail: f32) -> f32 {
     ideal.min(avail).max(min.min(avail))
@@ -210,8 +223,8 @@ pub struct SettingsUi {
     pub(super) picker: Option<colour::Picker>,
     /// Whether the Appearance page's custom colour swatches are shown.
     pub(super) colours_open: bool,
-    /// The font slot the Appearance page's font chips set.
-    pub(super) font_slot: FontSlot,
+    /// The font slot whose list is open on Appearance, if any.
+    pub(super) font_open: Option<FontSlot>,
     /// Discovered skills; `None` until the first search finishes.
     pub(super) skills: Option<Vec<Skill>>,
     /// The latest skills search. An older one finishing late (say, one started before a sync) is dropped
@@ -227,6 +240,8 @@ pub struct SettingsUi {
     pub(super) tailnet: Option<Result<crate::remote::tailscale::Tailnet, String>>,
     /// Whether a Tailscale search is running.
     pub(super) tailnet_loading: bool,
+    /// The page body's width inside its padding, in design px, so pages can drop columns as it narrows.
+    pub(super) body_w: f32,
 }
 
 impl Shell {
@@ -365,6 +380,18 @@ impl Shell {
         }
         self.ensure_fields(window, cx);
         let theme = self.theme.clone();
+        // The window is in real px, so the design-unit sizes are converted before they are compared.
+        let viewport = window.viewport_size();
+        let margin = crate::ui::scale::real(DIALOG_MARGIN);
+        let avail_w = (f32::from(viewport.width) - 2. * margin).max(0.);
+        let avail_h = (f32::from(viewport.height) - 2. * margin).max(0.);
+        let dialog_w = fit(crate::ui::scale::real(DIALOG_SIZE.0), crate::ui::scale::real(DIALOG_MIN.0), avail_w);
+        let dialog_h = fit(crate::ui::scale::real(DIALOG_SIZE.1), crate::ui::scale::real(DIALOG_MIN.1), avail_h);
+        let dialog_design_w = dialog_w / crate::ui::scale::zoom();
+        let compact = dialog_design_w < COMPACT_BELOW;
+        let nav_width = if compact { 0. } else { (dialog_design_w * 0.25).clamp(NAV_WIDTH.0, NAV_WIDTH.1).min(dialog_design_w * 0.5) };
+        let pad = if compact { COMPACT_PAD } else { BODY_PAD };
+        self.settings.body_w = (dialog_design_w - nav_width - 2. * pad).max(0.);
         let blocks = match self.settings.page {
             Page::General => self.general_page(cx),
             Page::Appearance => self.appearance_page(cx),
@@ -376,16 +403,7 @@ impl Shell {
             Page::Extensions => self.extensions_page(cx),
             Page::Devices => self.devices_page(cx),
         };
-        // The window is in real px, so the design-unit sizes are converted before they are compared.
-        let viewport = window.viewport_size();
-        let margin = crate::ui::scale::real(DIALOG_MARGIN);
-        let avail_w = (f32::from(viewport.width) - 2. * margin).max(0.);
-        let avail_h = (f32::from(viewport.height) - 2. * margin).max(0.);
-        let dialog_w = fit(crate::ui::scale::real(DIALOG_SIZE.0), crate::ui::scale::real(DIALOG_MIN.0), avail_w);
-        let dialog_h = fit(crate::ui::scale::real(DIALOG_SIZE.1), crate::ui::scale::real(DIALOG_MIN.1), avail_h);
-        let dialog_design_w = dialog_w / crate::ui::scale::zoom();
-        let nav_width = (dialog_design_w * 0.25).clamp(NAV_WIDTH.0, NAV_WIDTH.1).min(dialog_design_w * 0.5);
-        let nav = self.settings_nav(nav_width, cx);
+        let nav = if compact { self.settings_strip(cx) } else { self.settings_nav(nav_width, cx) };
         // One scroll state per page, so a page opens at its top.
         let body = div()
             .id(self.settings.page.label())
@@ -396,7 +414,7 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(28.))
-            .px(px(36.))
+            .px(px(pad))
             .pt(px(8.))
             .pb(px(48.))
             .children(blocks);
@@ -405,7 +423,7 @@ impl Shell {
             .min_w(px(0.))
             .flex()
             .flex_col()
-            .child(self.settings_header(cx))
+            .child(self.settings_header(pad, cx))
             .child(body);
         let dialog = div()
             .flex()
@@ -424,6 +442,7 @@ impl Shell {
             }])
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .when(compact, |d| d.flex_col())
             .child(nav)
             .child(content);
         Some(
@@ -512,14 +531,7 @@ impl Shell {
                             .when(!is_active, |d| {
                                 d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla()))
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.settings.page = page;
-                                this.settings.body_scroll.set_offset(gpui::point(px(0.), px(0.)));
-                                if page == Page::Tools {
-                                    this.check_mcp(None, cx);
-                                }
-                                cx.notify();
-                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
                             .child(page.label())
                             .when_some(count, |row, n| {
                                 row.child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
@@ -543,8 +555,65 @@ impl Shell {
         .into_any_element()
     }
 
-    /// The page title and subtitle, with the close button on the right.
-    fn settings_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// Opens `page` at its top.
+    fn settings_go(&mut self, page: Page, cx: &mut Context<Self>) {
+        self.settings.page = page;
+        self.settings.body_scroll.set_offset(gpui::point(px(0.), px(0.)));
+        if page == Page::Tools {
+            self.check_mcp(None, cx);
+        }
+        cx.notify();
+    }
+
+    /// The compact dialog's nav: every page in one row across the top, scrolling sideways when they
+    /// don't fit.
+    fn settings_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme.clone();
+        let active = self.settings.page;
+        let counts = self.nav_counts();
+        let mut strip = div()
+            .id("settings-nav-strip")
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .px(px(12.))
+            .py(px(10.))
+            .overflow_x_scroll()
+            .border_b_1()
+            .border_color(theme.line.to_hsla())
+            .bg(theme.line.to_hsla());
+        for entry in NAV.iter() {
+            let NavEntry::Page(page) = entry else { continue };
+            let page = *page;
+            let is_active = page == active;
+            strip = strip.child(
+                div()
+                    .id(("settings-strip", page as usize))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(11.))
+                    .py(px(7.))
+                    .rounded(px(7.))
+                    .whitespace_nowrap()
+                    .text_size(px(13.))
+                    .cursor_pointer()
+                    .when(is_active, |d| d.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
+                    .when(!is_active, |d| d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla())))
+                    .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
+                    .child(page.label())
+                    .when_some(counts.get(&page).copied(), |row, n| {
+                        row.child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
+                    }),
+            );
+        }
+        strip.into_any_element()
+    }
+
+    /// The page title and subtitle, with the close button on the right. `pad` matches the body's sides.
+    fn settings_header(&self, pad: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
         let page = self.settings.page;
         div()
@@ -553,13 +622,14 @@ impl Shell {
             .gap(px(16.))
             .pt(px(26.))
             .pr(px(22.))
-            .pl(px(36.))
+            .pl(px(pad))
             .pb(px(20.))
             .border_b_1()
             .border_color(theme.line.to_hsla())
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
@@ -722,8 +792,8 @@ fn name_config() -> TextInputConfig {
     TextInputConfig {
         placeholder: "archonui".into(),
         max_len: Some(18),
-        font_size: px(20.),
-        line_height: px(26.),
+        font_size: px(15.),
+        line_height: px(20.),
         ..Default::default()
     }
 }
@@ -740,6 +810,15 @@ fn search_config() -> TextInputConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn columns_drop_as_the_body_narrows() {
+        assert_eq!(columns(1000., 320., 14., 2), 2);
+        assert_eq!(columns(654., 320., 14., 2), 2, "exactly two fit");
+        assert_eq!(columns(653., 320., 14., 2), 1);
+        assert_eq!(columns(100., 320., 14., 2), 1, "never fewer than one");
+        assert_eq!(columns(f32::NAN, 320., 14., 2), 1);
+    }
 
     fn spec(s: &str) -> Result<String, &'static str> {
         capture_spec(&gpui::Keystroke::parse(s).unwrap())

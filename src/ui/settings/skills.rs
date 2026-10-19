@@ -41,8 +41,10 @@ impl Shell {
         });
         let title = if skills.is_some() { format!("SKILLS · {on} OF {total} ON") } else { "SKILLS".to_string() };
 
+        // The buttons wrap under the title and counts when the page is narrow.
         let header = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(8.))
             .child(heading(&title, None, &theme))
@@ -72,7 +74,7 @@ impl Shell {
                 .child("No skills found. Import a folder that has a SKILL.md, or create one.")
                 .into_any_element(),
             Some(list) => {
-                let mut grid = div().grid().grid_cols(2).gap(px(12.));
+                let mut grid = div().grid().grid_cols(super::columns(self.settings.body_w, 300., 12., 2)).gap(px(12.));
                 for skill in list {
                     let enabled = self.state.settings.skills_enabled.get(&skill.id).copied().unwrap_or(true);
                     let id = skill.id.clone();
@@ -86,6 +88,7 @@ impl Shell {
                     let dim = if enabled { 1.0 } else { 0.55 };
                     grid = grid.child(
                         div()
+                            .min_w(px(0.))
                             .flex()
                             .flex_col()
                             .gap(px(8.))
@@ -101,12 +104,17 @@ impl Shell {
                                     .child(
                                         div()
                                             .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
                                             .text_size(px(14.))
                                             .opacity(dim)
                                             .child(skill.name.clone()),
                                     )
                                     .child(
                                         div()
+                                            .flex_none()
                                             .text_size(px(11.))
                                             .px(px(8.))
                                             .py(px(3.))

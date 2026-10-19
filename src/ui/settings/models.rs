@@ -92,7 +92,7 @@ impl Shell {
                 .border_1()
                 .border_color(theme.line2.to_hsla())
                 .overflow_hidden()
-                .child(table_header(&theme))
+                .child(table_header(self.settings.body_w >= HARNESS_COLUMN_MIN, &theme))
                 .children(rows)
                 .into_any_element()
         };
@@ -110,13 +110,16 @@ impl Shell {
                         .gap(px(16.))
                         .child(
                             div()
-                                .flex_1()
+                                .flex_none()
                                 .text_size(px(11.))
                                 .text_color(theme.muted.to_hsla())
                                 .child("MODELS"),
                         )
                         .child(
                             div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_right()
                                 .text_size(px(12.))
                                 .text_color(theme.muted.to_hsla())
                                 .child("The radio sets the default for new sessions. Only enabled models appear in the composer."),
@@ -141,6 +144,8 @@ impl Shell {
             let chosen = self.state.settings.harness_defaults.get(id).and_then(|d| d.model.clone());
             chosen.or_else(|| self.caps.get(id).and_then(Option::as_ref).and_then(|c| c.default_model.clone()))
         });
+        // A narrow page names the harness under each model instead of in a column of its own.
+        let wide = self.settings.body_w >= HARNESS_COLUMN_MIN;
         let mut rows = Vec::new();
         for id in HARNESS_IDS {
             let Some(Some(caps)) = self.caps.get(id) else { continue };
@@ -182,7 +187,7 @@ impl Shell {
                         .border_t_1()
                         .border_color(theme.line.to_hsla())
                         .when(!harness_on, |d| d.opacity(0.45))
-                        .child(div().w(px(48.)).flex().justify_center().child(radio))
+                        .child(div().flex_none().w(px(48.)).flex().justify_center().child(radio))
                         .child(
                             div()
                                 .flex_1()
@@ -190,6 +195,9 @@ impl Shell {
                                 .flex()
                                 .flex_col()
                                 .child(div().text_size(px(13.5)).child(model.label.clone()))
+                                .when(!wide, |col| {
+                                    col.child(div().text_size(px(11.5)).text_color(theme.alt.to_hsla()).child(harness_name))
+                                })
                                 .child(
                                     div()
                                         .text_size(px(11.5))
@@ -197,14 +205,17 @@ impl Shell {
                                         .child(model.description.clone()),
                                 ),
                         )
-                        .child(
-                            div()
-                                .w(px(200.))
-                                .text_size(px(12.5))
-                                .text_color(theme.alt.to_hsla())
-                                .child(harness_name),
-                        )
-                        .child(div().w(px(64.)).flex().justify_end().child(toggle))
+                        .when(wide, |row| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .w(px(200.))
+                                    .text_size(px(12.5))
+                                    .text_color(theme.alt.to_hsla())
+                                    .child(harness_name),
+                            )
+                        })
+                        .child(div().flex_none().w(px(64.)).flex().justify_end().child(toggle))
                         .into_any_element(),
                 );
             }
@@ -236,8 +247,12 @@ impl Shell {
     }
 }
 
-/// The MODEL / HARNESS / ON header line, above the rows.
-fn table_header(theme: &crate::ui::theme::Theme) -> AnyElement {
+/// The page width from which the models table has a HARNESS column, in design px.
+const HARNESS_COLUMN_MIN: f32 = 600.;
+
+/// The MODEL / HARNESS / ON header line, above the rows. Without `harness_column` the harness is named
+/// in each row instead.
+fn table_header(harness_column: bool, theme: &crate::ui::theme::Theme) -> AnyElement {
     let label = |text: &str| div().text_size(px(10.5)).text_color(theme.muted.to_hsla()).child(text.to_string());
     div()
         .flex()
@@ -246,10 +261,10 @@ fn table_header(theme: &crate::ui::theme::Theme) -> AnyElement {
         .py(px(10.))
         .pr(px(16.))
         .bg(theme.line.to_hsla())
-        .child(div().w(px(48.)))
+        .child(div().flex_none().w(px(48.)))
         .child(div().flex_1().child(label("MODEL")))
-        .child(div().w(px(200.)).child(label("HARNESS")))
-        .child(div().w(px(64.)).flex().justify_end().child(label("ON")))
+        .when(harness_column, |row| row.child(div().flex_none().w(px(200.)).child(label("HARNESS"))))
+        .child(div().flex_none().w(px(64.)).flex().justify_end().child(label("ON")))
         .into_any_element()
 }
 

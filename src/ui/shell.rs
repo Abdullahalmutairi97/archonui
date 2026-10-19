@@ -165,8 +165,13 @@ impl Shell {
         }
         if let Some(page) = target.strip_prefix("settings:") {
             self.settings_open(cx);
+            // `settings:appearance:fonts` also opens the Titles font list.
+            let (page, open_fonts) = page.strip_suffix(":fonts").map_or((page, false), |p| (p, true));
             if let Some(page) = super::settings::Page::from_label(page) {
                 self.settings.page = page;
+            }
+            if open_fonts {
+                self.settings.font_open = Some(super::settings::FontSlot::Titles);
             }
             if let Some(y) = std::env::var("ARCHONUI_SCROLL").ok().and_then(|v| v.parse::<f32>().ok()) {
                 self.settings.body_scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-y)));
@@ -327,11 +332,11 @@ impl Shell {
         .detach();
     }
 
-    /// The wallpaper to draw: the user's pick for this theme, else the theme's own, through the
-    /// background filter if one is on.
+    /// The wallpaper to draw: the user's pick, else the theme's own, through the background filter if
+    /// one is on.
     pub(super) fn wallpaper_source(&self) -> WallpaperSource {
         let settings = &self.state.settings;
-        let base = match settings.wallpapers.get(theme_key(&settings.theme)) {
+        let base = match &settings.wallpaper {
             Some(path) if path.is_file() => WallpaperSource::File(path.clone()),
             _ => WallpaperSource::theme(&self.theme),
         };
