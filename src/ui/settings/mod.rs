@@ -240,6 +240,8 @@ pub struct SettingsUi {
     pub(super) tailnet: Option<Result<crate::remote::tailscale::Tailnet, String>>,
     /// Whether a Tailscale search is running.
     pub(super) tailnet_loading: bool,
+    /// Whether the Devices page lists offline devices that aren't shared with.
+    pub(super) show_offline: bool,
     /// The page body's width inside its padding, in design px, so pages can drop columns as it narrows.
     pub(super) body_w: f32,
 }
