@@ -961,6 +961,11 @@ impl Shell {
         (self.remote.backing_up, self.remote.last_backup, self.remote.next_backup)
     }
 
+    /// Whether the cloud has confirmed it holds `commit` of this device's project `project`.
+    pub(super) fn copy_confirmed(&self, project: &str, commit: &str) -> bool {
+        self.remote.pushed.get(project).is_some_and(|c| c == commit)
+    }
+
     /// Whether this window has a live connection to device `id`.
     pub(super) fn device_connected(&self, id: &str) -> bool {
         self.remote.clients.contains_key(id)

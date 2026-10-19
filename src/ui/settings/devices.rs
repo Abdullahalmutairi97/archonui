@@ -333,6 +333,8 @@ impl Shell {
         }
         for (i, p) in projects.into_iter().enumerate() {
             let from = self.chat_device_name(&p.device);
+            let up_to_date = me.as_deref() == Some(p.device.as_str()) && self.copy_confirmed(&p.project, &p.commit);
+            let line = copy_line(&from, p.updated, up_to_date, crate::store::now());
             let (project, device) = (p.project.clone(), p.device.clone());
             let open = Button::new(SharedString::from(format!("cloud-open-{}-{}", p.project, p.device)), "Open", &theme)
                 .style(ButtonStyle::Outline)
@@ -357,7 +359,7 @@ impl Shell {
                                 div()
                                     .text_size(px(12.))
                                     .text_color(theme.muted.to_hsla())
-                                    .child(format!("From {from} · {}", crate::store::ago(p.updated))),
+                                    .child(line),
                             ),
                     )
                     .child(open),
@@ -462,12 +464,7 @@ fn card(glyph: &'static str, lit: bool, title: &str, subtitle: &str, ok: Option<
 /// The cloud card's status line: when the last full backup was and when the next timed one is.
 /// Times are whole minutes; `now` and `last` are seconds since the epoch.
 fn backup_line(connected: bool, running: bool, last: Option<u64>, next: Option<std::time::Duration>, now: u64) -> String {
-    let ago = |at: u64| match now.saturating_sub(at) / 60 {
-        0 => "just now".to_string(),
-        m if m < 60 => format!("{m} min ago"),
-        m if m < 60 * 24 => format!("{} h ago", m / 60),
-        m => format!("{} d ago", m / (60 * 24)),
-    };
+    let ago = |at: u64| ago(at, now);
     let next = next.map(|d| match d.as_secs().div_ceil(60) {
         0 | 1 => "in under a minute".to_string(),
         m => format!("in {m} min"),
@@ -480,6 +477,26 @@ fn backup_line(connected: bool, running: bool, last: Option<u64>, next: Option<s
         (true, false, Some(at), None) => format!("Backed up {}", ago(at)),
         (true, false, None, Some(next)) => format!("Connected · first backup {next}"),
         (true, false, None, None) => "Connected · first backup soon".to_string(),
+    }
+}
+
+/// How long before `now` `at` was, in words: "just now", "3 min ago", "2 h ago", "4 d ago".
+fn ago(at: u64, now: u64) -> String {
+    match now.saturating_sub(at) / 60 {
+        0 => "just now".to_string(),
+        m if m < 60 => format!("{m} min ago"),
+        m if m < 60 * 24 => format!("{} h ago", m / 60),
+        m => format!("{} d ago", m / (60 * 24)),
+    }
+}
+
+/// A copy's line in the cloud list. The time is when the cloud last got a change of it: an unchanged
+/// project isn't sent again. This device's own copy says up to date once the cloud has confirmed it.
+fn copy_line(from: &str, updated: u64, up_to_date: bool, now: u64) -> String {
+    if up_to_date {
+        format!("From {from} · up to date")
+    } else {
+        format!("From {from} · changed {}", ago(updated, now))
     }
 }
 
@@ -612,6 +629,14 @@ mod tests {
         assert_eq!(backup_line(true, false, None, Some(min(5)), now), "Connected · first backup in 5 min");
         assert_eq!(backup_line(false, false, Some(now - 2 * 3600), None, now), "Not connected · last backup 2 h ago");
         assert_eq!(backup_line(false, false, None, None, now), "Not connected · copies start when it's back");
+    }
+
+    #[test]
+    fn a_copy_says_when_it_last_changed_or_that_it_is_up_to_date() {
+        let now = 1_000_000;
+        assert_eq!(copy_line("AshPC", now - 180, false, now), "From AshPC · changed 3 min ago");
+        assert_eq!(copy_line("minipc", now - 180, true, now), "From minipc · up to date");
+        assert_eq!(copy_line("vps", now - 3 * 86400, false, now), "From vps · changed 3 d ago");
     }
 
     #[test]
