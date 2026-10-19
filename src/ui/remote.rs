@@ -946,6 +946,11 @@ impl Shell {
     }
 
     /// A device's name, by its id: this device's own too, as in the cloud copy list.
+    /// Whether this window has a live connection to device `id`.
+    pub(super) fn device_connected(&self, id: &str) -> bool {
+        self.remote.clients.contains_key(id)
+    }
+
     pub(super) fn chat_device_name(&self, device: &str) -> String {
         device_name(&self.state.settings.sync, self.remote.me.as_ref(), device)
     }
