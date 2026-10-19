@@ -34,7 +34,7 @@ const PERMISSION_LABELS: [&str; 3] = ["Allow", "Ask", "Off"];
 const TOOL_NOUNS: [&str; 7] = ["file reading", "file editing", "code search", "shell commands", "the browser panel", "web search", "URL fetching"];
 
 /// Shown under the permission rows: only a harness that can pause for an answer can prompt.
-const ASK_NOTE: &str = "Ask: an agent that can pause asks in ArchonUI before each use. A struck-through agent ignores the row's setting; hover it to see why.";
+const ASK_NOTE: &str = "Ask: pauses to ask before use.";
 
 fn permission_index(p: Permission) -> usize {
     match p {
@@ -277,7 +277,7 @@ impl Shell {
             toggle_row(
                 "auto-preview",
                 "Open previews automatically",
-                "Show a preview when the agent writes a file that has one.",
+                "",
                 preview,
                 &weak,
                 &theme,
@@ -290,7 +290,7 @@ impl Shell {
             toggle_row(
                 "use-tmux",
                 "Run terminals in tmux",
-                "Terminals keep running after ArchonUI closes.",
+                "Keep running after closing",
                 tmux,
                 &weak,
                 &theme,
@@ -323,7 +323,7 @@ impl Shell {
         let ide = segmented_row(
             "ide-engine",
             "IDE engine",
-            "The editor the IDE tab shows.",
+            "",
             &["Built-in", "VS Code"],
             ide_index,
             weak,
@@ -338,7 +338,7 @@ impl Shell {
         let detected = crate::ide::find_code_server(self.state.settings.code_server_path.as_deref())
             .map_or_else(|| "Not found".to_string(), |p| p.display().to_string());
         let configured = self.state.settings.code_server_path.is_some();
-        let code_server = SettingRow::new("code-server path", "The program that runs VS Code. Found automatically when unset.", theme).control(
+        let code_server = SettingRow::new("code-server path", "Found automatically if empty", theme).control(
             div()
                 .flex()
                 .items_center()
@@ -362,7 +362,7 @@ impl Shell {
         let engine = segmented_row(
             "search-engine",
             "Search engine",
-            "Searches from the address bar go here.",
+            "",
             &names,
             engine_index,
             weak,

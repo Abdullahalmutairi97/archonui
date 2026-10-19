@@ -469,7 +469,7 @@ impl Shell {
             None,
         );
         let images = self.wallpaper_grid(cx);
-        let image_row = SettingRow::new("Image", "Your pick stays when you change theme. Uploads are kept in the backgrounds folder.", &theme).below(images);
+        let image_row = SettingRow::new("Image", "", &theme).below(images);
         let filters = self.filter_grid(cx);
         let filter_row = SettingRow::new("Filter", "", &theme).below(filters);
         let mut rows = vec![style_row, image_row, filter_row];
@@ -477,9 +477,9 @@ impl Shell {
         let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
         let opacity_slider = self.slide(Slide::Opacity, opacity, range(crate::app::settings::WINDOW_OPACITY, 5.), "%", cx);
         rows.push(SettingRow::new("Wallpaper dim", "", &theme).control(dim_slider));
-        rows.push(SettingRow::new("Panel blur", "Blur behind the sidebars and glass tiles.", &theme).control(blur_slider));
+        rows.push(SettingRow::new("Panel blur", "", &theme).control(blur_slider));
         rows.push(
-            SettingRow::new("Window opacity", "Below 100% the desktop shows through. Text stays solid.", &theme).control(opacity_slider),
+            SettingRow::new("Window opacity", "Text stays solid", &theme).control(opacity_slider),
         );
         section("BACKGROUND", rows, &theme)
     }
@@ -700,7 +700,7 @@ impl Shell {
         let pairing_row = segmented_row(
             "font-pairing",
             "Pairing",
-            "Sets the Titles and Text fonts together.",
+            "Titles and Text together",
             &pairing_names,
             pairing_index,
             &weak,
@@ -830,7 +830,7 @@ impl Shell {
                 cx.notify();
             },
         )));
-        let row = SettingRow::new("Custom colours", "Fine-tune this theme's colours.", &theme).control(actions);
+        let row = SettingRow::new("Custom colours", "", &theme).control(actions);
         let mut out = div().flex().flex_col().gap(px(10.)).child(section("COLOURS", vec![row], &theme));
         if !expanded {
             return out.into_any_element();
@@ -923,7 +923,7 @@ impl Shell {
             segmented_row(
                 "tiling",
                 "Tiling",
-                "Dwindle splits the focused tile. Master keeps one large tile on the left.",
+                "",
                 &["Dwindle", "Master"],
                 usize::from(master),
                 &weak,
@@ -937,7 +937,7 @@ impl Shell {
             toggle_row(
                 "flush",
                 "Edge to edge",
-                "No gaps anywhere, square corners and no borders: sessions fill the window. Gaps, corner radius and Borders keep their values for when this is off.",
+                "No gaps, corners or borders",
                 flush,
                 &weak,
                 &theme,
@@ -952,7 +952,7 @@ impl Shell {
             button_row(
                 "reset-sizes",
                 "Tile and panel sizes",
-                "Drag the gaps between tiles, or the tools panel edge, to resize. Double-click a gap to even it out.",
+                "Drag a gap to resize",
                 "Reset sizes",
                 ButtonStyle::Outline,
                 &weak,
@@ -982,12 +982,12 @@ impl Shell {
         let scale_range = (crate::app::settings::UI_SCALE.0 * 100., crate::app::settings::UI_SCALE.1 * 100.);
         let scale_slider = self.slide(Slide::Scale, scale, range(scale_range, 5.), "%", cx);
         let rows = vec![
-            SettingRow::new("Interface size", "Scales the whole window, like zooming a page.", &theme).control(scale_slider),
+            SettingRow::new("Interface size", "", &theme).control(scale_slider),
             SettingRow::new("Message text size", "", &theme).control(text_slider),
             toggle_row(
                 "borders",
                 "Borders",
-                "Lines around sessions and along the tools panel's edge. Off, sessions have no border.",
+                "",
                 borders,
                 &weak,
                 &theme,
@@ -1000,7 +1000,7 @@ impl Shell {
             toggle_row(
                 "session-ring",
                 "Session highlight",
-                "Draw the coloured ring around the focused session. Off, it gets the same plain border as the others.",
+                "Ring around the focused session",
                 ring,
                 &weak,
                 &theme,
@@ -1013,7 +1013,7 @@ impl Shell {
             toggle_row(
                 "tint-all",
                 "Tint all sessions",
-                "Give unfocused sessions the same solid tint as the focused one.",
+                "",
                 tint,
                 &weak,
                 &theme,
@@ -1026,7 +1026,7 @@ impl Shell {
             toggle_row(
                 "reduce-motion",
                 "Reduce motion",
-                "Collapse the sidebar and panel and reflow tiles instantly.",
+                "",
                 reduce_motion,
                 &weak,
                 &theme,

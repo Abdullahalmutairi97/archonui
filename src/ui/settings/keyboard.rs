@@ -65,8 +65,8 @@ impl Shell {
         let composer: Vec<SettingRow> = COMPOSER.iter().map(|(name, keys)| kbd_row(name, keys, &theme)).collect();
 
         let hint = match self.settings.capture {
-            Some(_) => "Press the new shortcut. Esc cancels, Backspace clears.",
-            None => "Click a shortcut to change it. Escape closes this window.",
+            Some(_) => "Press new shortcut, Esc cancels, Backspace clears",
+            None => "Click to change, Escape closes",
         };
         vec![
             div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(hint).into_any_element(),
