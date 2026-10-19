@@ -365,7 +365,7 @@ impl Shell {
     }
 
     /// The input for session `id`, created with its subscriptions on first use.
-    fn composer_input(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<TextInput> {
+    pub(super) fn composer_input(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<TextInput> {
         if let Some(input) = self.composers.input(id) {
             return input;
         }

@@ -129,7 +129,12 @@ impl Shell {
         self.switcher_close(window, cx);
         match row {
             Row::New => self.new_session(window, cx),
-            Row::Session(id) => self.open_session_click(&id, alt, window, cx),
+            Row::Session(id) => {
+                self.open_session_click(&id, alt, window, cx);
+                // Opened from the keyboard, so typing goes on in its composer, as after a click.
+                let input = self.composer_input(&id, window, cx);
+                input.read(cx).focus(window);
+            }
         }
     }
 
