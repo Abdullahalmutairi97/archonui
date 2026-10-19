@@ -76,6 +76,10 @@ pub struct RemoteUi {
     too_big: HashSet<String>,
     /// A copy to the cloud is being prepared.
     backing_up: bool,
+    /// When the current cloud last held everything this device has (seconds since the epoch).
+    last_backup: Option<u64>,
+    /// When the five-minute backup timer fires next.
+    next_backup: Option<Instant>,
     /// A reply ended while a copy was being prepared: copy again once it is sent.
     backup_again: bool,
     /// What the cloud holds, for Settings → Devices; `None` until asked.
@@ -111,6 +115,7 @@ impl RemoteUi {
         self.sending.clear();
         self.too_big.clear();
         self.chats_fingerprint = None;
+        self.last_backup = None;
     }
 
     /// Project `project` (`name`) needs `bytes` to copy, more than one message holds: it is no longer
@@ -130,6 +135,9 @@ impl RemoteUi {
     fn copy_stored(&mut self, project: String, commit: String) {
         self.sending.remove(&project);
         self.pushed.insert(project, commit);
+        if self.sending.is_empty() {
+            self.last_backup = Some(crate::store::now());
+        }
     }
 
     /// The cloud could not store a copy. `about` names the request: a project goes back to a full
@@ -248,6 +256,7 @@ impl Shell {
             })
             .detach();
             cx.spawn(async move |this, cx| loop {
+                let _ = this.update(cx, |this, _| this.remote.next_backup = Some(Instant::now() + BACKUP_EVERY));
                 cx.background_executor().timer(BACKUP_EVERY).await;
                 let alive = this.update(cx, |this, cx| {
                     let alive = this.remote.epoch == epoch;
@@ -310,6 +319,7 @@ impl Shell {
         r.cloud = None;
         r.cloud_jobs = None;
         r.forget_copies();
+        r.next_backup = None;
         r.dropped.clear();
         r.copy_errors.clear();
         r.backup_again = false;
@@ -946,6 +956,11 @@ impl Shell {
     }
 
     /// A device's name, by its id: this device's own too, as in the cloud copy list.
+    /// The cloud copy's progress for the Devices page: a round running, the last full backup, the next timed one.
+    pub(super) fn backup_status(&self) -> (bool, Option<u64>, Option<Instant>) {
+        (self.remote.backing_up, self.remote.last_backup, self.remote.next_backup)
+    }
+
     /// Whether this window has a live connection to device `id`.
     pub(super) fn device_connected(&self, id: &str) -> bool {
         self.remote.clients.contains_key(id)
@@ -1076,6 +1091,11 @@ impl Shell {
             }
             let _ = this.update(cx, |this, cx| {
                 this.remote.backing_up = false;
+                // Nothing left waiting for the cloud to confirm: it holds everything as of now.
+                if this.remote.sending.is_empty() && this.state.settings.sync.cloud == cloud {
+                    this.remote.last_backup = Some(crate::store::now());
+                }
+                cx.notify();
                 if std::mem::take(&mut this.remote.backup_again) {
                     this.backup(cx);
                 }
