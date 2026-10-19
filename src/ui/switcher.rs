@@ -162,14 +162,9 @@ impl Shell {
         true
     }
 
-    /// The name a session row shows after its title: its project, else its folder.
+    /// The name a session row shows after its title: where it runs, as its tile's header says.
     fn switcher_project(&self, s: &Session) -> String {
-        s.project
-            .as_deref()
-            .and_then(|p| self.state.project(p))
-            .map(|p| p.name.clone())
-            .or_else(|| s.cwd.file_name().map(|name| name.to_string_lossy().into_owned()))
-            .unwrap_or_default()
+        self.session_place(s)
     }
 
     /// One palette row: sigil, title, harness badge, project and relative time. The selected row has the `line2` fill.
