@@ -492,6 +492,10 @@ fn block_view<H: StreamHost>(ctx: &RowCtx<H>, ix: usize, path: &str, block: &Blo
         Block::Code(code) => code_block(ctx, ix, path, code),
         Block::Chart { title, rows } => chart_block(ctx, ix, path, title, rows),
         Block::Image(image) => image_block(ctx, ix, path, image),
+        Block::Viz(v) => match ctx.viz.get(&format!("{}:{ix}:{}", ctx.session, v.n)) {
+            Some(card) => card.clone().into_any_element(),
+            None => div().into_any_element(),
+        },
     }
 }
 

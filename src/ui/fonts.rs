@@ -468,6 +468,13 @@ fn is_monospace(family: &str) -> bool {
     family.contains("mono") || family.contains("code")
 }
 
+/// Adds every bundled face to `db`, so an SVG drawn outside GPUI finds the theme's fonts.
+pub fn load_bundled_into(db: &mut resvg::usvg::fontdb::Database) {
+    for (_, _, _, bytes) in FONTS {
+        db.load_font_data(bytes.to_vec());
+    }
+}
+
 /// Registers every bundled face with GPUI's text system. A face that fails is logged and skipped.
 pub fn register(cx: &mut gpui::App) {
     let all: Vec<_> = FONTS.iter().map(|(_, _, _, bytes)| Cow::Borrowed(*bytes)).collect();

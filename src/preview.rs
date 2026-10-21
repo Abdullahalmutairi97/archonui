@@ -83,58 +83,7 @@ pub struct Browser {
 impl Browser {
     /// Blocking: start Chrome and open a blank page.
     pub fn launch() -> Result<Self, String> {
-        let root = profile_root();
-        remove_stale_profiles(&root);
-        let chrome = find_chrome().ok_or(
-            "No Chrome or Chromium found. Install one, or set ARCHONUI_CHROME to its path.",
-        )?;
-        // Each browser needs its own profile: two Chromes can't share one.
-        static LAUNCHES: AtomicU32 = AtomicU32::new(0);
-        let n = LAUNCHES.fetch_add(1, Ordering::Relaxed);
-        let profile = root.join(format!("chrome-{}-{n}", process::id()));
-        crate::store::create_private_dir(&profile).map_err(|e| format!("Could not create a Chrome profile: {e}"))?;
-        // Marks the directory as ours, so stale-profile cleanup may delete it.
-        let _ = std::fs::write(profile.join(PROFILE_MARKER), process::id().to_string());
-        let mut child = unsafe {
-            process::Command::new(&chrome)
-                .args([
-                    "--headless=new",
-                    "--remote-debugging-port=0",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-background-networking",
-                    "--mute-audio",
-                    // Hides navigator.webdriver, an automation tell that sites check.
-                    "--disable-blink-features=AutomationControlled",
-                ])
-                .arg(format!("--user-data-dir={}", profile.display()))
-                .arg("about:blank")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .process_group(0)
-                // Chrome must not outlive ArchonUI, even if ArchonUI is killed.
-                .pre_exec(|| {
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                    Ok(())
-                })
-                .spawn()
-                .map_err(|e| {
-                    // The profile is ours and would otherwise wait for the next launch to be cleaned up.
-                    let _ = std::fs::remove_dir_all(&profile);
-                    format!("Could not start {}: {e}", chrome.display())
-                })?
-        };
-        let ws = match connect_devtools(&mut child) {
-            Ok(ws) => ws,
-            Err(e) => {
-                // Don't leave Chrome or its profile behind after a failed launch.
-                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-                let _ = child.wait();
-                let _ = std::fs::remove_dir_all(&profile);
-                return Err(e);
-            }
-        };
+        let (child, profile, ws) = launch_chrome()?;
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (ev_tx, ev_rx) = unbounded();
         let (copy_tx, copy_rx) = unbounded();
@@ -165,6 +114,63 @@ pub(crate) fn stop_process_group(child: &mut Child) {
     if matches!(child.try_wait(), Ok(None)) {
         unsafe { libc::kill(group, libc::SIGKILL) };
         let _ = child.wait();
+    }
+}
+
+/// Blocking: starts a headless Chrome on a blank page with its own profile, and connects to its
+/// DevTools. The caller owns the process and the profile directory, and removes both when done.
+pub(crate) fn launch_chrome() -> Result<(Child, PathBuf, WebSocket<MaybeTlsStream<TcpStream>>), String> {
+    let root = profile_root();
+    remove_stale_profiles(&root);
+    let chrome = find_chrome().ok_or(
+        "No Chrome or Chromium found. Install one, or set ARCHONUI_CHROME to its path.",
+    )?;
+    // Each browser needs its own profile: two Chromes can't share one.
+    static LAUNCHES: AtomicU32 = AtomicU32::new(0);
+    let n = LAUNCHES.fetch_add(1, Ordering::Relaxed);
+    let profile = root.join(format!("chrome-{}-{n}", process::id()));
+    crate::store::create_private_dir(&profile).map_err(|e| format!("Could not create a Chrome profile: {e}"))?;
+    // Marks the directory as ours, so stale-profile cleanup may delete it.
+    let _ = std::fs::write(profile.join(PROFILE_MARKER), process::id().to_string());
+    let mut child = unsafe {
+        process::Command::new(&chrome)
+            .args([
+                "--headless=new",
+                "--remote-debugging-port=0",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--mute-audio",
+                // Hides navigator.webdriver, an automation tell that sites check.
+                "--disable-blink-features=AutomationControlled",
+            ])
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg("about:blank")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            // Chrome must not outlive ArchonUI, even if ArchonUI is killed.
+            .pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            })
+            .spawn()
+            .map_err(|e| {
+                // The profile is ours and would otherwise wait for the next launch to be cleaned up.
+                let _ = std::fs::remove_dir_all(&profile);
+                format!("Could not start {}: {e}", chrome.display())
+            })?
+    };
+    match connect_devtools(&mut child) {
+        Ok(ws) => Ok((child, profile, ws)),
+        Err(e) => {
+            // Don't leave Chrome or its profile behind after a failed launch.
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&profile);
+            Err(e)
+        }
     }
 }
 

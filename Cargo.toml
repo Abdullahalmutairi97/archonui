@@ -27,6 +27,8 @@ pulldown-cmark = { version = "0.13", default-features = false }
 toml = "0.8"
 # Same lyon GPUI uses, for round stroke caps and joins on drawn icons.
 lyon = "=1.0.19"
+# The SVG renderer GPUI already uses: charts and diagrams are copied as PNG through it.
+resvg = "0.45"
 
 # Dependencies (GPUI, image decoding) are slow unoptimized; build them with
 # optimizations even in debug builds. ArchonUI's own code stays debuggable.

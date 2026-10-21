@@ -24,6 +24,19 @@ pub enum Block {
     Code(Code),
     Chart { title: String, rows: Vec<ChartRow> },
     Image(Image),
+    /// A ```` ```viz ```` chart or a ```` ```mermaid <title> ```` diagram, drawn by its own card.
+    Viz(VizBlock),
+}
+
+/// A chart or diagram's fence. `n` numbers it within its message, so its card keeps its state while
+/// the message grows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VizBlock {
+    pub n: usize,
+    pub mermaid: bool,
+    /// A diagram's title, from the fence's info string. A chart's is in its JSON.
+    pub title: String,
+    pub body: String,
 }
 
 /// Inline text and the styling runs over it. `id` is unique within one message, so a selection can name
@@ -169,7 +182,7 @@ fn blocks(events: &mut Events, ids: &mut usize, cwd: Option<&Path>) -> Vec<Block
                         _ => {}
                     }
                 }
-                out.push(fence(&info, body.strip_suffix('\n').unwrap_or(&body), cwd));
+                out.push(fence(&info, body.strip_suffix('\n').unwrap_or(&body), cwd, ids));
             }
             Event::Start(Tag::Table(_)) => {
                 events.next();
@@ -339,10 +352,16 @@ fn table(events: &mut Events, ids: &mut usize, cwd: Option<&Path>) -> Block {
 }
 
 /// The block for a fenced code block's info string and body (chat.md §1.6–§1.8).
-fn fence(info: &str, body: &str, cwd: Option<&Path>) -> Block {
+fn fence(info: &str, body: &str, cwd: Option<&Path>, ids: &mut usize) -> Block {
     let info = info.trim();
     let (lang, rest) = info.split_once(char::is_whitespace).map_or((info, ""), |(l, r)| (l, r.trim()));
     match lang {
+        "viz" | "mermaid" => {
+            *ids += 1;
+            let mermaid = lang == "mermaid";
+            let title = if mermaid && rest.is_empty() { "Diagram".to_string() } else { rest.to_string() };
+            Block::Viz(VizBlock { n: *ids, mermaid, title, body: body.to_string() })
+        }
         "chart" => Block::Chart {
             title: if rest.is_empty() { "Chart".to_string() } else { rest.to_string() },
             rows: chart_rows(body),

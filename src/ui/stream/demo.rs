@@ -16,7 +16,9 @@ use std::{collections::HashMap, path::{Path, PathBuf}};
 
 /// Opens the stream demo in a new window, in the Blood Moon theme.
 pub fn stream_demo(cx: &mut App) {
-    let theme = resolve(crate::ui::theme::preset(crate::ui::theme::DEFAULT_THEME), &HashMap::new(), FontChoice::default());
+    // `ARCHONUI_DEMO_THEME=<id>` shows the demo in another theme.
+    let id = std::env::var("ARCHONUI_DEMO_THEME").unwrap_or_else(|_| crate::ui::theme::DEFAULT_THEME.to_string());
+    let theme = resolve(crate::ui::theme::preset(&id), &HashMap::new(), FontChoice::default());
     cx.open_window(WindowOptions::default(), move |_window, cx| cx.new(|cx| DemoView::new(theme, cx)))
         .unwrap_or_else(|e| crate::ui::shell::window_failed(e));
 }
@@ -51,7 +53,7 @@ impl Render for DemoView {
             place: "ArchonUI · Sonnet".into(),
         };
         let stream = self.stream.render(cx.entity(), env, cx);
-        let lightbox = self.stream.lightbox_overlay(cx.entity(), &self.theme);
+        let lightbox = self.stream.lightbox_overlay(cx.entity(), &self.theme).or_else(|| self.stream.viz_overlay(cx.entity()));
         div()
             .size_full()
             .relative()
@@ -78,6 +80,10 @@ impl StreamHost for DemoView {
 
     fn stream_open_link(&mut self, url: &str, cx: &mut Context<Self>) {
         self.stream_toast(format!("Opening {url} isn't wired yet"), cx);
+    }
+
+    fn stream_send(&mut self, _session: &str, text: String, cx: &mut Context<Self>) {
+        self.stream_toast(format!("Would send: {text}"), cx);
     }
 }
 
@@ -133,6 +139,37 @@ fn seed(cwd: &Path) -> Vec<Message> {
             thought_secs: None, took_secs: None, agent: None, final_at: None, usage: None, todos: Vec::new(),
         },
     ]
+    .into_iter()
+    .chain(viz_replies())
+    .collect()
+}
+
+/// The prototype's chart and diagram replies (Q3 product review, Refactor auth middleware, Port
+/// bonfire shader to WebGPU), each after the question that asked for it.
+fn viz_replies() -> Vec<Message> {
+    let replies: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(include_str!("../../../assets/demo/viz-replies.json")).unwrap_or_default();
+    let message = |role, text: String| Message {
+        role,
+        text,
+        attachments: Vec::new(),
+        tools: Vec::new(),
+        thought_secs: None, took_secs: None, agent: None, final_at: None, usage: None, todos: Vec::new(),
+    };
+    // `ARCHONUI_DEMO_VIZ=<part of a name>` keeps only that reply, for screenshots.
+    let only = std::env::var("ARCHONUI_DEMO_VIZ").ok();
+    replies
+        .into_iter()
+        .filter(|(name, _)| only.as_deref().is_none_or(|o| name.to_lowercase().contains(&o.to_lowercase())))
+        .flat_map(|(name, reply)| {
+            // `ARCHONUI_DEMO_PARAS=<n>` keeps a reply's first n paragraphs, so its first charts show.
+            let mut text = reply.as_str().unwrap_or_default().to_string();
+            if let Some(n) = std::env::var("ARCHONUI_DEMO_PARAS").ok().and_then(|n| n.parse::<usize>().ok()) {
+                text = text.split("\n\n").take(n).collect::<Vec<_>>().join("\n\n");
+            }
+            [message(Role::User, format!("Show me {name} as charts.")), message(Role::Agent, text)]
+        })
+        .collect()
 }
 
 const REPLY: &str = r##"The **TokenCache** key now includes `session.id`, so every reconnect misses. Revert that part in `src/server/cache.ts`:

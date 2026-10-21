@@ -481,6 +481,20 @@ impl Shell {
         }
     }
 
+    /// Sends `text` in session `id` without touching its draft: queued while the agent works.
+    pub(super) fn send_or_queue(&mut self, id: &str, text: &str, cx: &mut Context<Self>) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if self.state.busy(id) {
+            self.composers.queue(id, text.to_string());
+            cx.notify();
+            return;
+        }
+        self.send_now(id, text, cx);
+    }
+
     /// Starts a turn with `text` in session `id`. Returns whether it started.
     pub(super) fn send_now(&mut self, id: &str, text: &str, cx: &mut Context<Self>) -> bool {
         if (text.is_empty() && self.state.pending(id).is_empty()) || self.state.busy(id) {
