@@ -1,6 +1,6 @@
 //! The Devices page: share chats with other devices on the tailnet, and pick the cloud copy. Off by default.
 
-use super::controls::{act, edit, heading, section, toggle_row};
+use super::controls::{act, edit, toggle_row};
 use crate::remote::{Device, SyncSettings};
 use crate::ui::{
     composer::icons::stroke_icon,
@@ -9,6 +9,7 @@ use crate::ui::{
     theme::{Rgba, Theme},
     widgets::{
         button::{Button, ButtonStyle},
+        section::{card as section_card, section_head, SettingRow},
         toggle::Toggle,
     },
 };
@@ -21,8 +22,8 @@ const PHONE: &str = "M5 1.5h6v13H5zM7.5 12.5h1";
 const CLOUD: &str = "M4.5 12.5a3 3 0 0 1-.4-6 4 4 0 0 1 7.8.6 2.7 2.7 0 0 1-.4 5.4z";
 const FOLDER: &str = "M2 4h4l1.5 1.5H14v7.5H2z";
 /// Status dots: the diff view's green, readable on every dark theme, and an amber for a device that left.
-const LIVE: Rgba = Rgba::hex(0x3fb950);
-const AWAY: Rgba = Rgba::hex(0xd29922);
+const LIVE: Rgba = crate::ui::theme::GREEN;
+const AWAY: Rgba = crate::ui::theme::AMBER;
 
 /// How a device is doing, as its row shows it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,7 +87,7 @@ impl Shell {
             this.state.settings.sync.enabled = on;
             this.save(cx);
         }));
-        let mut blocks = vec![card(SHARE, enabled, "Share chats between devices", &subtitle, Some(enabled), toggle.into_any_element(), &theme)];
+        let mut blocks = vec![section_head("", None, Vec::new(), &theme), card(SHARE, enabled, "Share chats between devices", &subtitle, Some(enabled), toggle.into_any_element(), &theme)];
         if !enabled {
             return blocks;
         }
@@ -103,13 +104,13 @@ impl Shell {
         let theme = self.theme.clone();
         let refresh = div()
             .id("devices-refresh")
-            .px(px(10.))
-            .py(px(4.))
-            .rounded(px(6.))
+            .px(px(11.))
+            .py(px(5.))
+            .rounded(px(7.))
             .text_size(px(12.))
-            .text_color(theme.muted.to_hsla())
+            .text_color(theme.acc2.to_hsla())
             .cursor_pointer()
-            .hover(|s| s.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
+            .hover(|s| s.bg(theme.line.to_hsla()))
             .on_click({
                 let weak = weak.clone();
                 move |_, _, cx| {
@@ -121,10 +122,8 @@ impl Shell {
                 }
             })
             .child(if self.settings.tailnet_loading { "Looking…" } else { "Refresh" });
-        let mut header = div().flex().items_center().gap(px(12.)).pt(px(22.)).pb(px(8.));
-        header = header.child(div().flex_1().child(heading("YOUR DEVICES", None, &theme))).child(refresh);
-
-        let list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(theme.line.to_hsla());
+        let header = section_head("Your devices", None, vec![refresh.into_any_element()], &theme);
+        let list = section_card(Vec::new(), &theme);
         let net = match self.settings.tailnet.clone() {
             None => return div().child(header).child(list.child(note("Looking for Tailscale devices…", &theme))).into_any_element(),
             Some(Err(message)) => {
@@ -138,10 +137,8 @@ impl Shell {
         let hidden = rows.iter().filter(|r| hidden_unless_asked(r)).count();
         let show_offline = self.settings.show_offline;
         let mut list = list;
-        let mut first = true;
         for row in rows.into_iter().filter(|r| show_offline || !hidden_unless_asked(r)) {
-            list = list.child(self.device_row(row, sync, weak, first));
-            first = false;
+            list = list.child(self.device_row(row, sync, weak));
         }
         let mut out = div().child(header).child(list);
         if hidden > 0 {
@@ -155,7 +152,7 @@ impl Shell {
             out = out.child(
                 div()
                     .id("devices-offline")
-                    .mt(px(8.))
+                    .py(px(12.))
                     .px(px(4.))
                     .text_size(px(12.))
                     .text_color(theme.muted.to_hsla())
@@ -178,7 +175,7 @@ impl Shell {
     }
 
     /// One device: icon, name, status, and its share switch and cloud pill.
-    fn device_row(&self, row: Row, sync: &SyncSettings, weak: &WeakEntity<Shell>, first: bool) -> AnyElement {
+    fn device_row(&self, row: Row, sync: &SyncSettings, weak: &WeakEntity<Shell>) -> AnyElement {
         let theme = &self.theme;
         let id = row.device.id.clone();
         let is_cloud = sync.is_cloud(&id);
@@ -223,14 +220,15 @@ impl Shell {
                     }
                 });
             controls = controls.child(if is_cloud {
-                pill.bg(theme.line2.to_hsla())
-                    .text_color(theme.fg.to_hsla())
-                    .child(stroke_icon(CLOUD, 13., 1.4, theme.acc2.to_hsla()))
+                pill.px(px(10.))
+                    .gap(px(6.))
+                    .bg(theme.acc.to_hsla())
+                    .text_color(theme.on.to_hsla())
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(stroke_icon(CLOUD, 13., 1.4, theme.on.to_hsla()))
                     .child("Cloud")
             } else {
-                pill.text_color(theme.muted.to_hsla())
-                    .hover(|s| s.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
-                    .child("Use as cloud")
+                pill.text_color(theme.acc2.to_hsla()).hover(|s| s.opacity(0.8)).child("Use as cloud")
             });
         }
         if this_device {
@@ -249,25 +247,24 @@ impl Shell {
             );
         }
 
-        let icon_colour: Hsla = if lit { theme.acc2.to_hsla() } else { theme.muted.to_hsla() };
+        let icon_colour: Hsla = if lit { theme.fg.to_hsla() } else { theme.muted.to_hsla() };
         div()
             .flex()
             .items_center()
             .gap(px(14.))
-            .px(px(16.))
+            .px(px(18.))
             .py(px(12.))
-            .when(!first, |d| d.border_t_1().border_color(theme.line.to_hsla()))
+            .bg(theme.tile.to_hsla())
             .child(
                 div()
                     .flex_none()
-                    .w(px(36.))
-                    .h(px(36.))
+                    .size(px(34.))
                     .rounded(px(9.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(theme.line2.to_hsla())
-                    .child(stroke_icon(glyph, 18., 1.4, icon_colour)),
+                    .bg(theme.line.to_hsla())
+                    .child(stroke_icon(glyph, 17., 1.4, icon_colour)),
             )
             .child(
                 div()
@@ -276,7 +273,7 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().text_size(px(14.)).text_color(if lit { theme.fg.to_hsla() } else { theme.muted.to_hsla() }).child(row.device.name.clone()))
+                    .child(div().text_color(if lit { theme.fg.to_hsla() } else { theme.muted.to_hsla() }).child(row.device.name.clone()))
                     .child(
                         div()
                             .flex()
@@ -316,14 +313,14 @@ impl Shell {
             let connected = self.device_connected(&cloud);
             (backup_line(connected, running, last, next, crate::store::now()), connected)
         };
-        let back_up = Button::new("cloud-backup", "Back up now", &theme).style(ButtonStyle::Outline).on_click(act(weak, |this, cx| {
+        let back_up = Button::new("cloud-backup", "Back up now", &theme).style(ButtonStyle::Filled).on_click(act(weak, |this, cx| {
             this.refresh_cloud_list();
             this.backup(cx);
             cx.notify();
         }));
         let status = card(CLOUD, true, &name, &subtitle, Some(ok), back_up.into_any_element(), &theme);
 
-        let mut list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(theme.line.to_hsla());
+        let mut list = section_card(Vec::new(), &theme);
         let projects = self.remote.cloud_projects.clone().unwrap_or_default();
         if projects.is_empty() {
             list = list.child(note(
@@ -331,7 +328,7 @@ impl Shell {
                 &theme,
             ));
         }
-        for (i, p) in projects.into_iter().enumerate() {
+        for p in projects {
             let from = self.chat_device_name(&p.device);
             let up_to_date = me.as_deref() == Some(p.device.as_str()) && self.copy_confirmed(&p.project, &p.commit);
             let line = copy_line(&from, p.updated, up_to_date, crate::store::now());
@@ -339,29 +336,17 @@ impl Shell {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .px(px(16.))
-                    .py(px(10.))
-                    .when(i > 0, |d| d.border_t_1().border_color(theme.line.to_hsla()))
-                    .child(stroke_icon(FOLDER, 16., 1.3, theme.muted.to_hsla()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(px(14.)).child(p.name.clone()))
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(theme.muted.to_hsla())
-                                    .child(line),
-                            ),
-                    )
+                    .gap(px(14.))
+                    .px(px(18.))
+                    .py(px(12.))
+                    .bg(theme.tile.to_hsla())
+                    .child(stroke_icon(FOLDER, 16., 1.4, theme.muted.to_hsla()))
+                    .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(p.name.clone()))
+                    .child(div().flex_none().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(line)),
             );
         }
 
-        let secrets = toggle_row(
+        let secrets: SettingRow = toggle_row(
             "sync-copy-secrets",
             "Copy secret files",
             ".env files, keys and certificates",
@@ -377,10 +362,9 @@ impl Shell {
         div()
             .flex()
             .flex_col()
-            .child(div().pt(px(22.)).pb(px(8.)).child(heading("CLOUD COPY", Some("Other devices' projects are in your Projects list"), &theme)))
+            .child(section_head("Cloud copy", None, Vec::new(), &theme))
             .child(status)
-            .child(div().pt(px(10.)).child(list))
-            .child(div().pt(px(10.)).child(section("", vec![secrets], &theme)))
+            .child(div().pt(px(12.)).child(list.child(secrets)))
             .into_any_element()
     }
 
@@ -418,29 +402,30 @@ impl Shell {
 fn card(glyph: &'static str, lit: bool, title: &str, subtitle: &str, ok: Option<bool>, control: AnyElement, theme: &Theme) -> AnyElement {
     let mut line = div().flex().items_center().gap(px(6.)).text_size(px(12.)).text_color(theme.muted.to_hsla());
     if let Some(ok) = ok {
-        let dot = if ok { LIVE } else { theme.faint };
+        let dot = if ok { LIVE } else { theme.fg.alpha(0.4) };
         line = line.child(div().flex_none().w(px(7.)).h(px(7.)).rounded_full().bg(dot.to_hsla()));
     }
+    let (radius, border) = crate::ui::widgets::section::card_style();
+    let icon = if glyph == SHARE { if lit { theme.acc2 } else { theme.muted } } else { theme.fg };
     div()
         .flex()
         .items_center()
         .gap(px(14.))
-        .p(px(16.))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(if lit { theme.line2.to_hsla() } else { theme.line.to_hsla() })
-        .when(lit, |d| d.bg(theme.line.to_hsla()))
+        .px(px(18.))
+        .py(px(16.))
+        .rounded(px(radius))
+        .bg(theme.tile.to_hsla())
+        .when(border, |d| d.border_1().border_color(theme.line.to_hsla()))
         .child(
             div()
                 .flex_none()
-                .w(px(42.))
-                .h(px(42.))
+                .size(px(40.))
                 .rounded(px(10.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(theme.line2.to_hsla())
-                .child(stroke_icon(glyph, 20., 1.4, if lit { theme.acc2.to_hsla() } else { theme.muted.to_hsla() })),
+                .bg(theme.line.to_hsla())
+                .child(stroke_icon(glyph, 19., 1.4, icon.to_hsla())),
         )
         .child(
             div()
@@ -449,7 +434,7 @@ fn card(glyph: &'static str, lit: bool, title: &str, subtitle: &str, ok: Option<
                 .flex()
                 .flex_col()
                 .gap(px(3.))
-                .child(div().text_size(px(16.)).child(title.to_string()))
+                .child(div().child(title.to_string()))
                 .child(line.child(subtitle.to_string())),
         )
         .child(div().flex_none().child(control))

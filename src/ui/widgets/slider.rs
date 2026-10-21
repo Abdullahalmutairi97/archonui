@@ -14,7 +14,7 @@ use crate::ui::scale::px;
 use crate::ui::theme::Theme;
 
 /// Track width in design px. Matches settings §1.6.
-const TRACK_WIDTH: f32 = 240.;
+const TRACK_WIDTH: f32 = 170.;
 
 /// Minimum, maximum and step of a slider.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -173,7 +173,7 @@ pub fn slider(entity: &Entity<Slider>, theme: &Theme) -> SliderView {
         colors: SliderColors {
             acc: theme.acc.to_hsla(),
             track: theme.fg.to_hsla(),
-            alt: theme.alt.to_hsla(),
+            alt: theme.muted.to_hsla(),
         },
     }
 }
@@ -283,12 +283,12 @@ impl RenderOnce for SliderView {
         div()
             .flex()
             .items_center()
-            .gap(px(12.))
+            .gap(px(10.))
             .flex_none()
             .child(track)
             .child(
                 div()
-                    .w(px(48.))
+                    .min_w(px(44.))
                     .flex()
                     .justify_end()
                     .text_size(px(12.))

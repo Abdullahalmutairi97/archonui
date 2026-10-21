@@ -44,8 +44,8 @@ impl Segmented {
             disabled: None,
             colors: Colors {
                 line: theme.line.to_hsla(),
-                acc: theme.acc.to_hsla(),
-                on: theme.on.to_hsla(),
+                acc: theme.line2.to_hsla(),
+                on: theme.fg.to_hsla(),
                 muted: theme.muted.to_hsla(),
             },
             tooltip_colors: TooltipColors::of(theme),
@@ -84,7 +84,7 @@ impl RenderOnce for Segmented {
             let mut option = div()
                 .id(ElementId::NamedInteger(self.id.clone(), index as u64))
                 .px(px(12.))
-                .py(px(6.))
+                .py(px(5.))
                 .rounded(px(6.))
                 .text_size(px(12.))
                 .line_height(px(14.))

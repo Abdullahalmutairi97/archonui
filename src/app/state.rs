@@ -677,6 +677,7 @@ impl AppState {
                     skills: &skills,
                     disabled_skills: &disabled_skills,
                     permissions: self.settings.permissions,
+                    mcp_tools: Some(&self.settings.mcp_tools),
                     max_steps: Some(self.settings.max_steps),
                     sandbox: self.settings.sandbox,
                     ask_network: self.settings.ask_network,

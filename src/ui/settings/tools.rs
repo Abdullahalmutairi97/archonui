@@ -2,20 +2,22 @@
 //! that apply it, and the terminal and preview settings. Spec: settings.md §7.
 
 use super::{
-    controls::{caption, edit, heading, listen, section, segmented_row, toggle_row},
+    controls::{edit, empty_box, icon, link, list_row, listen, path_label, search_box, section, segmented_row, status as status_line, toggle_row},
     Slide,
 };
 use crate::{
-    app::settings::{McpServer, McpTransport, Permission, Permissions, TERMINAL_SIZE},
+    app::settings::{Permission, Permissions, TERMINAL_SIZE},
     engine::{mcp::McpStatus, permission_rows, ToolSupport},
     store::{IdeKind, SearchEngine},
     ui::{
+        composer::icons::stroke_icon,
         shell::Shell,
-        theme::Theme,
+        theme::{Theme, AMBER, GREEN},
         widgets::{
-            agents::{agent_marks, short_name, AgentMark},
+            agents::{agent_icons, short_name, AgentMark},
             button::{Button, ButtonStyle},
-            section::{Section, SettingRow},
+            section::{card, section_head, SettingRow},
+            segmented::Segmented,
             slider::SliderRange,
             toggle::Toggle,
         },
@@ -32,9 +34,6 @@ const PERMISSION_LABELS: [&str; 3] = ["Allow", "Ask", "Off"];
 
 /// What each built-in row controls, for the notes on agents that ignore it, in `BUILT_IN` order.
 const TOOL_NOUNS: [&str; 7] = ["file reading", "file editing", "code search", "shell commands", "the browser panel", "web search", "URL fetching"];
-
-/// Shown under the permission rows: only a harness that can pause for an answer can prompt.
-const ASK_NOTE: &str = "Ask: pauses to ask before use.";
 
 fn permission_index(p: Permission) -> usize {
     match p {
@@ -74,39 +73,6 @@ fn permission_of(p: &Permissions, row: usize) -> Permission {
         4 => p.browser,
         5 => p.web,
         _ => p.fetch,
-    }
-}
-
-/// The two-letter sigil for an MCP server, from its name.
-fn sigil(name: &str) -> String {
-    name.chars().take(2).collect::<String>()
-}
-
-/// A path shown muted and truncated in a settings row's control, as the file and folder rows do.
-fn path_text(path: &str, theme: &Theme) -> impl IntoElement {
-    div()
-        .max_w(px(220.))
-        .min_w(px(0.))
-        .overflow_hidden()
-        .text_ellipsis()
-        .whitespace_nowrap()
-        .text_size(px(12.))
-        .text_color(theme.muted.to_hsla())
-        .child(path.to_string())
-}
-
-/// The line under an MCP server's name: its command or URL.
-fn transport_detail(server: &McpServer) -> String {
-    match &server.transport {
-        McpTransport::Stdio { command, args, .. } => std::iter::once(command.as_str()).chain(args.iter().map(String::as_str)).collect::<Vec<_>>().join(" "),
-        McpTransport::Http { url, .. } => url.clone(),
-    }
-}
-
-fn transport_label(server: &McpServer) -> &'static str {
-    match server.transport {
-        McpTransport::Stdio { .. } => "stdio",
-        McpTransport::Http { .. } => "http",
     }
 }
 
@@ -183,82 +149,35 @@ impl Shell {
         let theme = self.theme.clone();
         let weak = cx.entity().downgrade();
         let support = self.tool_support();
-        let enabled = self.state.settings.mcp_servers.iter().filter(|s| s.enabled).count();
 
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .rounded(px(10.))
-            .border_1()
-            .border_color(theme.line2.to_hsla())
-            .overflow_hidden();
-        if self.state.settings.mcp_servers.is_empty() {
-            list = list.child(
-                div()
-                    .px(px(16.))
-                    .py(px(14.))
-                    .text_size(px(12.5))
-                    .text_color(theme.muted.to_hsla())
-                    .child("No MCP servers yet."),
+        let mut built_in = Vec::new();
+        for (row, name) in BUILT_IN.iter().enumerate() {
+            let level = permission_of(&self.state.settings.permissions, row);
+            let marks = permission_marks(&support, row, level);
+            let note = ignored_by(&marks);
+            let seg = Segmented::new(format!("permission-{row}"), PERMISSION_LABELS, permission_index(level), &theme).on_select(edit(
+                &weak,
+                move |this: &mut Shell, i: usize, cx| {
+                    *slot(&mut this.state.settings.permissions, row) = permission_at(i);
+                    this.save(cx);
+                },
+            ));
+            built_in.push(
+                list_row(
+                    *name,
+                    (!note.is_empty()).then(|| note.into()),
+                    vec![agent_icons(format!("permission-agents-{row}"), &marks, &theme), seg.into_any_element()],
+                    &theme,
+                )
+                .py(px(12.))
+                .into_any_element(),
             );
         }
-        for (i, server) in self.state.settings.mcp_servers.clone().into_iter().enumerate() {
-            list = list.child(self.mcp_row(i, &server, &support, &weak, cx));
-        }
-        let mcp = div()
+        let built_in = div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(heading("MCP SERVERS", None, &theme))
-                    // How many enabled servers each installed agent receives.
-                    .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(mcp_summary(&support, enabled)))
-                    .child(div().flex_1())
-                    
-            )
-            .child(list)
-            .into_any_element();
-
-        let rows: Vec<SettingRow> = BUILT_IN
-            .iter()
-            .enumerate()
-            .map(|(row, name)| {
-                let level = permission_of(&self.state.settings.permissions, row);
-                let marks = permission_marks(&support, row, level);
-                segmented_row(
-                    format!("permission-{row}"),
-                    name,
-                    &ignored_by(&marks),
-                    &PERMISSION_LABELS,
-                    permission_index(level),
-                    &weak,
-                    &theme,
-                    move |this, i, cx| {
-                        *slot(&mut this.state.settings.permissions, row) = permission_at(i);
-                        this.save(cx);
-                    },
-                    None,
-                )
-                .detail(agent_marks(format!("permission-agents-{row}"), &marks, &theme))
-            })
-            .collect();
-        let built_in = rows
-            .into_iter()
-            .fold(
-                Section::new("BUILT-IN TOOLS", &theme).child(
-                    // How many rows each installed agent applies as they are set now.
-                    div()
-                        .pt(px(4.))
-                        .text_size(px(12.))
-                        .text_color(theme.muted.to_hsla())
-                        .child(permission_summary(&support, self.state.settings.permissions)),
-                ),
-                |s, row| s.child(row),
-            )
+            .child(section_head("Built-in tools", None, Vec::new(), &theme))
+            .child(card(built_in, &theme))
             .into_any_element();
 
         let terminal_text = self.slide(
@@ -301,12 +220,169 @@ impl Shell {
         ];
 
         vec![
-            mcp,
+            self.mcp_section(&support, &weak, cx),
             built_in,
-            caption(ASK_NOTE, &theme),
-            section("TERMINAL AND PREVIEW", extras, &theme),
+            section("Terminal and preview", extras, &theme),
             self.workspace_tools(&weak, &theme, cx),
         ]
+    }
+
+    /// MCP servers: searchable by server and tool name, each opening onto its tools with a permission
+    /// for every one.
+    fn mcp_section(&mut self, support: &Support, weak: &gpui::WeakEntity<Shell>, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme.clone();
+        let query = self.query("mcp", cx);
+        let servers = self.state.settings.mcp_servers.clone();
+        let reaches: Vec<&str> = support.iter().filter(|(_, s)| s.mcp).map(|(a, _)| short_name(a)).collect();
+        let reaches = if reaches.is_empty() { "No agent takes MCP servers".to_string() } else { reaches.join(", ") };
+        let mut rows = Vec::new();
+        for (i, server) in servers.iter().enumerate() {
+            let status = self.settings.mcp.get(&server.id).cloned();
+            let all_tools: Vec<String> = match &status {
+                Some(Some(McpStatus::Connected { tools })) => tools.clone(),
+                _ => Vec::new(),
+            };
+            let name_hit = query.is_empty() || server.name.to_lowercase().contains(&query);
+            let tools: Vec<String> = if name_hit { all_tools.clone() } else { all_tools.iter().filter(|t| t.to_lowercase().contains(&query)).cloned().collect() };
+            if !name_hit && tools.is_empty() {
+                continue;
+            }
+            let open = self.settings.mcp_open.contains(&server.id) || !name_hit;
+            let (dot, word, busy) = match (&status, server.enabled) {
+                (_, false) => (theme.fg.alpha(0.4), "Off", false),
+                (Some(None), true) => (theme.fg.alpha(0.4), "Connecting…", true),
+                (Some(Some(McpStatus::Connected { .. })), true) => (GREEN, "Connected", false),
+                (Some(Some(McpStatus::Failed(_))), true) => (AMBER, "Unreachable", false),
+                _ => (theme.fg.alpha(0.4), "Not checked", false),
+            };
+            let note = if all_tools.is_empty() { reaches.clone() } else { format!("{reaches} · {} tools", all_tools.len()) };
+            let (open_id, check_id, toggle_id) = (server.id.clone(), server.id.clone(), server.id.clone());
+            // The chevron points down when open and to the side when closed, as if turned a quarter.
+            let chevron = stroke_icon(if open { icon::CHEV } else { "M6 4l4 4-4 4" }, 14., 1.4, theme.muted.to_hsla());
+            let head = div()
+                .id(("mcp-head", i))
+                .flex_1()
+                .flex_basis(px(180.))
+                .min_w(px(0.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.settings.mcp_open.remove(&open_id) {
+                        this.settings.mcp_open.insert(open_id.clone());
+                    }
+                    cx.notify();
+                }))
+                .child(div().flex_none().child(chevron))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(server.name.clone())
+                        .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(note)),
+                );
+            let toggle = Toggle::new(SharedString::from(format!("mcp-{}", server.id)), server.enabled, &theme).on_change(edit(
+                weak,
+                move |this: &mut Shell, on: bool, cx| {
+                    if let Some(server) = this.state.settings.mcp_servers.iter_mut().find(|s| s.id == toggle_id) {
+                        server.enabled = on;
+                    }
+                    this.save(cx);
+                    if on {
+                        this.check_mcp(Some(toggle_id.clone()), cx);
+                    }
+                },
+            ));
+            let mut row = div().flex().flex_col().bg(theme.tile.to_hsla()).child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x(px(16.))
+                    .gap_y(px(8.))
+                    .px(px(18.))
+                    .py(px(11.))
+                    .child(head)
+                    .child(
+                        div()
+                            .ml_auto()
+                            .flex()
+                            .items_center()
+                            .gap(px(14.))
+                            .child(status_line(dot, word, &theme))
+                            .when(server.enabled && !busy, |d| {
+                                d.child(link(("mcp-reconnect", i), "Reconnect", theme.acc2, listen(cx, move |this, cx| this.check_mcp(Some(check_id.clone()), cx))))
+                            })
+                            .child(toggle),
+                    ),
+            );
+            if open {
+                let key = format!("mcp:{}", server.id);
+                let limit = self.limit(&key, 6);
+                let left = tools.len().saturating_sub(limit);
+                let mut list = div().flex().flex_col().pt(px(2.)).pr(px(18.)).pb(px(10.)).pl(px(42.)).bg(theme.panel.to_hsla());
+                if tools.is_empty() {
+                    let why = if server.enabled { "Connect to see its tools" } else { "Turn it on to see its tools" };
+                    list = list.child(div().py(px(6.)).text_size(px(12.)).text_color(theme.muted.to_hsla()).child(why));
+                }
+                let levels = self.state.settings.mcp_tools.get(&server.name).cloned().unwrap_or_default();
+                for (t, tool) in tools.iter().take(limit).enumerate() {
+                    let level = levels.get(tool).copied().unwrap_or(Permission::Ask);
+                    list = list.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .py(px(6.))
+                            .border_b_1()
+                            .border_color(theme.line.to_hsla())
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .font_family(theme.code_font.clone())
+                                    .text_size(px(12.))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(tool.clone()),
+                            )
+                            .child(small_seg(SharedString::from(format!("mcp-tool-{i}-{t}")), permission_index(level), &theme, {
+                                let (name, tool) = (server.name.clone(), tool.clone());
+                                edit(weak, move |this: &mut Shell, choice: usize, cx| {
+                                    let level = permission_at(choice);
+                                    let tools = this.state.settings.mcp_tools.entry(name.clone()).or_default();
+                                    if level == Permission::Ask {
+                                        tools.remove(&tool);
+                                    } else {
+                                        tools.insert(tool.clone(), level);
+                                    }
+                                    if tools.is_empty() {
+                                        this.state.settings.mcp_tools.remove(&name);
+                                    }
+                                    this.save(cx);
+                                })
+                            })),
+                    );
+                }
+                if left > 0 {
+                    list = list.child(div().pt(px(10.)).pb(px(2.)).child(link(("mcp-more", i), format!("Show {} more · {left} left", left.min(10)), theme.acc2, listen(cx, move |this, cx| this.show_more(&key, 6, 10, cx)))));
+                }
+                row = row.child(list);
+            }
+            rows.push(row.into_any_element());
+        }
+        let title = if rows.is_empty() { "MCP servers".to_string() } else { format!("MCP servers · {}", rows.len()) };
+        let body = if rows.is_empty() {
+            empty_box(None, if servers.is_empty() { "No MCP servers yet" } else { "No matching servers" }, &theme)
+        } else {
+            card(rows, &theme).into_any_element()
+        };
+        let search = (!servers.is_empty()).then(|| self.settings.searches.get("mcp").map(|(input, _)| search_box(input, &theme))).flatten();
+        div().flex().flex_col().child(section_head(title, None, Vec::new(), &theme)).children(search).child(body).into_any_element()
     }
 
     /// Each installed agent's id with the tool settings its harness applies, in the Skills page's order.
@@ -332,15 +408,15 @@ impl Shell {
             None,
         );
 
-        let detected = crate::ide::find_code_server(self.state.settings.code_server_path.as_deref())
-            .map_or_else(|| "Not found".to_string(), |p| p.display().to_string());
+        let detected = crate::ide::find_code_server(self.state.settings.code_server_path.as_deref());
         let configured = self.state.settings.code_server_path.is_some();
+        let shown = detected.as_deref().map_or_else(|| "Automatic".to_string(), super::general::tilde);
         let code_server = SettingRow::new("code-server path", "Found automatically if empty", theme).control(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .child(path_text(&detected, theme))
+                .gap(px(10.))
+                .child(path_label(&shown, detected.is_some(), theme))
                 .child(
                     Button::new("code-server-choose", "Choose…", theme)
                         .style(ButtonStyle::Outline)
@@ -374,7 +450,7 @@ impl Shell {
             None,
         );
 
-        section("WORKSPACE TOOLS", vec![ide, code_server, engine], theme)
+        section("Workspace tools", vec![ide, code_server, engine], theme)
     }
 
     /// Opens a file picker for the code-server program and stores the pick.
@@ -390,113 +466,35 @@ impl Shell {
         })
         .detach();
     }
+}
 
-    /// One MCP server: sigil, name and command, the agents it reaches, transport, tool count, live status,
-    /// and its toggle.
-    fn mcp_row(&mut self, index: usize, server: &McpServer, support: &Support, weak: &gpui::WeakEntity<Shell>, cx: &mut Context<Self>) -> AnyElement {
-        let theme = self.theme.clone();
-        let status = self.settings.mcp.get(&server.id).cloned();
-        let (text, colour, tools, failed) = match (&status, server.enabled) {
-            (_, false) => ("Off".to_string(), theme.faint, String::new(), false),
-            (None, true) => ("Not checked".to_string(), theme.faint, String::new(), false),
-            (Some(None), true) => ("Checking…".to_string(), theme.muted, String::new(), false),
-            (Some(Some(McpStatus::Connected { tools })), true) => {
-                ("Connected".to_string(), theme.alt, format!("{tools} tools"), false)
-            }
-            (Some(Some(McpStatus::Failed(error))), true) => (error.clone(), theme.acc, String::new(), true),
-            (Some(Some(McpStatus::Off)), true) => ("Off".to_string(), theme.faint, String::new(), false),
-        };
-        let id = server.id.clone();
-        let toggle_id = server.id.clone();
-        let toggle = Toggle::new(SharedString::from(format!("mcp-{}", server.id)), server.enabled, &theme).on_change(edit(
-            weak,
-            move |this: &mut Shell, on: bool, cx| {
-                if let Some(server) = this.state.settings.mcp_servers.iter_mut().find(|s| s.id == toggle_id) {
-                    server.enabled = on;
-                }
-                this.save(cx);
-                if on {
-                    this.check_mcp(Some(toggle_id.clone()), cx);
-                }
-            },
-        ));
-        let mut row = div()
-            .flex()
-            .items_center()
-            .gap(px(14.))
-            .px(px(16.))
-            .py(px(13.))
-            .border_b_1()
-            .border_color(theme.line.to_hsla())
-            .child(
-                div()
-                    .w(px(34.))
-                    .h(px(34.))
-                    .rounded(px(8.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(theme.line2.to_hsla())
-                    .text_size(px(12.5))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(if server.enabled { theme.acc2.to_hsla() } else { theme.muted.to_hsla() })
-                    .child(sigil(&server.name)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .flex_col()
-                    .child(div().text_size(px(14.)).child(server.name.clone()))
-                    .child(
-                        div()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_size(px(12.))
-                            .text_color(theme.muted.to_hsla())
-                            .child(transport_detail(server)),
-                    )
-                    .child(div().pt(px(4.)).child(agent_marks(
-                        SharedString::from(format!("mcp-agents-{}", server.id)),
-                        &mcp_marks(support, server.enabled),
-                        &theme,
-                    ))),
-            )
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .px(px(8.))
-                    .py(px(3.))
-                    .rounded(px(5.))
-                    .bg(theme.line.to_hsla())
-                    .text_color(theme.alt.to_hsla())
-                    .child(transport_label(server)),
-            )
-            .child(div().w(px(64.)).text_size(px(12.)).text_color(theme.muted.to_hsla()).text_right().child(tools))
-            .child(
-                div()
-                    .w(px(150.))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(7.))
-                    .text_size(px(12.))
-                    .text_color(colour.to_hsla())
-                    .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().text_right().child(text))
-                    .child(div().w(px(7.)).h(px(7.)).rounded_full().flex_none().bg(colour.to_hsla())),
-            );
-        if failed {
-            row = row.child(
-                Button::new(SharedString::from(format!("reconnect-{index}")), "Reconnect", &theme)
-                    .style(ButtonStyle::Filled)
-                    .on_click(listen(cx, move |this, cx| this.check_mcp(Some(id.clone()), cx))),
-            );
-        }
-        row.child(toggle).into_any_element()
+/// Allow, Ask and Off in a small well, as each MCP tool row shows them.
+fn small_seg(
+    id: SharedString,
+    selected: usize,
+    theme: &Theme,
+    on_pick: impl Fn(usize, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let on_pick = std::rc::Rc::new(on_pick);
+    let mut well = div().flex().flex_none().gap(px(2.)).p(px(2.)).rounded(px(7.)).bg(theme.line.to_hsla());
+    for (i, label) in PERMISSION_LABELS.iter().enumerate() {
+        let on = i == selected;
+        let on_pick = on_pick.clone();
+        well = well.child(
+            div()
+                .id(gpui::ElementId::NamedInteger(id.clone(), i as u64))
+                .px(px(10.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .text_size(px(12.))
+                .cursor_pointer()
+                .when(on, |d| d.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
+                .when(!on, |d| d.text_color(theme.muted.to_hsla()))
+                .on_click(move |_, window, cx| on_pick(i, window, cx))
+                .child(*label),
+        );
     }
+    well.into_any_element()
 }
 
 #[cfg(test)]

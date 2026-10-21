@@ -93,6 +93,8 @@ pub struct ToolSettings<'a> {
     /// Ids of the skills switched off in settings.
     pub disabled_skills: &'a [String],
     pub permissions: Permissions,
+    /// Per-tool permissions for MCP servers, by server name then tool name; unlisted tools are Ask.
+    pub mcp_tools: Option<&'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, Permission>>>,
     /// Most agent steps per prompt; `None` leaves the CLI's own limit.
     pub max_steps: Option<u32>,
     /// Auto runs shell commands inside the CLI's sandbox. Plan and Ask keep their own limits.

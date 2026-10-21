@@ -2,7 +2,7 @@
 
 use super::{
     colour::{token_colour, HSL_CHANNELS},
-    controls::{caption, heading, listen, section, segmented_row, toggle_row},
+    controls::{caption, listen, section, segmented_row, toggle_row},
     FontSlot, Slide,
 };
 use crate::{
@@ -13,9 +13,8 @@ use crate::{
     ui::{
         anim,
         shell::Shell,
-        theme::{self, presets, BackgroundStyle, EDITABLE_TOKENS},
+        theme::{self, presets, BackgroundStyle},
         widgets::{
-            button::{Button, ButtonStyle},
             section::SettingRow,
             slider::{slider, SliderRange},
             text_input::{text_input, TextInput, TextInputConfig, TextInputEvent},
@@ -49,9 +48,6 @@ const FILTERS: [(BackgroundFilter, &str); 4] = [
     (BackgroundFilter::DuotoneGrey, "Duotone B&W"),
     (BackgroundFilter::Tritone, "Tritone"),
 ];
-
-/// Captions over the colour swatches with how many of `EDITABLE_TOKENS`, in order, each holds.
-const COLOUR_GROUPS: [(&str, usize); 4] = [("Surfaces", 4), ("Text", 4), ("Accents", 4), ("Lines and highlights", 5)];
 
 /// The bundled families by kind, in the order the font list shows them. Display faces come last: they
 /// suit titles more than running text.
@@ -92,33 +88,6 @@ pub(super) fn image_format(name: &str) -> ImageFormat {
 /// A slider range from a `(min, max)` settings bound.
 fn range(bounds: (f32, f32), step: f32) -> SliderRange {
     SliderRange { min: bounds.0, max: bounds.1, step }
-}
-
-/// A card's outline and fill for the active and inactive states.
-fn card(id: impl Into<ElementId>, active: bool, theme: &crate::ui::theme::Theme) -> Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .p(px(6.))
-        .rounded(px(8.))
-        .border_1()
-        .cursor_pointer()
-        .border_color(if active { theme.acc.to_hsla() } else { theme.line.to_hsla() })
-        .when(active, |d| d.bg(theme.soft.to_hsla()))
-        .hover(|s| s.bg(theme.line.to_hsla()))
-}
-
-/// A small tag in a font chip: `T` for Titles, `Aa` for Text.
-fn badge(text: &'static str, theme: &crate::ui::theme::Theme) -> gpui::Div {
-    div()
-        .px(px(4.))
-        .rounded(px(3.))
-        .bg(theme.line.to_hsla())
-        .text_size(px(9.5))
-        .text_color(theme.muted.to_hsla())
-        .child(text)
 }
 
 impl Shell {
@@ -170,155 +139,268 @@ impl Shell {
 
     pub(super) fn appearance_page(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         vec![
+            self.identity_block(cx),
             self.presets_block(cx),
             self.background_block(cx),
             self.typography_block(cx),
             self.colours_block(cx),
             self.layout_block(cx),
             self.window_block(cx),
-            self.identity_block(cx),
         ]
     }
 
-    /// Name and icon: the name field and a sidebar preview on the left, the icon tiles on the right.
+    /// The app's name, and whether its icon follows the theme or is an image of your own.
     fn identity_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
+        let weak = cx.entity().downgrade();
         let name = self.settings.name.as_ref().map(|(input, _)| input.clone());
-        let app_name = self.state.settings.app_name.clone();
-        let logo = self.icon_logo();
-        let reset_op = if matches!(self.state.settings.icon, AppIcon::Theme) { 0.4 } else { 1.0 };
-        let current = self.state.settings.icon.clone();
-        let theme_logo = self.theme.logo.clone();
-
-        let mut tiles = div().flex().flex_wrap().justify_end().gap(px(6.)).max_w(px(300.));
-        // One tile per distinct logo; themes that share a logo share its tile.
-        let mut seen = std::collections::HashSet::new();
-        let logos: Vec<_> = presets().iter().filter(|p| seen.insert(p.logo.clone())).collect();
-        for (i, preset) in logos.into_iter().enumerate() {
-            let active = match &current {
-                AppIcon::Preset(id) => theme::preset(id).logo == preset.logo,
-                AppIcon::Theme => theme_logo == preset.logo,
-                AppIcon::Custom(_) => false,
-            };
-            let logo_image = self.logo_image(&preset.logo.clone());
-            let id = preset.id.to_string();
-            let tile = div()
-                .id(("icon", i))
-                .w(px(36.))
-                .h(px(36.))
-                .rounded(px(8.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .bg(if active { theme.soft.to_hsla() } else { theme.line.to_hsla() })
-                .border_2()
-                .border_color(if active { theme.acc.to_hsla() } else { gpui::transparent_black() })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.settings.icon = AppIcon::Preset(id.clone());
+        let name_row = SettingRow::new("App name", "", &theme).when_some(name, |row, input| {
+            row.control(div().w(px(200.)).px(px(11.)).py(px(7.)).rounded(px(7.)).bg(theme.line.to_hsla()).child(text_input(&input, &theme)))
+        });
+        let custom = matches!(self.state.settings.icon, AppIcon::Custom(_) | AppIcon::Preset(_));
+        let icon_row = segmented_row(
+            "app-icon",
+            "App icon",
+            "",
+            &["Theme icon", "Custom…"],
+            usize::from(custom),
+            &weak,
+            &theme,
+            |this, i, cx| {
+                if i == 0 {
+                    this.state.settings.icon = AppIcon::Theme;
                     this.save(cx);
-                }))
-                .when_some(logo_image, |d, src| {
-                    d.child(img(src).w(gpui::relative(0.6)).h(gpui::relative(0.6)).object_fit(ObjectFit::Contain))
-                });
-            tiles = tiles.child(tile);
-        }
-        if let AppIcon::Custom(_) = &current {
-            if let Some(src) = logo.clone() {
-                tiles = tiles.child(
-                    div()
-                        .w(px(36.))
-                        .h(px(36.))
-                        .rounded(px(8.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(theme.soft.to_hsla())
-                        .border_2()
-                        .border_color(theme.acc.to_hsla())
-                        .child(img(src).w(gpui::relative(0.6)).h(gpui::relative(0.6)).object_fit(ObjectFit::Contain)),
-                );
-            }
-        }
-        tiles = tiles.child(
-            div()
-                .id("icon-upload")
-                .w(px(36.))
-                .h(px(36.))
-                .rounded(px(8.))
-                .border_1()
-                .border_dashed()
-                .border_color(theme.line2.to_hsla())
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(18.))
-                .text_color(theme.muted.to_hsla())
-                .cursor_pointer()
-                .hover(|s| s.text_color(theme.fg.to_hsla()))
-                .on_click(cx.listener(|this, _, _, cx| this.pick_icon(cx)))
-                .child("+"),
+                } else {
+                    this.pick_icon(cx);
+                }
+            },
+            None,
         );
+        section("Identity", vec![name_row, icon_row], &theme)
+    }
 
-        let left = div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .child(caption("Name", &theme))
-            .when_some(name, |d, input| {
-                d.child(
-                    div()
-                        .max_w(px(320.))
-                        .px(px(10.))
-                        .py(px(6.))
-                        .rounded(px(8.))
-                        .bg(theme.line.to_hsla())
-                        .child(text_input(&input, &theme).family(theme.display_font.clone())),
-                )
-            })
+    /// The live preview over the Appearance page: a small copy of the window, with the sidebar, two
+    /// sessions and the message box, drawn with what the page sets now. `width` is the body's width.
+    pub(super) fn appearance_preview(&mut self, width: f32) -> AnyElement {
+        let t = self.settings.app_theme.clone().unwrap_or_else(|| self.theme.clone());
+        let dialog = self.theme.clone();
+        let s = self.state.settings.clone();
+        let wall = self.preview_wallpaper();
+        let edge = s.flush;
+        let rad = if edge { 0. } else { s.radius };
+        let gap = if edge { 0. } else { s.gaps };
+        let bw = !edge && s.borders;
+        let oc = s.window_opacity.clamp(0., 1.);
+        let side_bg = t.bg.alpha(oc);
+        let tile_bg = if s.tint_all { theme::mix(t.bg, t.acc, 0.10).alpha(oc) } else { t.bg.alpha(oc) };
+        let projects: Vec<(String, String)> = self
+            .state
+            .projects()
+            .iter()
+            .filter(|p| !s.hidden_projects.contains(&p.id))
+            .take(3)
+            .map(|p| (p.name.clone(), super::general::tilde(&p.path)))
+            .collect();
+        let zoom = crate::ui::scale::zoom() * 0.5;
+        let inner_w = width * 2.;
+        let solid = s.background == BackgroundStyle::Solid;
+        let app_name = s.app_name.clone();
+        let msg = s.text_size;
+        let session_ring = s.session_ring;
+        let build = || {
+            let line = t.line.to_hsla();
+            let line2 = t.line2.to_hsla();
+            let muted = t.muted.to_hsla();
+            let card_border = |d: gpui::Div| if bw { d.border_1().border_color(line) } else { d };
+            let mut side = card_border(
+                div()
+                    .w(px(270.))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .px(px(14.))
+                    .py(px(18.))
+                    .rounded(px(rad))
+                    .bg(side_bg.to_hsla()),
+            )
+            .child(
+                div()
+                    .font_family(t.display_font.clone())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(26.))
+                    .line_height(px(26.))
+                    .pt(px(2.))
+                    .px(px(6.))
+                    .pb(px(12.))
+                    .child(app_name.clone()),
+            )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .pt(px(4.))
-                    .when_some(logo, |d, logo| d.child(img(logo).w(px(18.)).h(px(18.)).object_fit(ObjectFit::Contain)))
-                    .child(div().font_family(theme.display_font.clone()).text_size(px(16.)).child(app_name)),
-            );
-
-        let right = div()
-            .flex()
-            .flex_col()
-            .items_end()
-            .gap(px(8.))
+                    .gap(px(10.))
+                    .px(px(12.))
+                    .py(px(10.))
+                    .rounded(px(rad))
+                    .bg(t.tile.to_hsla())
+                    .border_1()
+                    .border_color(line2)
+                    .child(div().text_color(t.acc.to_hsla()).text_size(px(18.)).line_height(px(18.)).child("+"))
+                    .child(div().flex_1().child("New session"))
+                    .child(
+                        div()
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(5.))
+                            .border_1()
+                            .border_color(line2)
+                            .font_family(t.code_font.clone())
+                            .text_size(px(11.))
+                            .text_color(muted)
+                            .child("Ctrl N"),
+                    ),
+            )
+            .child(div().text_size(px(12.)).text_color(muted).pt(px(14.)).px(px(6.)).pb(px(2.)).child("Projects"));
+            for (name, path) in &projects {
+                side = side.child(
+                    card_border(div().flex().flex_col().gap(px(6.)).px(px(12.)).py(px(10.)).rounded(px(rad)).bg(t.tile.to_hsla()))
+                        .child(div().child(name.clone()))
+                        .child(div().text_size(px(12.)).text_color(muted).whitespace_nowrap().overflow_hidden().text_ellipsis().child(path.clone())),
+                );
+            }
+            let tiles = [
+                ("archon", "Claude Code · Sonnet 4.5", "Make the sidebar resizable", "Done. The sidebar now resizes between 220 and 520 px, and a double-click resets it to 300.", session_ring),
+                ("website", "Codex · GPT-5 Codex", "Why is the build slow?", "Most of the time goes into image optimisation. Caching its output takes the build from 48 s to 9 s.", false),
+            ];
+            let mut row = div().absolute().top_0().left_0().size_full().flex().gap(px(gap)).p(px(gap)).child(side);
+            for (name, meta, q, a, focused) in tiles {
+                row = row.child(
+                    card_border(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .rounded(px(rad))
+                            .bg(tile_bg.to_hsla())
+                            .overflow_hidden(),
+                    )
+                    .when(focused, |d| d.border(px(1.5)).border_color(t.acc.to_hsla()))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .px(px(18.))
+                            .py(px(14.))
+                            .border_b_1()
+                            .border_color(line)
+                            .child(div().size(px(16.)).rounded(px(4.)).bg(t.acc2.to_hsla()))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(div().font_family(t.display_font.clone()).font_weight(gpui::FontWeight::SEMIBOLD).text_size(px(20.)).line_height(px(22.)).child(name))
+                                    .child(div().text_size(px(12.)).text_color(muted).child(meta)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.))
+                            .px(px(20.))
+                            .py(px(18.))
+                            .text_size(px(msg))
+                            .line_height(px(msg * 1.65))
+                            .overflow_hidden()
+                            .child(div().flex().justify_end().child(div().max_w(gpui::relative(0.8)).px(px(14.)).py(px(9.)).rounded(px(rad)).bg(line2).child(q)))
+                            .child(div().child(a)),
+                    )
+                    .child(
+                        div()
+                            .mx(px(14.))
+                            .mb(px(14.))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .pl(px(14.))
+                            .pr(px(10.))
+                            .py(px(10.))
+                            .rounded(px(rad))
+                            .border_1()
+                            .border_color(line2)
+                            .bg(line)
+                            .child(div().px(px(9.)).py(px(3.)).rounded(px(6.)).bg(line2).text_size(px(12.)).child("Auto"))
+                            .child(div().flex_1().text_size(px(14.)).text_color(muted).child(format!("Ask {app_name}…")))
+                            .child(div().size(px(28.)).rounded_full().bg(t.acc.to_hsla())),
+                    ),
+                );
+            }
+            let dim = s.wallpaper_dim.clamp(0., 100.) / 100.;
+            div()
+                .relative()
+                .w(px(inner_w))
+                .h(px(440.))
+                .overflow_hidden()
+                .font_family(t.ui_font.clone())
+                .text_size(px(13.5))
+                .text_color(t.fg.to_hsla())
+                .bg(t.bg.to_hsla())
+                .when(!solid, |d| {
+                    d.child(match wall.clone() {
+                        Some(wall) => img(wall).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Cover).into_any_element(),
+                        None => gradient_thumb(t.gradient).absolute().top_0().left_0().into_any_element(),
+                    })
+                })
+                .child(div().absolute().top_0().left_0().size_full().bg(t.bg.alpha(dim).to_hsla()))
+                .when(s.wallpaper_fade, |d| {
+                    d.child(div().absolute().left_0().bottom_0().w_full().h(gpui::relative(0.45)).bg(gpui::linear_gradient(
+                        180.,
+                        gpui::linear_color_stop(t.bg.alpha(0.).to_hsla(), 0.),
+                        gpui::linear_color_stop(t.bg.to_hsla(), 1.),
+                    )))
+                })
+                .child(row)
+        };
+        let inner = crate::ui::scale::zoomed(zoom, crate::ui::scale::scoped(zoom, build));
+        div()
+            .flex_none()
+            .px(px(super::BODY_PAD))
+            .pt(px(16.))
+            .pb(px(8.))
+            .bg(dialog.panel.to_hsla())
             .child(
                 div()
-                    .id("icon-reset")
-                    .px(px(10.))
-                    .py(px(4.))
-                    .rounded(px(6.))
+                    .relative()
+                    .h(px(220.))
+                    .rounded(px(12.))
+                    .overflow_hidden()
                     .border_1()
-                    .border_color(theme.line2.to_hsla())
-                    .text_size(px(12.))
-                    .opacity(reset_op)
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.settings.icon = AppIcon::Theme;
-                        this.save(cx);
-                    }))
-                    .child("Use theme icon"),
+                    .border_color(dialog.line2.to_hsla())
+                    .bg(t.bg.to_hsla())
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.35),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(32.),
+                        spread_radius: px(0.),
+                    }])
+                    .child(inner),
             )
-            .child(tiles);
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(heading("IDENTITY", None, &theme))
-            .child(div().flex().items_start().gap(px(24.)).child(left).child(right))
             .into_any_element()
+    }
+
+    /// The wallpaper as the preview shows it: a small copy through the chosen filter, made once.
+    fn preview_wallpaper(&mut self) -> Option<Arc<Image>> {
+        let small = small_wallpaper(&self.filtered_wallpaper(BackgroundFilter::Off))?;
+        let source = self.with_filter(crate::ui::glass::WallpaperSource::File(small.clone()), self.state.settings.filter);
+        self.cached_image(format!("preview:{}:{source:?}", small.display()), || {
+            Some(Arc::new(Image::from_bytes(ImageFormat::Png, source.preview_png(640)?)))
+        })
     }
 
     /// Opens a picker for an icon image, copies it into the data dir and makes it the app icon.
@@ -340,74 +422,90 @@ impl Shell {
         .detach();
     }
 
-    /// The theme cards, six to a row. Picking one resets its fonts and wallpaper, as the prototype does.
+    /// The theme cards. Picking one resets its fonts and wallpaper, as the prototype does; a theme of
+    /// your own can be renamed and removed.
     fn presets_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let current = self.state.settings.theme.clone();
-        let mut grid = div().grid().grid_cols(super::columns(self.settings.body_w, 112., 10., 6)).gap(px(10.));
+        let cols = super::columns(self.settings.body_w, 150., 14., 12);
+        let mut grid = div().grid().grid_cols(cols).gap_x(px(14.)).gap_y(px(16.));
         for (i, preset) in presets().iter().enumerate() {
             let id = preset.id.to_string();
             let active = id == current;
-            let edited = self.state.settings.custom_colours.get(theme_key(&id)).is_some_and(|t| !t.is_empty());
-            let wall = Some(Path::new(preset.wallpaper.as_ref())).filter(|p| p.is_file()).and_then(|p| self.wall_thumb(p));
-            let gradient = preset.gradient;
-            // A small picture of the theme: its background, a sidebar, a session with lines of text and
-            // an accent button, so themes with similar backgrounds still look different.
             let look = theme::resolve(preset, &Default::default(), Default::default());
-            let line = |w: f32, c: crate::ui::theme::Rgba| div().h(px(3.)).w(gpui::relative(w)).rounded(px(2.)).bg(c.to_hsla());
-            let thumb = div()
+            let bar = || div().h(px(4.)).rounded(px(2.)).bg(theme::mix(look.bg, look.fg, 0.22).to_hsla());
+            let own = !theme::is_builtin(&id);
+            let renaming = self.settings.theme_rename.as_ref().filter(|(r, _)| *r == id).map(|(_, (input, _))| input.clone());
+            let thumb = ringed(div(), active, &theme)
                 .relative()
-                .h(px(58.))
-                .rounded(px(6.))
+                .h(px(84.))
+                .rounded(px(9.))
                 .overflow_hidden()
-                .bg(preset.bg.to_hsla())
-                .child(match wall {
-                    Some(wall) => img(wall).absolute().size_full().object_fit(ObjectFit::Cover).into_any_element(),
-                    None => gradient_thumb(gradient).absolute().into_any_element(),
-                })
-                .child(div().absolute().left_0().top_0().bottom_0().w(gpui::relative(0.22)).bg(look.panel.alpha(0.9).to_hsla()).p(px(5.)).flex().flex_col().gap(px(4.)).child(line(0.8, look.acc)).child(line(0.6, look.muted)).child(line(0.7, look.muted)))
+                .bg(look.bg.to_hsla())
+                .child(div().absolute().top_0().bottom_0().left_0().w(gpui::relative(0.3)).bg(theme::mix(look.bg, look.fg, 0.07).to_hsla()))
                 .child(
                     div()
                         .absolute()
-                        .left(gpui::relative(0.28))
-                        .right(px(6.))
-                        .top(px(6.))
-                        .bottom(px(6.))
-                        .rounded(px(4.))
-                        .bg(look.tile.alpha(0.92).to_hsla())
-                        .p(px(6.))
+                        .top(px(14.))
+                        .left(gpui::relative(0.4))
+                        .right(px(12.))
                         .flex()
                         .flex_col()
-                        .gap(px(4.))
-                        .child(line(0.55, look.fg))
-                        .child(line(0.85, look.muted))
-                        .child(line(0.7, look.muted))
-                        .child(div().absolute().right(px(5.)).bottom(px(5.)).w(px(14.)).h(px(6.)).rounded(px(3.)).bg(look.acc.to_hsla())),
-                );
-            // A theme file (saved here or shared from another device) can be renamed and removed.
-            let own = !theme::is_builtin(&id);
-            let renaming = self.settings.theme_rename.as_ref().filter(|(r, _)| *r == id).map(|(_, (input, _))| input.clone());
-            let thumb = thumb.when(own, |t| {
-                let (rid, did) = (id.clone(), id.clone());
-                t.child(
-                    div()
-                        .absolute()
-                        .top(px(3.))
-                        .right(px(3.))
-                        .flex()
-                        .gap(px(3.))
-                        .child(corner_button(("theme-rename", i), "✎", &theme).on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.start_theme_rename(&rid, window, cx);
-                        })))
-                        .child(corner_button(("theme-remove", i), "×", &theme).on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.remove_theme(&did, cx);
-                        }))),
+                        .gap(px(6.))
+                        .child(bar().w(gpui::relative(0.8)))
+                        .child(bar().w(gpui::relative(0.55)))
+                        .child(bar().w(gpui::relative(0.68))),
                 )
-            });
+                .child(div().absolute().bottom(px(10.)).right(px(12.)).w(px(30.)).h(px(10.)).rounded(px(5.)).bg(look.acc.to_hsla()))
+                .when(own, |t| {
+                    let (rid, did) = (id.clone(), id.clone());
+                    t.child(
+                        div()
+                            .absolute()
+                            .top(px(5.))
+                            .right(px(5.))
+                            .flex()
+                            .gap(px(4.))
+                            .child(corner_button(("theme-rename", i), super::controls::icon::EDIT, 20., 11., 0.65).on_click(cx.listener(
+                                move |this, _: &gpui::ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.start_theme_rename(&rid, window, cx);
+                                },
+                            )))
+                            .child(corner_button(("theme-remove", i), super::controls::icon::X, 20., 10., 0.65).on_click(cx.listener(
+                                move |this, _: &gpui::ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_theme(&did, cx);
+                                },
+                            ))),
+                    )
+                });
+            let label = match renaming {
+                Some(input) => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(div().px(px(8.)).py(px(4.)).rounded(px(6.)).bg(theme.line.to_hsla()).border_1().border_color(theme.acc.to_hsla()).child(text_input(&input, &theme)))
+                    .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child("Enter saves"))
+                    .into_any_element(),
+                None => div()
+                    .px(px(2.))
+                    .text_size(px(12.))
+                    .text_color(if active { theme.fg.to_hsla() } else { theme.muted.to_hsla() })
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .child(preset.name.to_string())
+                    .into_any_element(),
+            };
             grid = grid.child(
-                card(("preset", i), active, &theme)
+                div()
+                    .id(("preset", i))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .min_w(px(0.))
+                    .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.state.settings.theme = id.clone();
                         // The open colour editor belongs to the theme it was opened on.
@@ -420,44 +518,14 @@ impl Shell {
                         this.refresh_theme(cx);
                     }))
                     .child(thumb)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .min_w_0()
-                            .child(match renaming {
-                                Some(input) => div().flex_1().min_w_0().child(text_input(&input, &theme)).into_any_element(),
-                                None => div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(px(12.))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .child(preset.name.to_string())
-                                    .into_any_element(),
-                            })
-                            .when(edited, |d| d.child(div().flex_none().w(px(6.)).h(px(6.)).rounded_full().bg(theme.acc2.to_hsla()))),
-                    ),
+                    .child(label),
             );
         }
+        let save = super::controls::act_button("theme-save", "Save as theme", Some(super::controls::icon::PLUS), &theme, listen(cx, |this, cx| this.save_as_theme(cx)));
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(div().flex_1().child(heading("THEME", None, &theme)))
-                    .child(
-                        Button::new("theme-save", "Save as theme", &theme)
-                            .style(ButtonStyle::Outline)
-                            .on_click(super::controls::listen(cx, |this, cx| this.save_as_theme(cx))),
-                    ),
-            )
+            .child(crate::ui::widgets::section::section_head("Theme", None, vec![save], &theme))
             .child(grid)
             .into_any_element()
     }
@@ -476,7 +544,7 @@ impl Shell {
         let style_row = segmented_row(
             "bg-style",
             "Style",
-            BACKGROUNDS[style_index].2,
+            "",
             &style_names,
             style_index,
             &weak,
@@ -513,7 +581,7 @@ impl Shell {
         rows.push(
             SettingRow::new("Window opacity", "Text stays solid", &theme).control(opacity_slider),
         );
-        section("BACKGROUND", rows, &theme)
+        section("Background", rows, &theme)
     }
 
     /// Removes a background. One in the backgrounds folder is removed on every device it is shared to;
@@ -668,44 +736,24 @@ impl Shell {
         let current = self.state.settings.filter;
         let base = self.filtered_wallpaper(BackgroundFilter::Off);
         let small = small_wallpaper(&base);
-        let mut grid = div().flex().flex_wrap().gap(px(8.));
+        let mut grid = div().flex().flex_wrap().gap(px(12.));
         for (i, (filter, name)) in FILTERS.into_iter().enumerate() {
             let thumb = small.as_ref().and_then(|small| {
                 let source = self.with_filter(crate::ui::glass::WallpaperSource::File(small.clone()), filter);
                 self.cached_image(format!("filter:{}:{source:?}", small.display()), || {
-                    Some(Arc::new(Image::from_bytes(ImageFormat::Png, source.preview_png(192)?)))
+                    Some(Arc::new(Image::from_bytes(ImageFormat::Png, source.preview_png(208)?)))
                 })
             });
-            let active = filter == current;
+            let picture = match thumb {
+                Some(t) => img(t).size_full().object_fit(ObjectFit::Cover).into_any_element(),
+                None => gradient_thumb(theme.gradient).into_any_element(),
+            };
             grid = grid.child(
-                div()
-                    .id(("bg-filter", i))
-                    .relative()
-                    .w(px(96.))
-                    .h(px(58.))
-                    .rounded(px(6.))
-                    .overflow_hidden()
-                    .cursor_pointer()
-                    .border_2()
-                    .border_color(if active { theme.acc.to_hsla() } else { gpui::transparent_black() })
-                    .bg(theme.line2.to_hsla())
+                pic_tile(("bg-filter", i), filter == current, Some(name), &theme, picture, None)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.state.settings.filter = filter;
                         this.refresh_theme(cx);
-                    }))
-                    .children(thumb.map(|t| img(t).size_full().object_fit(ObjectFit::Cover)))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(4.))
-                            .bottom(px(3.))
-                            .px(px(4.))
-                            .rounded(px(3.))
-                            .bg(gpui::hsla(0., 0., 0., 0.55))
-                            .text_size(px(9.))
-                            .text_color(gpui::white())
-                            .child(name),
-                    ),
+                    })),
             );
         }
         grid.into_any_element()
@@ -714,86 +762,59 @@ impl Shell {
     /// The image tiles: the theme's own background, every image in the backgrounds folder, and an
     /// upload tile.
     fn wallpaper_grid(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = self.theme.clone();
+        let theme = self.settings.app_theme.clone().unwrap_or_else(|| self.theme.clone());
+        let dialog = self.theme.clone();
         let picked = self.state.settings.wallpaper.clone().filter(|p| p.is_file());
         let backgrounds = self.backgrounds();
-        let mut grid = div().flex().flex_wrap().gap(px(8.));
-        let cell = |id: ElementId, active: bool| {
-            div()
-                .id(id)
-                .relative()
-                .w(px(96.))
-                .h(px(58.))
-                .rounded(px(6.))
-                .overflow_hidden()
-                .cursor_pointer()
-                .border_2()
-                .border_color(if active { theme.acc.to_hsla() } else { gpui::transparent_black() })
-        };
+        let mut grid = div().flex().flex_wrap().gap(px(12.));
         // The theme's own background: its image, or its gradient.
         let own = Some(PathBuf::from(&theme.wallpaper)).filter(|p| p.is_file()).and_then(|p| self.wall_thumb(&p));
-        grid = grid.child(
-            cell("wall-theme".into(), picked.is_none())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.state.settings.wallpaper = None;
-                    this.refresh_theme(cx);
-                }))
-                .child(match own {
-                    Some(thumb) => img(thumb).size_full().object_fit(ObjectFit::Cover).into_any_element(),
-                    None => gradient_thumb(theme.gradient).into_any_element(),
-                })
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(4.))
-                        .bottom(px(3.))
-                        .px(px(4.))
-                        .rounded(px(3.))
-                        .bg(gpui::hsla(0., 0., 0., 0.55))
-                        .text_size(px(9.))
-                        .text_color(gpui::white())
-                        .child("Theme"),
-                ),
-        );
+        let picture = match own {
+            Some(thumb) => img(thumb).size_full().object_fit(ObjectFit::Cover).into_any_element(),
+            None => gradient_thumb(theme.gradient).into_any_element(),
+        };
+        grid = grid.child(pic_tile("wall-theme", picked.is_none(), Some("Theme"), &dialog, picture, None).on_click(cx.listener(|this, _, _, cx| {
+            this.state.settings.wallpaper = None;
+            this.refresh_theme(cx);
+        })));
         for (i, path) in backgrounds.into_iter().enumerate() {
             let Some(thumb) = self.wall_thumb(&path) else { continue };
             let active = picked.as_ref() == Some(&path);
             let gone = path.clone();
+            let remove = corner_button(("wall-remove", i), super::controls::icon::X, 18., 10., 0.62).on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.remove_background(&gone, cx);
+            }));
+            let label = format!("Image {}", i + 1);
             grid = grid.child(
-                cell(("wall", i).into(), active)
+                pic_tile(("wall", i), active, Some(&label), &dialog, img(thumb).size_full().object_fit(ObjectFit::Cover).into_any_element(), Some(remove))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.state.settings.wallpaper = Some(path.clone());
                         this.refresh_theme(cx);
-                    }))
-                    .child(img(thumb).size_full().object_fit(ObjectFit::Cover))
-                    .child(
-                        div().absolute().top(px(3.)).right(px(3.)).child(
-                            corner_button(("wall-remove", i), "×", &theme).on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.remove_background(&gone, cx);
-                            })),
-                        ),
-                    ),
+                    })),
             );
         }
+        let muted = dialog.muted.to_hsla();
         grid = grid.child(
             div()
                 .id("wall-upload")
-                .w(px(96.))
-                .h(px(58.))
-                .rounded(px(6.))
+                .w(px(104.))
+                .h(px(66.))
+                .rounded(px(8.))
                 .border_1()
                 .border_dashed()
-                .border_color(theme.line2.to_hsla())
+                .border_color(dialog.line2.to_hsla())
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(10.5))
-                .text_color(theme.muted.to_hsla())
+                .gap(px(6.))
+                .text_size(px(12.))
+                .text_color(muted)
                 .cursor_pointer()
-                .hover(|s| s.text_color(theme.fg.to_hsla()))
+                .hover(|s| s.bg(dialog.line.to_hsla()))
                 .on_click(cx.listener(|this, _, _, cx| this.pick_wall_file(cx)))
-                .child("+ Upload"),
+                .child(crate::ui::composer::icons::stroke_icon(super::controls::icon::PLUS, 14., 1.4, muted))
+                .child("Upload"),
         );
         grid.into_any_element()
     }
@@ -828,8 +849,8 @@ impl Shell {
         let text = choice.ui.clone().unwrap_or_else(|| pairing.ui.to_string());
         let open = self.settings.font_open;
         let rows = [
-            (FontSlot::Titles, "Titles", "Headings, the app name and chat titles.", titles.clone()),
-            (FontSlot::Text, "Text", "The chat, the message box and the interface.", text.clone()),
+            (FontSlot::Titles, "Titles font", "", titles.clone()),
+            (FontSlot::Text, "Text font", "", text.clone()),
         ]
         .map(|(slot, name, desc, family)| {
             let is_open = open == Some(slot);
@@ -837,14 +858,14 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .child(div().text_size(px(15.)).font_family(family.clone()).child("Aa"))
-                .child(div().text_size(px(12.5)).text_color(theme.muted.to_hsla()).child(family.clone()))
+                .child(div().px(px(6.)).text_size(px(22.)).line_height(px(22.)).font_family(family.clone()).child("Aa"))
+                .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(family.clone()))
                 .child(
                     div()
                         .id(SharedString::from(format!("font-change-{name}")))
-                        .px(px(10.))
-                        .py(px(4.))
-                        .rounded(px(6.))
+                        .px(px(12.))
+                        .py(px(6.))
+                        .rounded(px(7.))
                         .border_1()
                         .border_color(if is_open { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
                         .text_size(px(12.))
@@ -908,117 +929,106 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(section("FONTS", vec![titles_row, text_row], &theme))
-            .when_some(list, |d, list| d.child(list))
+            .child(section("Fonts", vec![titles_row, text_row], &theme))
+            .when_some(list, |d, list| d.child(div().pt(px(6.)).child(list)))
             .into_any_element()
     }
 
-    /// The custom colour toggle. When open, every token is a compact swatch, and a click opens its editor.
+    /// Every colour of the theme as a swatch in its group; a click opens its editor under the grid.
     fn colours_block(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let key = theme_key(&self.state.settings.theme);
-        let overrides = self.state.settings.custom_colours.get(key).cloned().unwrap_or_default();
-        let has_overrides = !overrides.is_empty();
-        let expanded = self.settings.colours_open;
-
-        let mut actions = div().flex().items_center().gap(px(8.));
-        if has_overrides {
-            actions = actions.child(Button::new("colours-reset", "Reset", &theme).style(ButtonStyle::Outline).on_click(listen(
-                cx,
-                |this, cx| {
-                    let key = theme_key(&this.state.settings.theme);
-                    this.state.settings.custom_colours.remove(key);
-                    this.settings.picker = None;
-                    this.refresh_theme(cx);
-                },
-            )));
+        let live = self.settings.app_theme.clone().unwrap_or_else(|| self.theme.clone());
+        let mut groups = div().grid().grid_cols(super::columns(self.settings.body_w - 36., 200., 28., 4)).gap_x(px(28.)).gap_y(px(20.));
+        for (group, tokens) in SWATCHES {
+            let mut col = div().flex().flex_col().gap(px(10.)).child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(group));
+            for (token, label) in tokens.iter().copied() {
+                let Some(colour) = token_colour(&live, token) else { continue };
+                let open = self.settings.picker.as_ref().is_some_and(|p| p.token == token);
+                col = col.child(
+                    div()
+                        .id(SharedString::from(format!("colour-{token}")))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if this.settings.picker.as_ref().is_some_and(|p| p.token == token) {
+                                this.settings.picker = None;
+                                cx.notify();
+                            } else {
+                                this.open_picker(token, window, cx);
+                            }
+                        }))
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(22.))
+                                .rounded(px(6.))
+                                .bg(colour.to_hsla())
+                                .border_1()
+                                .border_color(if open { theme.acc.to_hsla() } else { theme.line2.to_hsla() }),
+                        )
+                        .child(div().flex_1().child(label))
+                        .child(div().font_family(theme.code_font.clone()).text_size(px(12.)).text_color(theme.muted.to_hsla()).child(super::colour::hex(colour))),
+                );
+            }
+            groups = groups.child(col);
         }
-        let toggle_label = if expanded { "Hide" } else { "Edit" };
-        actions = actions.child(Button::new("colours-edit", toggle_label, &theme).style(ButtonStyle::Outline).on_click(listen(
-            cx,
-            |this, cx| {
-                this.settings.colours_open = !this.settings.colours_open;
-                this.settings.picker = None;
-                cx.notify();
-            },
-        )));
-        let row = SettingRow::new("Custom colours", "", &theme).control(actions);
-        let mut out = div().flex().flex_col().gap(px(10.)).child(section("COLOURS", vec![row], &theme));
-        if !expanded {
-            return out.into_any_element();
-        }
-
-        let mut groups: Vec<(&str, gpui::Div)> =
-            COLOUR_GROUPS.iter().map(|(name, _)| (*name, div().flex().flex_wrap().gap(px(6.)))).collect();
-        for (n, (token, label)) in EDITABLE_TOKENS.iter().copied().enumerate() {
-            let Some(colour) = token_colour(&theme, token) else { continue };
-            let edited = overrides.contains_key(token);
-            let open = self.settings.picker.as_ref().is_some_and(|p| p.token == token);
-            let static_token: &'static str = token;
-            let group = COLOUR_GROUPS.iter().scan(0, |end, (_, len)| { *end += len; Some(*end) }).position(|end| n < end).unwrap_or(0);
-            let grid = &mut groups[group].1;
-            *grid = std::mem::replace(grid, div()).child(
-                div()
-                    .id(SharedString::from(format!("colour-{token}")))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .pl(px(6.))
-                    .pr(px(10.))
-                    .py(px(4.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(if open { theme.acc.to_hsla() } else { theme.line2.to_hsla() })
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.line.to_hsla()))
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_picker(static_token, window, cx)))
-                    .child(div().w(px(22.)).h(px(22.)).rounded_full().bg(colour.to_hsla()).border_1().border_color(theme.line2.to_hsla()))
-                    .child(div().text_size(px(12.)).child(label))
-                    .when(edited, |d| d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(theme.acc2.to_hsla()))),
-            );
-        }
-
+        let (radius, border) = crate::ui::widgets::section::card_style();
         let editor = self.settings.picker.as_ref().map(|p| {
-            let label = EDITABLE_TOKENS.iter().find(|(t, _)| *t == p.token).map_or(p.token, |(_, l)| *l);
-            let current = token_colour(&theme, p.token).unwrap_or(theme.fg);
+            let label = SWATCHES.iter().flat_map(|(_, t)| t.iter()).find(|(t, _)| *t == p.token).map_or(p.token, |(_, l)| *l);
+            let current = token_colour(&live, p.token).unwrap_or(live.fg);
             let channels = HSL_CHANNELS.iter().zip(p.hsl.iter()).map(|((name, _, _), channel)| {
                 div()
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .child(div().w(px(180.)).text_size(px(12.)).text_color(theme.muted.to_hsla()).child(name.to_string()))
+                    .child(div().w(px(120.)).text_size(px(12.)).text_color(theme.muted.to_hsla()).child(name.to_string()))
                     .child(slider(channel, &theme))
             });
             div()
                 .flex()
                 .flex_col()
                 .gap(px(10.))
-                .p(px(12.))
-                .rounded(px(9.))
-                .border_1()
-                .border_color(theme.acc.to_hsla())
+                .mt(px(4.))
+                .pt(px(16.))
+                .border_t_1()
+                .border_color(theme.line.to_hsla())
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(12.))
-                        .child(div().w(px(180.)).text_size(px(13.)).child(label.to_string()))
-                        .child(div().w(px(120.)).px(px(10.)).py(px(6.)).rounded(px(8.)).bg(theme.line.to_hsla()).child(text_input(&p.input, &theme)))
-                        .child(div().size(px(34.)).rounded(px(7.)).border_1().border_color(theme.line2.to_hsla()).bg(current.to_hsla()))
-                        .child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child("Enter to close")),
+                        .child(div().w(px(120.)).child(label.to_string()))
+                        .child(div().w(px(110.)).px(px(10.)).py(px(6.)).rounded(px(7.)).bg(theme.line.to_hsla()).child(text_input(&p.input, &theme)))
+                        .child(div().size(px(30.)).rounded(px(7.)).border_1().border_color(theme.line2.to_hsla()).bg(current.to_hsla()))
+                        .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child("Enter closes")),
                 )
                 .children(channels)
         });
-
-        out = out.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .children(groups.into_iter().map(|(name, grid)| div().flex().flex_col().gap(px(6.)).child(caption(name, &theme)).child(grid)))
-                .when_some(editor, |d, editor| d.child(div().pt(px(8.)).child(editor))),
-        );
-        out.into_any_element()
+        let reset = super::controls::act_button("colours-reset", "Reset", None, &theme, listen(cx, |this, cx| {
+            let key = theme_key(&this.state.settings.theme);
+            this.state.settings.custom_colours.remove(key);
+            this.settings.picker = None;
+            this.refresh_theme(cx);
+        }));
+        div()
+            .flex()
+            .flex_col()
+            .child(crate::ui::widgets::section::section_head("Custom colours", None, vec![reset], &theme))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .p(px(18.))
+                    .rounded(px(radius))
+                    .bg(theme.tile.to_hsla())
+                    .when(border, |d| d.border_1().border_color(theme.line.to_hsla()))
+                    .child(groups)
+                    .when_some(editor, |d, editor| d.child(editor)),
+            )
+            .into_any_element()
     }
 
     /// Tiling mode, gap and radius sliders, and the reset for dragged sizes.
@@ -1047,7 +1057,7 @@ impl Shell {
             SettingRow::new("Gaps", "", &theme).control(gaps_slider),
             SettingRow::new("Corner radius", "", &theme).control(radius_slider),
         ];
-        section("LAYOUT", rows, &theme)
+        section("Layout", rows, &theme)
     }
 
     /// Interface and text size, borders, session highlight, tint and reduce motion.
@@ -1120,7 +1130,7 @@ impl Shell {
                 None,
             ),
         ];
-        section("WINDOW", rows, &theme)
+        section("Window", rows, &theme)
     }
 }
 
@@ -1163,24 +1173,69 @@ fn css(c: crate::ui::theme::Rgba) -> String {
     }
 }
 
-/// A small round button for a tile's corner, such as × to remove it.
-fn corner_button(id: impl Into<ElementId>, label: &'static str, theme: &crate::ui::theme::Theme) -> Stateful<gpui::Div> {
-    let fg = theme.fg.to_hsla();
+/// A small dark button for a tile's corner, such as × to remove it: `size` square, with a white icon.
+fn corner_button(id: impl Into<ElementId>, glyph: &'static str, size: f32, icon: f32, alpha: f32) -> Stateful<gpui::Div> {
     div()
         .id(id)
-        .w(px(16.))
-        .h(px(16.))
-        .rounded_full()
+        .size(px(size))
+        .rounded(px(5.))
         .flex()
         .items_center()
         .justify_center()
-        .bg(gpui::hsla(0., 0., 0., 0.6))
-        .text_size(px(10.))
-        .text_color(gpui::white())
+        .bg(gpui::hsla(0., 0., 0., alpha))
         .cursor_pointer()
-        .hover(move |s| s.bg(gpui::hsla(0., 0., 0., 0.85)).text_color(fg))
-        .child(label)
+        .hover(|s| s.bg(gpui::hsla(0., 0., 0., 0.85)))
+        .child(crate::ui::composer::icons::stroke_icon(glyph, icon, 1.4, gpui::white()))
 }
+
+/// The ring around a card: the accent when picked, a hairline otherwise.
+fn ringed<E: Styled>(el: E, active: bool, theme: &crate::ui::theme::Theme) -> E {
+    let (colour, width) = if active { (theme.acc, 1.5) } else { (theme.line2, 1.) };
+    el.border(px(width)).border_color(colour.to_hsla())
+}
+
+/// A 104 × 66 picture tile with its name under it, as the image and filter rows show.
+fn pic_tile(
+    id: impl Into<ElementId>,
+    active: bool,
+    name: Option<&str>,
+    theme: &crate::ui::theme::Theme,
+    picture: AnyElement,
+    corner: Option<Stateful<gpui::Div>>,
+) -> Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .w(px(104.))
+        .cursor_pointer()
+        .child(
+            ringed(div(), active, theme)
+                .relative()
+                .h(px(66.))
+                .rounded(px(8.))
+                .overflow_hidden()
+                .child(div().absolute().top_0().left_0().size_full().child(picture))
+                .when_some(corner, |d, b| d.child(div().absolute().top(px(4.)).right(px(4.)).child(b))),
+        )
+        .when_some(name, |d, name| {
+            d.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(if active { theme.fg.to_hsla() } else { theme.muted.to_hsla() })
+                    .child(name.to_string()),
+            )
+        })
+}
+
+/// The colour swatches by group, with the names the page shows. Every one opens the colour editor.
+const SWATCHES: [(&str, &[(&str, &str)]); 4] = [
+    ("Surfaces", &[("bg", "Background"), ("tile", "Tile"), ("panel", "Panel"), ("pop", "Popover")]),
+    ("Text", &[("fg", "Text"), ("muted", "Muted"), ("faint", "Faint"), ("on", "Text on accent")]),
+    ("Accents", &[("acc", "Accent"), ("acc2", "Accent 2"), ("alt", "Secondary"), ("deep", "Deep accent")]),
+    ("Lines and highlights", &[("line", "Line"), ("line2", "Line 2"), ("soft", "Selection"), ("ring1", "Highlight start"), ("ring2", "Highlight end")]),
+];
 
 /// A 320 px copy of `source` in the temp folder, named by what it shows, made once. `None` if the
 /// wallpaper can't be read.

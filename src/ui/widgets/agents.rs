@@ -73,6 +73,34 @@ pub fn agent_marks(id: impl Into<SharedString>, marks: &[AgentMark], theme: &The
     row.into_any_element()
 }
 
+/// One 22 px icon per mark, as the Built-in tools rows show: full strength when lit, faded when not,
+/// each with the agent's name and note as its tooltip.
+pub fn agent_icons(id: impl Into<SharedString>, marks: &[AgentMark], theme: &Theme) -> AnyElement {
+    let id: SharedString = id.into();
+    let mut row = div().id(id.clone()).flex().items_center().gap(px(4.));
+    for mark in marks {
+        let tip = match &mark.note {
+            Some(note) => format!("{}: {note}", short_name(mark.agent)),
+            None => short_name(mark.agent).to_string(),
+        };
+        row = row.child(
+            div()
+                .id(SharedString::from(format!("{id}-{}", mark.agent)))
+                .size(px(22.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme.line.to_hsla())
+                .flex()
+                .items_center()
+                .justify_center()
+                .opacity(if mark.lit { 1.0 } else { 0.25 })
+                .child(harness_icon(mark.agent, 12., 1.4, theme.fg.to_hsla()))
+                .tooltip(tooltip(tip, TooltipColors::of(theme))),
+        );
+    }
+    row.into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::short_name;

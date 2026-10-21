@@ -148,6 +148,7 @@ fn headless(args: &[String]) -> bool {
                 skills: &skills,
                 disabled_skills: &disabled_skills,
                 permissions: settings.permissions,
+                mcp_tools: Some(&settings.mcp_tools),
                 max_steps: Some(settings.max_steps),
                 sandbox: settings.sandbox,
                 ask_network: settings.ask_network,

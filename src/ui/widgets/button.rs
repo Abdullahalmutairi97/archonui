@@ -103,8 +103,8 @@ impl RenderOnce for Button {
         let c = self.colors;
         let (text, border, fill, hover) = match self.style {
             ButtonStyle::Outline => (c.fg, Some(c.line2), None, c.line2),
-            ButtonStyle::Filled => (c.on, None, Some(c.acc), c.acc),
-            ButtonStyle::Danger => (c.acc, Some(c.acc), None, c.line),
+            ButtonStyle::Filled => (c.on, Some(c.acc), Some(c.acc), c.acc),
+            ButtonStyle::Danger => (crate::ui::theme::RED.to_hsla(), Some(crate::ui::theme::RED.alpha(0.6).to_hsla()), None, c.line),
             ButtonStyle::Ghost => (c.muted, None, None, c.line2),
         };
 
@@ -114,10 +114,10 @@ impl RenderOnce for Button {
             .items_center()
             .justify_center()
             .rounded(px(7.))
-            .text_size(px(12.5))
+            .text_size(px(12.))
             .text_color(text)
             .when(self.icon, |d| d.size(px(34.)))
-            .when(!self.icon, |d| d.px(px(14.)).py(px(8.)))
+            .when(!self.icon, |d| d.px(px(12.)).py(px(6.)))
             .when_some(fill, |d, fill| d.bg(fill))
             .when_some(border, |d, border| d.border_1().border_color(border))
             .child(self.child);

@@ -1,7 +1,7 @@
 //! The General page: startup, projects in the sidebar, agent behaviour, notifications and data.
 
 use super::{
-    controls::{button_row, listen, section, segmented_row, toggle_row},
+    controls::{button_row, empty_box, icon, listen, path_label, section, segmented_row, toggle_row},
     Slide,
 };
 use crate::{
@@ -10,7 +10,6 @@ use crate::{
     ui::{
         composer::icons::stroke_icon,
         shell::Shell,
-        theme::Theme,
         widgets::{
             button::{Button, ButtonStyle},
             section::SettingRow,
@@ -20,9 +19,6 @@ use crate::{
 };
 use gpui::{div, prelude::*, AnyElement, Context, PathPromptOptions};
 use crate::ui::scale::px;
-
-/// A pin, for the projects shown in the sidebar.
-const PIN: &str = "M6 2h4M7 2v4.5L4.5 9h7L9 6.5V2M8 9v5";
 
 /// `settings` with every MCP secret blanked, so an export can be shared. Key and
 /// header names are kept; only their values are replaced.
@@ -97,25 +93,10 @@ fn redact_values(values: &mut std::collections::BTreeMap<String, String>) {
     }
 }
 
-/// A path shown muted and truncated in a settings row's control, as the file and folder rows do.
-fn path_text(path: &str, theme: &Theme) -> impl IntoElement {
-    div()
-        .max_w(px(220.))
-        .min_w(px(0.))
-        .overflow_hidden()
-        .text_ellipsis()
-        .whitespace_nowrap()
-        .text_size(px(12.))
-        .text_color(theme.muted.to_hsla())
-        .child(path.to_string())
-}
-
 impl Shell {
     pub(super) fn general_page(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = self.theme.clone();
         let weak = cx.entity().downgrade();
-        let projects: Vec<(String, String)> =
-            self.state.projects().iter().map(|p| (p.id.clone(), p.name.clone())).collect();
         let s = &self.state.settings;
         let restore = s.restore;
         let mode = Mode::ALL.iter().position(|m| *m == s.default_mode).unwrap_or(0);
@@ -131,18 +112,13 @@ impl Shell {
         );
 
         let folder = self.state.settings.default_folder.clone();
-        let folder_text = folder.as_ref().map_or_else(|| "Not set".to_string(), |p| p.display().to_string());
-        let folder_note = if folder.is_some() {
-            "Runs here if it exists"
-        } else {
-            "Defaults to ArchonUI launch folder"
-        };
-        let folder_row = SettingRow::new("Default folder", folder_note, &theme).control(
+        let folder_text = folder.as_ref().map_or_else(|| "Automatic".to_string(), |p| tilde(p));
+        let folder_row = SettingRow::new("Default folder", "", &theme).control(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .child(path_text(&folder_text, &theme))
+                .gap(px(10.))
+                .child(path_label(&folder_text, folder.is_some(), &theme))
                 .child(
                     Button::new("folder-choose", "Choose…", &theme)
                         .style(ButtonStyle::Outline)
@@ -157,13 +133,13 @@ impl Shell {
         );
 
         let data_dir = crate::store::dir();
-        let data_text = data_dir.display().to_string();
+        let data_text = tilde(&data_dir);
         let data_folder_row = SettingRow::new("Data folder", "", &theme).control(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .child(path_text(&data_text, &theme))
+                .gap(px(10.))
+                .child(path_label(&data_text, true, &theme))
                 .child(
                     Button::new("data-open", "Open", &theme).style(ButtonStyle::Outline).on_click(listen(cx, move |_this, _cx| {
                         // Reaped on a thread, so the launcher doesn't linger as a zombie.
@@ -177,7 +153,7 @@ impl Shell {
         );
 
         let startup = section(
-            "STARTUP",
+            "Startup",
             vec![
                 toggle_row(
                     "restore",
@@ -198,7 +174,7 @@ impl Shell {
         );
 
         let agent = section(
-            "AGENT",
+            "Agent",
             vec![
                 segmented_row(
                     "default-mode",
@@ -266,7 +242,7 @@ impl Shell {
         );
 
         let notifications = section(
-            "NOTIFICATIONS",
+            "Notifications",
             vec![
                 toggle_row(
                     "notify",
@@ -299,7 +275,7 @@ impl Shell {
         );
 
         let data = section(
-            "DATA",
+            "Data",
             vec![
                 button_row(
                     "export-settings",
@@ -315,45 +291,69 @@ impl Shell {
                     "clear-history",
                     "Clear session history",
                     "Keeps open tiles",
-                    "Clear history",
+                    if self.settings.confirm_clear { "Click again to confirm" } else { "Clear history" },
                     ButtonStyle::Danger,
                     &weak,
                     &theme,
-                    |this, cx| {
-                        let cleared = this.state.clear_history();
-                        this.share_deleted_all(&cleared);
-                        let cleared = cleared.len();
-                        this.save(cx);
-                        this.toast(format!("Cleared {cleared} sessions"), cx);
-                    },
+                    |this, cx| this.clear_history_clicked(cx),
                 ),
                 data_folder_row,
             ],
             &theme,
         );
 
-        let pins = self.project_pins(&projects, cx);
+        let pins = self.project_pins(cx);
         vec![startup, pins, agent, notifications, data]
     }
 
+    /// The first click on Clear history asks for a second within three seconds; the second clears.
+    fn clear_history_clicked(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.confirm_clear {
+            self.settings.confirm_clear = true;
+            cx.notify();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(std::time::Duration::from_secs(3)).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.settings.confirm_clear = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+        self.settings.confirm_clear = false;
+        let cleared = self.state.clear_history();
+        self.share_deleted_all(&cleared);
+        let cleared = cleared.len();
+        self.save(cx);
+        self.toast(format!("Cleared {cleared} sessions"), cx);
+    }
+
     /// Every project with a pin: pinned ones show in the sidebar's Projects list.
-    fn project_pins(&self, projects: &[(String, String)], cx: &mut Context<Self>) -> AnyElement {
+    fn project_pins(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
+        let projects: Vec<(String, String, String)> =
+            self.state.projects().iter().map(|p| (p.id.clone(), p.name.clone(), tilde(&p.path))).collect();
+        let head = crate::ui::widgets::section::section_head("Projects", None, Vec::new(), theme);
+        if projects.is_empty() {
+            return div().flex().flex_col().child(head).child(empty_box(Some(icon::FOLDER), "No projects yet", theme)).into_any_element();
+        }
         let hidden = &self.state.settings.hidden_projects;
         let mut rows = Vec::new();
-        if projects.is_empty() {
-            rows.push(SettingRow::new("No projects yet", "", theme));
-        }
-        for (id, name) in projects {
-            let pinned = !hidden.contains(id);
-            let id = id.clone();
-            let colour = if pinned { theme.acc2 } else { theme.faint };
+        for (id, name, path) in projects {
+            let pinned = !hidden.contains(&id);
+            let colour = if pinned { theme.acc2 } else { theme.muted };
+            let line = theme.line.to_hsla();
             let pin = div()
                 .id(gpui::SharedString::from(format!("pin-{id}")))
-                .p(px(6.))
-                .rounded(px(6.))
+                .flex_none()
+                .size(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(7.))
                 .cursor_pointer()
-                .hover(move |s| s.bg(theme.line2.to_hsla()))
+                .hover(move |s| s.bg(line))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let hidden = &mut this.state.settings.hidden_projects;
                     if let Some(i) = hidden.iter().position(|h| *h == id) {
@@ -363,10 +363,43 @@ impl Shell {
                     }
                     this.save(cx);
                 }))
-                .child(stroke_icon(PIN, 15., 1.4, colour.to_hsla()));
-            rows.push(SettingRow::new(name.clone(), if pinned { "" } else { "Hidden from the sidebar" }, theme).control(pin));
+                .child(stroke_icon(icon::PIN, 16., 1.4, colour.to_hsla()));
+            rows.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(14.))
+                    .px(px(18.))
+                    .py(px(12.))
+                    .bg(theme.tile.to_hsla())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .when(!pinned, |d| d.opacity(0.5))
+                            .child(name)
+                            .child(
+                                div()
+                                    .font_family(theme.code_font.clone())
+                                    .text_size(px(12.))
+                                    .text_color(theme.muted.to_hsla())
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(path),
+                            ),
+                    )
+                    .when(!pinned, |d| {
+                        d.child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child("Hidden from the sidebar"))
+                    })
+                    .child(pin)
+                    .into_any_element(),
+            );
         }
-        section("PROJECTS", rows, theme)
+        div().flex().flex_col().child(head).child(crate::ui::widgets::section::card(rows, theme)).into_any_element()
     }
 
     /// Opens a folder picker and stores it as the folder new sessions run in.
@@ -404,6 +437,18 @@ impl Shell {
             });
         })
         .detach();
+    }
+}
+
+/// `path` with the home folder shown as `~`.
+pub(super) fn tilde(path: &std::path::Path) -> String {
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) if !home.as_os_str().is_empty() => match path.strip_prefix(&home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => path.display().to_string(),
+        },
+        _ => path.display().to_string(),
     }
 }
 
