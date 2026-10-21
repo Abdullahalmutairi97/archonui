@@ -254,8 +254,10 @@ fn tool_flags(input: &TurnInput) -> Vec<String> {
         Mode::Plan => strs(&["--permission-mode", "plan"]),
         Mode::Ask => strs(&["--permission-mode", "dontAsk"]),
     };
+    let (mcp_allowed, mcp_denied) = mcp_tool_names(&input.tools);
     if input.mode == Mode::Auto {
-        let allowed = tools_at(p, Permission::Allow);
+        let mut allowed: Vec<String> = tools_at(p, Permission::Allow).into_iter().map(String::from).collect();
+        allowed.extend(mcp_allowed);
         if !allowed.is_empty() {
             flags.push(format!("--allowedTools={}", allowed.join(",")));
         }
@@ -266,6 +268,7 @@ fn tool_flags(input: &TurnInput) -> Vec<String> {
     };
     let skills = input.tools.skills.iter().filter(|s| input.tools.disabled_skills.contains(&s.id));
     denied.extend(tools_at(p, Permission::Off).into_iter().map(String::from));
+    denied.extend(mcp_denied);
     denied.extend(skills.map(|s| format!("Skill({})", s.name)));
     let mut unique: Vec<String> = Vec::new();
     for tool in denied {
@@ -277,6 +280,26 @@ fn tool_flags(input: &TurnInput) -> Vec<String> {
         flags.push(format!("--disallowedTools={}", unique.join(",")));
     }
     flags
+}
+
+/// Claude's names (`mcp__<server>__<tool>`) for the tools of enabled MCP servers set to Allow, and
+/// for those set to Off. Ask tools are left to Claude's own check, as built-in ones are.
+fn mcp_tool_names(tools: &crate::engine::ToolSettings) -> (Vec<String>, Vec<String>) {
+    let (mut allowed, mut denied) = (Vec::new(), Vec::new());
+    let Some(levels) = tools.mcp_tools else { return (allowed, denied) };
+    // Claude keeps letters, digits, `_` and `-` in a server or tool name and turns the rest into `_`.
+    let clean = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect::<String>();
+    for server in tools.mcp.iter().filter(|s| s.enabled) {
+        for (tool, level) in levels.get(&server.name).into_iter().flatten() {
+            let name = format!("mcp__{}__{}", clean(&server.name), clean(tool));
+            match level {
+                Permission::Allow => allowed.push(name),
+                Permission::Off => denied.push(name),
+                Permission::Ask => {}
+            }
+        }
+    }
+    (allowed, denied)
 }
 
 /// The `--settings` object for the turn, or `None` when there is nothing to add. Only Auto
@@ -461,6 +484,35 @@ mod tests {
         let f = flags(Mode::Auto, p);
         assert_eq!(value_of(&f, "--disallowedTools="), Some("Read"));
         assert!(!value_of(&f, "--allowedTools=").unwrap().split(',').any(|t| t == "Read"));
+    }
+
+    #[test]
+    fn mcp_tools_follow_their_own_permissions() {
+        let server = |name: &str, enabled| McpServer {
+            id: name.into(),
+            name: name.into(),
+            transport: McpTransport::Stdio { command: "x".into(), args: vec![], env: Default::default() },
+            enabled,
+        };
+        let servers = [server("git hub", true), server("off", false)];
+        let levels = std::collections::BTreeMap::from([
+            ("git hub".to_string(), std::collections::BTreeMap::from([
+                ("list_issues".to_string(), Permission::Allow),
+                ("delete.repo".to_string(), Permission::Off),
+                ("create_issue".to_string(), Permission::Ask),
+            ])),
+            ("off".to_string(), std::collections::BTreeMap::from([("read".to_string(), Permission::Allow)])),
+        ]);
+        let tools = harness::ToolSettings { mcp: &servers, mcp_tools: Some(&levels), permissions: all(Permission::Ask), ..Default::default() };
+        let input = |mode| TurnInput { cwd: Path::new("."), prompt: "", session: None, files: &[], model: None, effort: None, mode, tools, project: None };
+        let f = tool_flags(&input(Mode::Auto));
+        // Allow skips Claude's check, Off removes the tool, Ask is left alone; a server that is off adds nothing.
+        assert_eq!(value_of(&f, "--allowedTools="), Some("mcp__git_hub__list_issues"));
+        assert_eq!(value_of(&f, "--disallowedTools="), Some("mcp__git_hub__delete_repo"));
+        // Plan allows nothing, but an Off tool stays off.
+        let f = tool_flags(&input(Mode::Plan));
+        assert_eq!(value_of(&f, "--allowedTools="), None);
+        assert_eq!(value_of(&f, "--disallowedTools="), Some("mcp__git_hub__delete_repo"));
     }
 
     #[test]

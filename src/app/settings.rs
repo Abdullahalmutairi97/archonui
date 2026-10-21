@@ -156,6 +156,8 @@ pub struct AppSettings {
     // Tools
     pub permissions: Permissions,
     pub mcp_servers: Vec<McpServer>,
+    /// Per-tool permissions for MCP servers, by server name then tool name. A tool not listed is Ask.
+    pub mcp_tools: BTreeMap<String, BTreeMap<String, Permission>>,
     /// Skill id to enabled. Skills not listed are enabled.
     pub skills_enabled: BTreeMap<String, bool>,
     // Browser, IDE and terminal
@@ -225,6 +227,7 @@ impl Default for AppSettings {
             fast_titles: true,
             model_enabled: HashMap::new(),
             pinned_models: HashMap::new(),
+            mcp_tools: BTreeMap::new(),
             permissions: Permissions::default(),
             mcp_servers: Vec::new(),
             skills_enabled: BTreeMap::new(),

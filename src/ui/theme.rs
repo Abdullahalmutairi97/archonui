@@ -65,6 +65,11 @@ impl Rgba {
     }
 }
 
+/// Status colours, the same in every theme: working, needs attention, failed.
+pub const GREEN: Rgba = Rgba::hex(0x3fb950);
+pub const AMBER: Rgba = Rgba::hex(0xd29922);
+pub const RED: Rgba = Rgba::hex(0xf85149);
+
 /// The prototype's `mix(a, b, t)`: a per-channel linear blend, rounded. The result is opaque.
 pub fn mix(a: Rgba, b: Rgba, t: f64) -> Rgba {
     let lerp = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;

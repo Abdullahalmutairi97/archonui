@@ -40,9 +40,9 @@ impl Toggle {
             disabled: None,
             colors: Colors {
                 acc: theme.acc.to_hsla(),
-                faint: theme.faint.to_hsla(),
+                faint: theme.fg.alpha(0.18).to_hsla(),
                 on: theme.on.to_hsla(),
-                fg: theme.fg.to_hsla(),
+                fg: theme.fg.alpha(0.75).to_hsla(),
             },
             tooltip_colors: TooltipColors::of(theme),
         }

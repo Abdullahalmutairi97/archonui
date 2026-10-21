@@ -21,7 +21,8 @@ use std::{
 /// Whether a server answered.
 #[derive(Clone, Debug, PartialEq)]
 pub enum McpStatus {
-    Connected { tools: usize },
+    /// Connected; the names of the tools it offers, in its order.
+    Connected { tools: Vec<String> },
     Failed(String),
     Off,
 }
@@ -315,8 +316,8 @@ trait Exchange {
     fn notify(&mut self, method: &str) -> Result<(), String>;
 }
 
-/// `initialize`, `notifications/initialized`, then every `tools/list` page. Returns the tool count.
-fn handshake(conn: &mut dyn Exchange) -> Result<usize, String> {
+/// `initialize`, `notifications/initialized`, then every `tools/list` page. Returns the tool names.
+fn handshake(conn: &mut dyn Exchange) -> Result<Vec<String>, String> {
     let init = json!({
         "protocolVersion": PROTOCOL,
         "capabilities": {},
@@ -324,14 +325,16 @@ fn handshake(conn: &mut dyn Exchange) -> Result<usize, String> {
     });
     conn.request(1, "initialize", init)?;
     conn.notify("notifications/initialized")?;
-    let mut tools = 0;
+    let mut tools = Vec::new();
     let mut cursor: Option<String> = None;
     let mut id = 1;
     loop {
         id += 1;
         let params = cursor.as_ref().map_or_else(|| json!({}), |c| json!({"cursor": c}));
         let page = conn.request(id, "tools/list", params)?;
-        tools += page["tools"].as_array().map_or(0, Vec::len);
+        for tool in page["tools"].as_array().into_iter().flatten() {
+            tools.push(tool["name"].as_str().unwrap_or_default().to_string());
+        }
         cursor = page["nextCursor"].as_str().map(String::from);
         if cursor.is_none() {
             return Ok(tools);
@@ -740,7 +743,7 @@ enabled = false
         let script = dir.join("fake_server.py");
         write(&script, FAKE_SERVER);
         let s = stdio("fake", "python3", &["-I", &script.display().to_string()]);
-        assert_eq!(check_within(&s, Duration::from_secs(20)), McpStatus::Connected { tools: 2 });
+        assert!(matches!(check_within(&s, Duration::from_secs(20)), McpStatus::Connected { tools } if tools.len() == 2));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -826,7 +829,7 @@ enabled = false
             },
             enabled: true,
         };
-        assert_eq!(check_within(&server, Duration::from_secs(20)), McpStatus::Connected { tools: 3 });
+        assert!(matches!(check_within(&server, Duration::from_secs(20)), McpStatus::Connected { tools } if tools.len() == 3));
     }
 
     #[test]

@@ -1,14 +1,13 @@
 //! The Skills page: discovered skills, each switched on or off and marked with the agents that load
 //! it, plus sync, import and create. Spec: settings.md §8.
 
-use super::controls::{edit, heading, listen};
+use super::controls::{act_button, chips, edit, empty_box, icon, list_row, listen, more_row, search_box};
 use crate::{
     engine,
     ui::{
         shell::Shell,
         widgets::{
-            agents::{agent_chips, short_name},
-            button::{Button, ButtonStyle},
+            section::{card, section_head},
             toggle::Toggle,
         },
     },
@@ -20,134 +19,77 @@ impl Shell {
     pub(super) fn skills_page(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = self.theme.clone();
         let weak = cx.entity().downgrade();
-        let skills = self.settings.skills.clone();
-        let total = skills.as_ref().map_or(0, Vec::len);
-        let on = skills
+        // Agents turned off in settings get no chip.
+        let installed: Vec<&'static str> = self.agents.iter().filter(|a| a.enabled).map(|a| a.harness.id()).collect();
+        let mut names = vec!["All".to_string()];
+        names.extend(installed.iter().map(|id| engine::harness(id).map_or(*id, |h| h.name()).to_string()));
+        let chip = self.settings.chip.get("skills").copied().unwrap_or(0).min(installed.len());
+        let only = chip.checked_sub(1).and_then(|i| installed.get(i)).copied();
+        let query = self.query("skills", cx);
+        let list = self.settings.skills.clone();
+        let shown: Vec<_> = list
             .iter()
             .flatten()
-            .filter(|k| self.state.settings.skills_enabled.get(&k.id).copied().unwrap_or(true))
-            .count();
-
-        // Agents turned off in settings get no chip and no count.
-        let installed: Vec<&'static str> = self.agents.iter().filter(|a| a.enabled).map(|a| a.harness.id()).collect();
-        // How many skills each installed agent loads, so a gap between agents shows before syncing. Nothing
-        // is counted while the search runs, rather than a row of misleading zeros.
-        let counts = skills.as_ref().map(|list| {
-            installed
-                .iter()
-                .map(|agent| format!("{} {}", short_name(agent), list.iter().filter(|k| k.agents.contains(agent)).count()))
-                .collect::<Vec<_>>()
-                .join(" · ")
-        });
-        let title = if skills.is_some() { format!("SKILLS · {on} OF {total} ON") } else { "SKILLS".to_string() };
-
-        // The buttons wrap under the title and counts when the page is narrow.
-        let header = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(8.))
-            .child(heading(&title, None, &theme))
-            .when_some(counts, |d, counts| d.child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(counts)))
-            .child(div().flex_1())
-            .child(
-                Button::new("sync-skills", "Sync to all agents", &theme)
-                    .style(ButtonStyle::Outline)
-                    .on_click(listen(cx, |this, cx| this.sync_skills(cx))),
-            )
-            .child(
-                Button::new("import-skill", "Import folder", &theme)
-                    .style(ButtonStyle::Outline)
-                    .on_click(listen(cx, |this, cx| this.import_skill(cx))),
-            )
-            .child(
-                Button::new("new-skill", "+ New skill", &theme)
-                    .style(ButtonStyle::Filled)
-                    .on_click(listen(cx, |this, cx| this.new_skill(cx))),
-            );
-
-        let body = match skills {
-            None => div().text_size(px(12.5)).text_color(theme.muted.to_hsla()).child("Loading skills…").into_any_element(),
-            Some(list) if list.is_empty() => div()
-                .text_size(px(12.5))
-                .text_color(theme.muted.to_hsla())
-                .child("No skills found.")
-                .into_any_element(),
-            Some(list) => {
-                let mut grid = div().grid().grid_cols(super::columns(self.settings.body_w, 300., 12., 2)).gap(px(12.));
-                for skill in list {
-                    let enabled = self.state.settings.skills_enabled.get(&skill.id).copied().unwrap_or(true);
+            .filter(|k| only.is_none_or(|a| k.agents.contains(&a)))
+            .filter(|k| query.is_empty() || format!("{} {}", k.name, k.description).to_lowercase().contains(&query))
+            .cloned()
+            .collect();
+        let enabled = |id: &str| self.state.settings.skills_enabled.get(id).copied().unwrap_or(true);
+        let on = shown.iter().filter(|k| enabled(&k.id)).count();
+        let ids: Vec<String> = shown.iter().map(|k| k.id.clone()).collect();
+        let (all_on, all_off) = (ids.clone(), ids);
+        let acts = vec![
+            act_button("skills-enable-all", "Enable all", None, &theme, listen(cx, move |this, cx| this.bulk_skills(&all_on, true, cx))),
+            act_button("skills-disable-all", "Disable all", None, &theme, listen(cx, move |this, cx| this.bulk_skills(&all_off, false, cx))),
+        ];
+        let title = if list.is_some() { format!("Skills · {}", shown.len()) } else { "Skills".to_string() };
+        let head = section_head(title, list.is_some().then(|| format!("{on} on").into()), acts, &theme);
+        let search = self.settings.searches.get("skills").map(|(input, _)| search_box(input, &theme));
+        let chips = chips("skill-chip", &names, chip, &theme, edit(&weak, |this: &mut Shell, i: usize, cx| this.pick_chip("skills", i, cx)));
+        let limit = self.limit("skills", 8);
+        let left = shown.len().saturating_sub(limit);
+        let body = match &list {
+            None => empty_box(None, "Looking for skills…", &theme),
+            Some(_) if shown.is_empty() => empty_box(None, if query.is_empty() { "No skills yet" } else { "No matching skills" }, &theme),
+            Some(_) => {
+                let mut rows = Vec::new();
+                for skill in shown.iter().take(limit) {
+                    let on = enabled(&skill.id);
                     let id = skill.id.clone();
-                    let toggle = Toggle::new(SharedString::from(format!("skill-{}", skill.id)), enabled, &theme).on_change(edit(
+                    let toggle = Toggle::new(SharedString::from(format!("skill-{}", skill.id)), on, &theme).on_change(edit(
                         &weak,
                         move |this: &mut Shell, on: bool, cx| {
                             this.state.settings.skills_enabled.insert(id.clone(), on);
                             this.save(cx);
                         },
                     ));
-                    let dim = if enabled { 1.0 } else { 0.55 };
-                    grid = grid.child(
-                        div()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .p(px(16.))
-                            .rounded(px(10.))
-                            .border_1()
-                            .border_color(if enabled { theme.line2.to_hsla() } else { theme.line.to_hsla() })
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .whitespace_nowrap()
-                                            .text_size(px(14.))
-                                            .opacity(dim)
-                                            .child(skill.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_size(px(11.))
-                                            .px(px(8.))
-                                            .py(px(3.))
-                                            .rounded(px(5.))
-                                            .bg(theme.line.to_hsla())
-                                            .text_color(theme.muted.to_hsla())
-                                            .child(skill.source.clone()),
-                                    )
-                                    .child(toggle),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .text_color(theme.muted.to_hsla())
-                                    .opacity(dim)
-                                    .child(skill.description.clone()),
-                            )
-                            .child(div().text_size(px(12.)).text_color(theme.acc2.to_hsla()).opacity(dim).child(skill.command.clone()))
-                            .child(agent_chips(
-                                SharedString::from(format!("skill-agents-{}", skill.id)),
-                                &installed,
-                                |agent| skill.agents.contains(&agent),
-                                &theme,
-                            )),
-                    );
+                    let agents: Vec<&str> = skill.agents.iter().map(|a| engine::harness(a).map_or(*a, |h| h.name())).collect();
+                    let note = if agents.is_empty() { skill.source.clone() } else { agents.join(", ") };
+                    rows.push(list_row(skill.name.clone(), Some(note.into()), vec![toggle.into_any_element()], &theme).into_any_element());
                 }
-                grid.into_any_element()
+                if left > 0 {
+                    rows.push(more_row("skills-more", 25, left, &theme, listen(cx, |this, cx| this.show_more("skills", 8, 25, cx))));
+                }
+                card(rows, &theme).into_any_element()
             }
         };
+        let foot = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(8.))
+            .pt(px(12.))
+            .child(act_button("new-skill", "New skill", Some(icon::PLUS), &theme, listen(cx, |this, cx| this.new_skill(cx))))
+            .child(act_button("import-skill", "Import folder", None, &theme, listen(cx, |this, cx| this.import_skill(cx))))
+            .child(act_button("sync-skills", "Sync to all agents", None, &theme, listen(cx, |this, cx| this.sync_skills(cx))));
+        vec![div().flex().flex_col().child(head).children(search).child(chips).child(body).child(foot).into_any_element()]
+    }
 
-        vec![
-            div().flex().flex_col().gap(px(12.)).child(header).child(body).into_any_element(),
-        ]
+    /// Turns every skill in `ids` on or off.
+    fn bulk_skills(&mut self, ids: &[String], on: bool, cx: &mut Context<Self>) {
+        for id in ids {
+            self.state.settings.skills_enabled.insert(id.clone(), on);
+        }
+        self.save(cx);
     }
 
     /// Links every skill into each agent's skills folder, toasts what changed, then rediscovers skills.

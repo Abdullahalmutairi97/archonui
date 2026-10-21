@@ -1,38 +1,37 @@
 //! The Keyboard page: rebindable shortcuts, read-only keys, and conflict handling. Spec: settings.md §4.
 
-use super::controls::{binding_label, kbd_row, section};
+use super::controls::{key_label, listen, row_button};
 use crate::{
     app::settings::Action,
-    ui::{shell::Shell, widgets::{kbd::Kbd, section::SettingRow}},
+    ui::{
+        shell::Shell,
+        theme::Theme,
+        widgets::section::{card, section_head},
+    },
 };
 use gpui::{div, prelude::*, AnyElement, Context};
 use std::collections::HashMap;
 use crate::ui::scale::px;
 
-/// Tile shortcuts, read by the tiles key handler.
-const TILING: [(Action, &str); 4] = [
+/// Tile shortcuts, read by the tiles key handler, and Next theme.
+const TILING: [(Action, &str); 5] = [
     (Action::SplitNewSession, "Split new session"),
     (Action::CloseTile, "Close tile"),
-    (Action::FocusNext, "Focus next tile"),
-    (Action::FocusPrev, "Focus previous tile"),
+    (Action::FocusNext, "Focus next"),
+    (Action::FocusPrev, "Focus previous"),
+    (Action::NextTheme, "Next theme"),
 ];
 
-/// App shortcuts, read by the global key handler. `Next theme` comes first on the page, then the two
-/// keys the prototype groups under APP (settings.md §4); the rest are ArchonUI's own bindings.
-const APP: [(Action, &str); 5] = [
-    (Action::NextTheme, "Next theme"),
-    (Action::ToggleSidebar, "Toggle sidebar"),
-    (Action::TogglePanel, "Toggle tools panel"),
+/// App shortcuts, read by the global key handler.
+const APP: [(Action, &str); 4] = [
     (Action::NewSession, "New session"),
     (Action::SessionSwitcher, "Session switcher"),
+    (Action::ToggleSidebar, "Toggle sidebar"),
+    (Action::TogglePanel, "Toggle panel"),
 ];
 
-/// The composer key the prototype lists on its own (settings.md §4). The composer hard-codes it, so it
-/// can't be rebound yet.
-const COMPOSER: [(&str, &str); 1] = [("Cycle agent mode: Auto, Plan, Ask", "⇧ Tab")];
-
-/// The composer and dialog keys the prototype groups under APP (settings.md §4); hard-coded, not rebindable.
-const HARD_KEYS: [(&str, &str); 2] = [("Send / new line", "⏎ / ⇧⏎"), ("Close dialog", "Esc")];
+/// The message box keys. It handles them itself, so they can't be rebound yet.
+const COMPOSER: [(&str, &[&str]); 3] = [("Send", &["Enter"]), ("New line", &["Shift", "Enter"]), ("Cycle mode", &["Shift", "Tab"])];
 
 /// What Swap changes to resolve the clash between `action` and `other`: the action to rebind and its new
 /// key. Both share one key, so trading their current keys would change nothing. When one of the two was
@@ -53,31 +52,28 @@ fn swap_binding(keys: &HashMap<Action, String>, action: Action, other: Action, d
 impl Shell {
     pub(super) fn keyboard_page(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = self.theme.clone();
-        let mut tiling = Vec::new();
-        for (action, name) in TILING {
-            tiling.push(self.binding_row(action, name, cx));
-        }
-        let mut app = vec![self.binding_row(Action::NextTheme, "Next theme", cx)];
-        app.extend(HARD_KEYS.iter().map(|(name, keys)| kbd_row(name, keys, &theme)));
-        for (action, name) in APP.iter().skip(1) {
-            app.push(self.binding_row(*action, name, cx));
-        }
-        let composer: Vec<SettingRow> = COMPOSER.iter().map(|(name, keys)| kbd_row(name, keys, &theme)).collect();
-
-        let hint = match self.settings.capture {
-            Some(_) => "Press new shortcut, Esc cancels, Backspace clears",
-            None => "Click to change, Escape closes",
+        let tiling: Vec<AnyElement> = TILING.iter().map(|(action, name)| self.binding_row(*action, name, cx)).collect();
+        let composer: Vec<AnyElement> = COMPOSER.iter().map(|(name, keys)| key_row(name, None, keys_box(keys, None, &theme).into_any_element(), &theme)).collect();
+        let mut app: Vec<AnyElement> = APP.iter().map(|(action, name)| self.binding_row(*action, name, cx)).collect();
+        app.push(key_row("Close dialog", None, keys_box(&["Esc"], None, &theme).into_any_element(), &theme));
+        let group = |title: &str, hint: Option<&str>, rows: Vec<AnyElement>| {
+            div()
+                .flex()
+                .flex_col()
+                .child(section_head(title.to_string(), hint.map(|h| h.to_string().into()), Vec::new(), &theme))
+                .child(card(rows, &theme))
+                .into_any_element()
         };
         vec![
-            div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(hint).into_any_element(),
-            section("TILING", tiling, &theme),
-            section("COMPOSER", composer, &theme),
-            section("APP", app, &theme),
+            group("Tiling", Some("Click a shortcut to change it"), tiling),
+            group("Composer", None, composer),
+            group("App", None, app),
         ]
     }
 
-    /// One rebindable row: the shortcut badge, plus a conflict note and Swap when another action has the same keys.
-    fn binding_row(&mut self, action: Action, name: &str, cx: &mut Context<Self>) -> SettingRow {
+    /// One rebindable row: its keys in a dashed box that starts a rebinding when clicked, and a
+    /// conflict note with Swap when another action has the same keys.
+    fn binding_row(&mut self, action: Action, name: &str, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let capturing = self.settings.capture == Some(action);
         let keys = &self.state.settings.keys;
@@ -90,63 +86,91 @@ impl Shell {
                     .find(|(b, _)| *b != action && keys.get(b).is_some_and(|k| *k == spec))
             })
             .flatten();
-        let badge = if capturing {
-            div()
-                .px(px(10.))
-                .py(px(3.))
-                .rounded(px(5.))
-                .border_1()
-                .border_color(theme.acc.to_hsla())
-                .text_size(px(12.))
-                .text_color(theme.acc2.to_hsla())
-                .child("Press a key…")
-                .into_any_element()
-        } else {
-            let label = binding_label(keys, action);
-            div().child(Kbd::new(label, &theme)).into_any_element()
-        };
-        let mut control = div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
+        let label = key_label(&spec);
+        let parts: Vec<&str> = if spec.is_empty() { Vec::new() } else { label.split(' ').collect() };
+        let state = if capturing { Some("Press new shortcut") } else if spec.is_empty() { Some("Unset") } else { None };
+        let boxed = keys_box(&parts, state, &theme)
             .id(("binding", action as usize))
             .cursor_pointer()
+            .when(capturing, |d| d.border_color(theme.acc2.to_hsla()))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.settings.capture = Some(action);
+                this.settings.capture = if this.settings.capture == Some(action) { None } else { Some(action) };
                 cx.notify();
-            }))
-            .child(badge);
-        if let Some((other, other_name)) = other {
-            let other_name = other_name.to_string();
+            }));
+        let mut control = div().flex().items_center().gap(px(10.));
+        if let Some((other, other_name)) = other.filter(|_| !capturing) {
             control = control
-                .child(
+                .child(div().text_size(px(12.)).text_color(theme.acc2.to_hsla()).child(format!("Also bound to {other_name}")))
+                .child(row_button(("swap", action as usize), "Swap", &theme, listen(cx, move |this, cx| {
+                    let displaced = this.settings.displaced.take();
+                    let (target, spec) = swap_binding(&this.state.settings.keys, action, other, displaced);
+                    this.state.settings.keys.insert(target, spec);
+                    this.save(cx);
+                })));
+        }
+        key_row(name, capturing.then_some("Esc cancels · Backspace clears"), control.child(boxed).into_any_element(), &theme)
+    }
+}
+
+/// A shortcut row: the action, an optional note in the second accent, and its keys at the end.
+fn key_row(name: &str, note: Option<&str>, keys: AnyElement, theme: &Theme) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .px(px(18.))
+        .py(px(10.))
+        .bg(theme.tile.to_hsla())
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(name.to_string())
+                .when_some(note, |d, note| d.child(div().text_size(px(12.)).text_color(theme.acc2.to_hsla()).child(note.to_string()))),
+        )
+        .child(keys)
+        .into_any_element()
+}
+
+/// Key chips in a dashed box, or `state` (such as "Unset") in place of the keys.
+fn keys_box(keys: &[&str], state: Option<&str>, theme: &Theme) -> gpui::Div {
+    let mut b = div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .p(px(3.))
+        .rounded(px(7.))
+        .border_1()
+        .border_dashed()
+        .border_color(gpui::transparent_black());
+    match state {
+        Some(text) => {
+            let colour = if text == "Unset" { theme.muted } else { theme.acc2 };
+            b = b.child(div().px(px(10.)).py(px(3.)).text_size(px(12.)).text_color(colour.to_hsla()).child(text.to_string()));
+        }
+        None => {
+            for key in keys {
+                b = b.child(
                     div()
-                        .text_size(px(11.5))
-                        .text_color(theme.acc2.to_hsla())
-                        .child(format!("Also bound to {other_name}")),
-                )
-                .child(
-                    div()
-                        .id(("swap", action as usize))
-                        .px(px(10.))
-                        .py(px(5.))
-                        .rounded(px(6.))
+                        .min_w(px(24.))
+                        .flex()
+                        .justify_center()
+                        .px(px(8.))
+                        .py(px(3.))
+                        .rounded(px(5.))
                         .border_1()
                         .border_color(theme.line2.to_hsla())
+                        .bg(theme.line.to_hsla())
+                        .font_family(theme.code_font.clone())
                         .text_size(px(12.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.line2.to_hsla()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let displaced = this.settings.displaced.take();
-                            let (target, spec) = swap_binding(&this.state.settings.keys, action, other, displaced);
-                            this.state.settings.keys.insert(target, spec);
-                            this.save(cx);
-                        }))
-                        .child("Swap"),
+                        .child(key.to_string()),
                 );
+            }
         }
-        SettingRow::new(name.to_string(), String::new(), &theme).control(control)
     }
+    b
 }
 
 #[cfg(test)]

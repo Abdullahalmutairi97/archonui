@@ -36,21 +36,17 @@ use std::{collections::HashMap, sync::Arc};
 /// Harness ids in the order the pages list them. Each one is looked up with `engine::harness`.
 const HARNESS_IDS: [&str; 5] = ["claude", "codex", "gemini", "opencode", "pi"];
 
-/// The settings dialog's ideal size, in design px. It shrinks to fit the window.
+/// The settings dialog's size in window px. It never changes with Interface size, which zooms the
+/// contents instead, and it shrinks to fit a smaller window.
 const DIALOG_SIZE: (f32, f32) = (1320., 880.);
-/// The dialog's smallest size, in design px. The window wins over this when it is smaller.
-const DIALOG_MIN: (f32, f32) = (560., 420.);
-/// Space kept between the dialog and the window edges, in design px.
+/// Space kept between the dialog and the window edges, in window px.
 const DIALOG_MARGIN: f32 = 24.;
-/// The sidebar's width range, in design px. It is a share of the dialog width, so it narrows with the window.
-const NAV_WIDTH: (f32, f32) = (168., 236.);
-
-/// The page body's side padding, in design px: roomy beside the sidebar, tighter in a compact dialog.
-const BODY_PAD: f32 = 36.;
-const COMPACT_PAD: f32 = 20.;
-/// Below this dialog width, in design px, the sidebar becomes a strip of pages across the top, so the
-/// page gets the whole width.
-const COMPACT_BELOW: f32 = 720.;
+/// The contents' zoom at the default Interface size.
+const CONTENT_ZOOM: f32 = 0.86;
+/// The nav column's width, in design px.
+const NAV_WIDTH: f32 = 196.;
+/// The page body's side padding, in design px.
+pub(super) const BODY_PAD: f32 = 32.;
 
 /// How many columns of at least `min` wide, `gap` apart, fit in `width`: from 1 up to `max`.
 pub(super) fn columns(width: f32, min: f32, gap: f32, max: u16) -> u16 {
@@ -58,9 +54,21 @@ pub(super) fn columns(width: f32, min: f32, gap: f32, max: u16) -> u16 {
     if fit.is_finite() { (fit as u16).clamp(1, max.max(1)) } else { 1 }
 }
 
-/// `ideal` clamped to `avail` and floored at `min`, but never wider than `avail`.
-fn fit(ideal: f32, min: f32, avail: f32) -> f32 {
-    ideal.min(avail).max(min.min(avail))
+/// `ideal`, or `avail` when that is smaller.
+fn fit(ideal: f32, avail: f32) -> f32 {
+    ideal.min(avail).max(0.)
+}
+
+/// The tokens the settings dialog draws with: the theme's own colours, mixed as the prototype mixes
+/// them (panel 4% and tile 7% of the text colour over the background, lines at 7% and 15%).
+fn dialog_theme(theme: &crate::ui::theme::Theme) -> crate::ui::theme::Theme {
+    use crate::ui::theme::mix;
+    let mut t = theme.clone();
+    t.panel = mix(theme.bg, theme.fg, 0.04);
+    t.tile = mix(theme.bg, theme.fg, 0.07);
+    t.line = theme.fg.alpha(0.07);
+    t.line2 = theme.fg.alpha(0.15);
+    t
 }
 
 /// Keys that only change modifiers. A rebinding waits for a key that isn't one of these.
@@ -98,21 +106,11 @@ pub enum Page {
     Devices,
 }
 
-/// One row of the nav: a section heading or a page.
-enum NavEntry {
-    Head(&'static str),
-    Page(Page),
-}
-
-/// The pages in the nav. Models are part of Agents, and Skills and Extensions part of Tools; their
-/// own `Page` values still open those pages, scrolled from the top.
-const NAV: [NavEntry; 6] = [
-    NavEntry::Page(Page::General),
-    NavEntry::Page(Page::Appearance),
-    NavEntry::Page(Page::Harnesses),
-    NavEntry::Page(Page::Tools),
-    NavEntry::Page(Page::Keyboard),
-    NavEntry::Page(Page::Devices),
+/// The nav: groups of pages under a small heading.
+const NAV: [(&str, &[Page]); 3] = [
+    ("App", &[Page::General, Page::Appearance, Page::Keyboard, Page::Devices]),
+    ("AI", &[Page::Harnesses, Page::Models]),
+    ("Capabilities", &[Page::Tools, Page::Skills, Page::Extensions]),
 ];
 
 impl Page {
@@ -138,7 +136,7 @@ impl Page {
             Page::General => "General",
             Page::Appearance => "Appearance",
             Page::Keyboard => "Keyboard",
-            Page::Harnesses => "Agents",
+            Page::Harnesses => "Harnesses",
             Page::Models => "Models",
             Page::Tools => "Tools",
             Page::Skills => "Skills",
@@ -149,15 +147,15 @@ impl Page {
 
     fn desc(self) -> &'static str {
         match self {
-            Page::General => "Startup, agents and notifications",
-            Page::Appearance => "Themes, wallpaper and layout",
-            Page::Keyboard => "Shortcuts",
-            Page::Harnesses => "Agent apps and their models",
-            Page::Models => "Agent apps and their models",
-            Page::Tools => "Tools, skills and plugins",
-            Page::Skills => "Tools, skills and plugins",
-            Page::Extensions => "Tools, skills and plugins",
-            Page::Devices => "Share chats over Tailscale",
+            Page::General => "Startup, projects, agent defaults, notifications and data.",
+            Page::Appearance => "Themes, colours, fonts, wallpaper and layout. Changes apply live.",
+            Page::Keyboard => "Click a shortcut to change it.",
+            Page::Harnesses => "The coding agents archon can run.",
+            Page::Models => "Only enabled models appear in the message box.",
+            Page::Tools => "MCP servers, built-in tools, terminal and workspace.",
+            Page::Skills => "Reusable instructions your agents can load.",
+            Page::Extensions => "Add features to the app.",
+            Page::Devices => "Share chats between your devices over Tailscale.",
         }
     }
 }
@@ -204,8 +202,14 @@ pub struct SettingsUi {
     pub(super) body_scroll: gpui::ScrollHandle,
     /// The app name field on Appearance, made on first render.
     pub(super) name: Option<Field>,
-    /// The extension search field, made on first render.
-    pub(super) search: Option<Field>,
+    /// The search fields over the long lists, by list: `models`, `mcp`, `skills`, `ext`.
+    pub(super) searches: HashMap<&'static str, Field>,
+    /// The picked filter chip of each list, by list; 0 is All.
+    pub(super) chip: HashMap<&'static str, usize>,
+    /// How many rows each paged list shows, by list (or `mcp:<server>` for a server's tools).
+    pub(super) limits: HashMap<String, usize>,
+    /// MCP servers whose tool lists are open.
+    pub(super) mcp_open: std::collections::HashSet<String>,
     /// A custom theme being renamed: its id and the name field.
     pub(super) theme_rename: Option<(String, Field)>,
     pub(super) sliders: HashMap<Slide, Entity<Slider>>,
@@ -233,12 +237,18 @@ pub struct SettingsUi {
     pub(super) mcp: HashMap<String, Option<McpStatus>>,
     /// The harness whose test connection is running.
     pub(super) testing: Option<&'static str>,
+    /// The harness whose test just passed, shown as "Works ✓" for a moment.
+    pub(super) tested: Option<&'static str>,
     /// Tailnet devices from Tailscale on the Devices page; `None` until the first search finishes.
     pub(super) tailnet: Option<Result<crate::remote::tailscale::Tailnet, String>>,
     /// Whether a Tailscale search is running.
     pub(super) tailnet_loading: bool,
     /// Whether the Devices page lists offline devices that aren't shared with.
     pub(super) show_offline: bool,
+    /// The app's own theme while the dialog draws with its tokens, for previews and swatches.
+    pub(super) app_theme: Option<crate::ui::theme::Theme>,
+    /// Whether Clear history is waiting for its confirming second click.
+    pub(super) confirm_clear: bool,
     /// The page body's width inside its padding, in design px, so pages can drop columns as it narrows.
     pub(super) body_w: f32,
 }
@@ -361,15 +371,25 @@ impl Shell {
             });
             self.settings.name = Some((input, subscription));
         }
-        if self.settings.search.is_none() {
-            let input = cx.new(|cx| TextInput::new(search_config(), window, cx));
-            let subscription = cx.subscribe(&input, |_, _, event: &TextInputEvent, cx| {
+        for (key, placeholder) in SEARCHES {
+            if self.settings.searches.contains_key(key) {
+                continue;
+            }
+            let input = cx.new(|cx| TextInput::new(search_config(placeholder), window, cx));
+            // A new query starts its list from the top.
+            let subscription = cx.subscribe(&input, move |this, _, event: &TextInputEvent, cx| {
                 if let TextInputEvent::Changed = event {
+                    this.settings.limits.retain(|k, _| k != key && !(key == "mcp" && k.starts_with("mcp:")));
                     cx.notify();
                 }
             });
-            self.settings.search = Some((input, subscription));
+            self.settings.searches.insert(key, (input, subscription));
         }
+    }
+
+    /// The zoom the dialog's contents are drawn at: 86% at the default Interface size, scaled with it.
+    fn content_zoom(&self) -> f32 {
+        CONTENT_ZOOM * crate::ui::scale::base_zoom() / crate::ui::scale::DEFAULT
     }
 
     /// The modal, when open (drawn by `render_overlays`).
@@ -377,81 +397,26 @@ impl Shell {
         if !self.settings.open {
             return None;
         }
-        self.ensure_fields(window, cx);
-        let theme = self.theme.clone();
-        // The window is in real px, so the design-unit sizes are converted before they are compared.
+        // The window is in real px; the dialog's size is too, and only its contents zoom.
         let viewport = window.viewport_size();
-        let margin = crate::ui::scale::real(DIALOG_MARGIN);
-        let avail_w = (f32::from(viewport.width) - 2. * margin).max(0.);
-        let avail_h = (f32::from(viewport.height) - 2. * margin).max(0.);
-        let dialog_w = fit(crate::ui::scale::real(DIALOG_SIZE.0), crate::ui::scale::real(DIALOG_MIN.0), avail_w);
-        let dialog_h = fit(crate::ui::scale::real(DIALOG_SIZE.1), crate::ui::scale::real(DIALOG_MIN.1), avail_h);
-        let dialog_design_w = dialog_w / crate::ui::scale::zoom();
-        let compact = dialog_design_w < COMPACT_BELOW;
-        let nav_width = if compact { 0. } else { (dialog_design_w * 0.25).clamp(NAV_WIDTH.0, NAV_WIDTH.1).min(dialog_design_w * 0.5) };
-        let pad = if compact { COMPACT_PAD } else { BODY_PAD };
-        self.settings.body_w = (dialog_design_w - nav_width - 2. * pad).max(0.);
-        let blocks = match self.settings.page {
-            Page::General => self.general_page(cx),
-            Page::Appearance => self.appearance_page(cx),
-            Page::Keyboard => self.keyboard_page(cx),
-            Page::Harnesses | Page::Models => {
-                let mut blocks = self.harnesses_page(cx);
-                blocks.extend(self.models_page(cx));
-                blocks
-            }
-            Page::Tools | Page::Skills | Page::Extensions => {
-                let mut blocks = self.tools_page(cx);
-                blocks.push(controls::heading("SKILLS", None, &theme));
-                blocks.extend(self.skills_page(cx));
-                blocks.push(controls::heading("EXTENSIONS", None, &theme));
-                blocks.extend(self.extensions_page(cx));
-                blocks
-            }
-            Page::Devices => self.devices_page(cx),
-        };
-        let nav = if compact { self.settings_strip(cx) } else { self.settings_nav(nav_width, cx) };
-        // One scroll state per page, so a page opens at its top.
-        let body = div()
-            .id(self.settings.page.label())
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .track_scroll(&self.settings.body_scroll)
-            .flex()
-            .flex_col()
-            .gap(px(28.))
-            .px(px(pad))
-            .pt(px(8.))
-            .pb(px(48.))
-            .children(blocks);
-        let content = div()
-            .flex_1()
-            .min_w(px(0.))
-            .flex()
-            .flex_col()
-            .child(self.settings_header(pad, cx))
-            .child(body);
+        let dialog_w = fit(DIALOG_SIZE.0, f32::from(viewport.width) - 2. * DIALOG_MARGIN);
+        let dialog_h = fit(DIALOG_SIZE.1, f32::from(viewport.height) - 2. * DIALOG_MARGIN);
+        let zoom = self.content_zoom();
+        let app_theme = self.theme.clone();
+        let s = &self.state.settings;
+        crate::ui::widgets::section::set_card_style(if s.flush { 0. } else { s.radius }, s.borders && !s.flush);
+        self.settings.body_w = (dialog_w / zoom - NAV_WIDTH - 2. * BODY_PAD).max(0.);
+        // Pages draw with the dialog's tokens; the app keeps its own once the dialog is built.
+        self.settings.app_theme = Some(app_theme.clone());
+        self.theme = dialog_theme(&app_theme);
+        let dialog = crate::ui::scale::scoped(zoom, || self.settings_dialog(dialog_w / zoom, dialog_h / zoom, window, cx));
+        self.theme = app_theme;
         let dialog = div()
-            .flex()
             .flex_none()
             .w(gpui::px(dialog_w))
             .h(gpui::px(dialog_h))
-            .rounded(px(14.))
-            .bg(theme.pop.to_hsla())
-            .border_1()
-            .border_color(theme.line2.to_hsla())
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.65),
-                offset: point(px(0.), px(40.)),
-                blur_radius: px(120.),
-                spread_radius: px(0.),
-            }])
-            .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .when(compact, |d| d.flex_col())
-            .child(nav)
-            .child(content);
+            .child(crate::ui::scale::zoomed(zoom, dialog));
         Some(
             div()
                 .absolute()
@@ -462,104 +427,172 @@ impl Shell {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(hsla(0., 0., 0., 0.45))
+                .bg(hsla(0., 0., 0., 0.18))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.settings_close(cx)))
                 .child(dialog)
                 .into_any_element(),
         )
     }
 
-    /// The nav column: logo and title, then the pages with their counts, and the version footer.
-    fn settings_nav(&mut self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+    /// The dialog itself, `w` × `h` design px, built at the contents' zoom.
+    fn settings_dialog(&mut self, w: f32, h: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.ensure_fields(window, cx);
+        let theme = self.theme.clone();
+        let blocks = match self.settings.page {
+            Page::General => self.general_page(cx),
+            Page::Appearance => self.appearance_page(cx),
+            Page::Keyboard => self.keyboard_page(cx),
+            Page::Harnesses => self.harnesses_page(cx),
+            Page::Models => self.models_page(cx),
+            Page::Tools => self.tools_page(cx),
+            Page::Skills => self.skills_page(cx),
+            Page::Extensions => self.extensions_page(cx),
+            Page::Devices => self.devices_page(cx),
+        };
+        // One scroll state per page, so a page opens at its top.
+        let body = div()
+            .id(self.settings.page.label())
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .track_scroll(&self.settings.body_scroll)
+            .flex()
+            .flex_col()
+            .px(px(BODY_PAD))
+            .pb(px(56.))
+            .children(blocks);
+        let content = div()
+            .flex_1()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(self.settings_header(cx))
+            .when(self.settings.page == Page::Appearance, |d| {
+                let width = (w - NAV_WIDTH - 2. * BODY_PAD).max(0.);
+                d.child(self.appearance_preview(width))
+            })
+            .child(body);
+        let (radius, _) = crate::ui::widgets::section::card_style();
+        div()
+            .flex()
+            .w(px(w))
+            .h(px(h))
+            .rounded(px(if radius == 0. { 0. } else { 16. }))
+            .bg(theme.panel.to_hsla())
+            .border_1()
+            .border_color(theme.line2.to_hsla())
+            .shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.6),
+                offset: point(px(0.), px(40.)),
+                blur_radius: px(120.),
+                spread_radius: px(0.),
+            }])
+            .overflow_hidden()
+            .text_size(px(13.5))
+            .text_color(theme.fg.to_hsla())
+            .child(self.settings_nav(cx))
+            .child(content)
+            .into_any_element()
+    }
+
+    /// The nav column: logo and title, the pages in their groups with counts, and the version.
+    fn settings_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
         let logo = self.icon_logo();
         let active = self.settings.page;
         let counts = self.nav_counts();
+        let selected = crate::ui::theme::mix(theme.bg, theme.fg, 0.16);
         let mut nav = div()
             .id("settings-nav-column")
-            .w(px(width))
+            .w(px(NAV_WIDTH))
             .flex_none()
             .min_h(px(0.))
             .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(2.))
-            .pt(px(22.))
-            .pb(px(18.))
-            .px(px(12.))
+            .pt(px(14.))
+            .pb(px(16.))
+            .px(px(10.))
+            .bg(theme.bg.to_hsla())
             .border_r_1()
             .border_color(theme.line.to_hsla())
-            .bg(theme.line.to_hsla())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(10.))
+                    .gap(px(9.))
+                    .pt(px(2.))
+                    .px(px(8.))
                     .pb(px(10.))
                     .when_some(logo, |row, logo| {
-                        row.child(img(logo).w(px(22.)).h(px(22.)).flex_none().object_fit(ObjectFit::Contain))
+                        row.child(img(logo).w(px(18.)).h(px(18.)).flex_none().object_fit(ObjectFit::Contain))
                     })
                     .child(
                         div()
                             .font_family(theme.display_font.clone())
-                            .text_size(px(26.))
-                            .line_height(px(26.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_size(px(24.))
+                            .line_height(px(24.))
                             .child("Settings"),
                     ),
             );
-        for entry in NAV.iter() {
-            nav = match entry {
-                NavEntry::Head(title) => nav.child(
+        for (group, pages) in NAV {
+            nav = nav.child(
+                div()
+                    .pt(px(16.))
+                    .pb(px(6.))
+                    .px(px(9.))
+                    .text_size(px(11.))
+                    .text_color(theme.muted.to_hsla())
+                    .child(spaced_caps(group)),
+            );
+            for &page in pages {
+                let is_active = page == active;
+                let count = counts.get(&page).copied();
+                nav = nav.child(
                     div()
-                        .pt(px(16.))
-                        .pb(px(6.))
-                        .px(px(12.))
-                        .text_size(px(10.5))
-                        .text_color(theme.muted.to_hsla())
-                        .child(*title),
-                ),
-                NavEntry::Page(page) => {
-                    let page = *page;
-                    let is_active = page == active;
-                    let count = counts.get(&page).copied();
-                    nav.child(
-                        div()
-                            .id(("settings-nav", page as usize))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px(px(12.))
-                            .py(px(9.))
-                            .rounded(px(7.))
-                            .text_size(px(13.5))
-                            .cursor_pointer()
-                            .when(is_active, |d| d.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
-                            .when(!is_active, |d| {
-                                d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla()))
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
-                            .child(page.label())
-                            .when_some(count, |row, n| {
-                                row.child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
-                            }),
-                    )
-                }
-            };
+                        .id(("settings-nav", page as usize))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(px(10.))
+                        .py(px(8.))
+                        .rounded(px(7.))
+                        .cursor_pointer()
+                        .when(is_active, |d| d.bg(selected.to_hsla()).text_color(theme.fg.to_hsla()))
+                        .when(!is_active, |d| d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla())))
+                        .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
+                        .child(page.label())
+                        .when_some(count, |row, n| {
+                            row.child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
+                        }),
+                );
+            }
         }
-        nav.child(div().flex_1()).child(
-            div()
-                .px(px(12.))
-                .text_size(px(11.))
-                .text_color(theme.muted.to_hsla())
-                .child(format!("{} {}", self.state.settings.app_name, env!("CARGO_PKG_VERSION"))),
-        )
-        .into_any_element()
+        let name = &self.state.settings.app_name;
+        let mut cap = name.chars();
+        let app = cap.next().map(|c| c.to_uppercase().chain(cap).collect::<String>()).unwrap_or_default();
+        nav.child(div().flex_1())
+            .child(
+                div()
+                    .px(px(10.))
+                    .text_size(px(12.))
+                    .text_color(theme.muted.to_hsla())
+                    .child(format!(
+                        "{app} {} · {}",
+                        env!("CARGO_PKG_VERSION"),
+                        channel_name(self.state.settings.update_channel)
+                    )),
+            )
+            .into_any_element()
     }
 
     /// Opens `page` at its top.
     fn settings_go(&mut self, page: Page, cx: &mut Context<Self>) {
         self.settings.page = page;
+        self.settings.capture = None;
         self.settings.body_scroll.set_offset(gpui::point(px(0.), px(0.)));
         if page == Page::Tools {
             self.check_mcp(None, cx);
@@ -567,65 +600,19 @@ impl Shell {
         cx.notify();
     }
 
-    /// The compact dialog's nav: every page in one row across the top, scrolling sideways when they
-    /// don't fit.
-    fn settings_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = self.theme.clone();
-        let active = self.settings.page;
-        let counts = self.nav_counts();
-        let mut strip = div()
-            .id("settings-nav-strip")
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .px(px(12.))
-            .py(px(10.))
-            .overflow_x_scroll()
-            .border_b_1()
-            .border_color(theme.line.to_hsla())
-            .bg(theme.line.to_hsla());
-        for entry in NAV.iter() {
-            let NavEntry::Page(page) = entry else { continue };
-            let page = *page;
-            let is_active = page == active;
-            strip = strip.child(
-                div()
-                    .id(("settings-strip", page as usize))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .px(px(11.))
-                    .py(px(7.))
-                    .rounded(px(7.))
-                    .whitespace_nowrap()
-                    .text_size(px(13.))
-                    .cursor_pointer()
-                    .when(is_active, |d| d.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
-                    .when(!is_active, |d| d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla())))
-                    .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
-                    .child(page.label())
-                    .when_some(counts.get(&page).copied(), |row, n| {
-                        row.child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
-                    }),
-            );
-        }
-        strip.into_any_element()
-    }
-
-    /// The page title and subtitle, with the close button on the right. `pad` matches the body's sides.
-    fn settings_header(&self, pad: f32, cx: &mut Context<Self>) -> AnyElement {
+    /// The page title and its one-line description, with the close button at the end.
+    fn settings_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
         let page = self.settings.page;
         div()
+            .flex_none()
             .flex()
-            .items_start()
+            .items_center()
             .gap(px(16.))
-            .pt(px(26.))
-            .pr(px(22.))
-            .pl(px(pad))
-            .pb(px(20.))
+            .pt(px(18.))
+            .pr(px(16.))
+            .pb(px(16.))
+            .pl(px(BODY_PAD))
             .border_b_1()
             .border_color(theme.line.to_hsla())
             .child(
@@ -638,11 +625,12 @@ impl Shell {
                     .child(
                         div()
                             .font_family(theme.display_font.clone())
-                            .text_size(px(36.))
-                            .line_height(px(36.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_size(px(28.))
+                            .line_height(px(28.))
                             .child(page.label()),
                     )
-                    .child(div().text_size(px(13.)).text_color(theme.muted.to_hsla()).child(page.desc())),
+                    .child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(page.desc())),
             )
             .child(
                 div()
@@ -650,17 +638,41 @@ impl Shell {
                     .flex_none()
                     .w(px(32.))
                     .h(px(32.))
-                    .rounded(px(7.))
+                    .rounded(px(8.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .text_color(theme.muted.to_hsla())
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.line2.to_hsla()).text_color(theme.fg.to_hsla()))
+                    .hover(|s| s.bg(theme.line.to_hsla()).text_color(theme.fg.to_hsla()))
                     .on_click(cx.listener(|this, _, _, cx| this.settings_close(cx)))
-                    .child(div().text_size(px(17.)).child("✕")),
+                    .child(crate::ui::composer::icons::stroke_icon(X_ICON, 16., 1.4, theme.muted.to_hsla())),
             )
             .into_any_element()
+    }
+
+    /// What is typed in list `key`'s search field, lower-cased and trimmed.
+    pub(super) fn query(&self, key: &str, cx: &App) -> String {
+        self.settings.searches.get(key).map(|(input, _)| input.read(cx).text().trim().to_lowercase()).unwrap_or_default()
+    }
+
+    /// How many rows list `key` shows: `first` until "Show more" adds to it.
+    pub(super) fn limit(&self, key: &str, first: usize) -> usize {
+        self.settings.limits.get(key).copied().unwrap_or(first)
+    }
+
+    /// Shows `step` more rows of list `key`, which started at `first`.
+    pub(super) fn show_more(&mut self, key: &str, first: usize, step: usize, cx: &mut Context<Self>) {
+        let now = self.limit(key, first);
+        self.settings.limits.insert(key.to_string(), now + step);
+        cx.notify();
+    }
+
+    /// Picks filter chip `i` of list `key`, from the top of the list.
+    pub(super) fn pick_chip(&mut self, key: &'static str, i: usize, cx: &mut Context<Self>) {
+        self.settings.chip.insert(key, i);
+        self.settings.limits.remove(key);
+        cx.notify();
     }
 
     /// The count beside each page: harnesses ready, models on, MCP servers on, skills on, extensions installed.
@@ -768,11 +780,22 @@ impl Shell {
     }
 
     fn settings_field_focused(&self, window: &Window, cx: &App) -> bool {
-        [self.settings.name.as_ref(), self.settings.search.as_ref()]
-            .into_iter()
-            .flatten()
+        self.settings
+            .name
+            .iter()
+            .chain(self.settings.searches.values())
             .any(|(input, _)| input.read(cx).focus_handle().is_focused(window))
     }
+}
+
+/// The close cross, on the 16-unit grid.
+const X_ICON: &str = "M4.5 4.5l7 7M11.5 4.5l-7 7";
+
+/// `text` in capitals with a thin space between letters, as letter-spaced headings read: GPUI has
+/// no letter-spacing.
+fn spaced_caps(text: &str) -> String {
+    let caps: Vec<String> = text.chars().map(|c| c.to_uppercase().collect()).collect();
+    caps.join("\u{200a}")
 }
 
 /// The theme logo `name`, or `None` for an unknown name or a missing file.
@@ -800,10 +823,14 @@ fn name_config() -> TextInputConfig {
     }
 }
 
-fn search_config() -> TextInputConfig {
+/// The searchable lists and what their fields say when empty.
+const SEARCHES: [(&str, &str); 4] =
+    [("models", "Search models"), ("mcp", "Search servers and tools"), ("skills", "Search skills"), ("ext", "Search extensions")];
+
+fn search_config(placeholder: &str) -> TextInputConfig {
     TextInputConfig {
-        placeholder: "Search plugins and extensions".into(),
-        font_size: px(13.),
+        placeholder: placeholder.to_string().into(),
+        font_size: px(13.5),
         line_height: px(18.),
         ..Default::default()
     }
@@ -840,8 +867,8 @@ mod tests {
 
     #[test]
     fn dialog_fits_inside_the_window() {
-        assert_eq!(fit(1320., 560., 2000.), 1320.);
-        assert_eq!(fit(1320., 560., 900.), 900.);
-        assert_eq!(fit(1320., 560., 300.), 300., "the window wins over the minimum");
+        assert_eq!(fit(1320., 2000.), 1320.);
+        assert_eq!(fit(1320., 900.), 900.);
+        assert_eq!(fit(1320., -4.), 0.);
     }
 }
