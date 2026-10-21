@@ -6,6 +6,7 @@ pub(in crate::ui) use blocks::token_colour;
 pub(in crate::ui) mod code;
 pub mod demo;
 mod markdown;
+pub mod viz;
 
 use super::{shell::Shell, theme::Theme};
 use crate::{
@@ -28,6 +29,10 @@ pub struct StreamUi {
     lightbox: Option<Lightbox>,
     selection: Option<Selection>,
     focus: Option<FocusHandle>,
+    /// One card per chart or diagram, by `session:message:n`.
+    viz: HashMap<String, Entity<viz::card::VizCard>>,
+    /// A card opened over the whole window, and the focus that lets Escape close it.
+    expanded: Option<(Entity<viz::card::VizCard>, FocusHandle)>,
 }
 
 /// What a stream draws from its host: the theme, the app name and text size, and the session to show.
@@ -49,6 +54,8 @@ pub trait StreamHost: Sized + 'static {
     fn stream_toast(&self, message: String, cx: &mut Context<Self>);
     fn stream_attach(&mut self, session: &str, files: Vec<Attachment>, cx: &mut Context<Self>);
     fn stream_open_link(&mut self, url: &str, cx: &mut Context<Self>);
+    /// Sends `text` as a message in `session`, as if typed: queued while the agent works.
+    fn stream_send(&mut self, session: &str, text: String, cx: &mut Context<Self>);
 }
 
 /// One session's list. `items` is what the list renders; each row is cached until its signature changes.
@@ -98,6 +105,8 @@ struct RowCtx<H> {
     mixed_agents: bool,
     /// Body text size in px, from the settings; headings scale from it.
     text_size: f32,
+    /// The chart and diagram cards of this session, by `session:message:n`.
+    viz: Rc<HashMap<String, Entity<viz::card::VizCard>>>,
 }
 
 /// The text selected in one block of one message. `anchor` and `head` are byte offsets into the block's text.
@@ -229,6 +238,10 @@ impl StreamUi {
         }
 
         let streaming = (env.busy && items.last().is_some_and(|item| item.role == Role::Agent)).then(|| new_len - 1);
+        sync_viz(&mut self.viz, &host, &env, &items, streaming, cx);
+        let viz_cards: Rc<HashMap<String, Entity<viz::card::VizCard>>> = Rc::new(
+            self.viz.iter().filter(|(k, _)| k.starts_with(&format!("{}:", env.session.id))).map(|(k, v)| (k.clone(), v.clone())).collect(),
+        );
         let items = Rc::new(items);
         entry.items = items.clone();
         let list_state = entry.list.clone();
@@ -247,6 +260,7 @@ impl StreamUi {
                 selection: self.selection.clone(),
                 mixed_agents: mixed_agents(&env.session.messages),
                 text_size: env.text_size,
+                viz: viz_cards,
             });
             div()
                 .flex_1()
@@ -273,6 +287,57 @@ impl StreamUi {
             .text_color(env.theme.fg.to_hsla())
             .child(body)
             .into_any_element()
+    }
+
+    /// The card opened over the window, if any. A click outside it or Escape closes it.
+    pub fn viz_overlay<H: StreamHost>(&self, host: Entity<H>) -> Option<AnyElement> {
+        let (card, focus) = self.expanded.clone()?;
+        let close = {
+            let host = host.clone();
+            move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| close_viz(&host, cx)
+        };
+        let escape = {
+            let host = host.clone();
+            move |event: &KeyDownEvent, _: &mut Window, cx: &mut App| {
+                if event.keystroke.key == "escape" {
+                    close_viz(&host, cx);
+                }
+            }
+        };
+        let claim_focus = {
+            let focus = focus.clone();
+            canvas(
+                |_, _, _| (),
+                move |_, _, window, _cx| {
+                    if !focus.is_focused(window) {
+                        focus.focus(window);
+                    }
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        };
+        let scrim: Hsla = gpui::rgba(0x00000099).into();
+        Some(
+            div()
+                .track_focus(&focus)
+                .on_key_down(escape)
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .occlude()
+                .bg(scrim)
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(MouseButton::Left, close)
+                .child(claim_focus)
+                .child(div().w(gpui::relative(0.94)).max_w(px(1320.)).h(gpui::relative(0.9)).flex().flex_col().justify_center().child(card))
+                .into_any_element(),
+        )
     }
 
     /// The open lightbox, drawn over the window. Any click closes it (tools-and-behaviour.md §B11).
@@ -450,7 +515,7 @@ impl Shell {
 
     /// The image lightbox, if open (drawn by `render_overlays`).
     pub(super) fn render_lightbox(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.stream.lightbox_overlay(cx.entity(), &self.theme)
+        self.stream.lightbox_overlay(cx.entity(), &self.theme).or_else(|| self.stream.viz_overlay(cx.entity()))
     }
 
     /// Opens a link in the Browser tab. Only web and mail links: agent output can carry `file://` or
@@ -462,6 +527,71 @@ impl Shell {
         }
         self.browser_open(url, cx);
     }
+}
+
+/// Makes a card for every chart and diagram in the session's messages, and brings the existing
+/// ones up to date with their text and the theme.
+fn sync_viz<H: StreamHost>(viz: &mut HashMap<String, Entity<viz::card::VizCard>>, host: &Entity<H>, env: &StreamEnv, items: &[Rc<Item>], streaming: Option<usize>, cx: &mut App) {
+    fn walk<'a>(blocks: &'a [Block], out: &mut Vec<&'a markdown::VizBlock>) {
+        for b in blocks {
+            match b {
+                Block::Viz(v) => out.push(v),
+                Block::List { items, .. } => items.iter().for_each(|i| walk(i, out)),
+                Block::Quote(inner) => walk(inner, out),
+                _ => {}
+            }
+        }
+    }
+    for (ix, item) in items.iter().enumerate() {
+        let mut found = Vec::new();
+        walk(&item.progress, &mut found);
+        walk(&item.blocks, &mut found);
+        for block in found {
+            let key = format!("{}:{ix}:{}", env.session.id, block.n);
+            let live = streaming == Some(ix);
+            match viz.get(&key) {
+                Some(card) => card.update(cx, |card, cx| card.update(block.mermaid, &block.title, &block.body, live, env.theme, cx)),
+                None => {
+                    let actions = viz_actions(host, &env.session.id);
+                    let (mermaid, title, body, theme) = (block.mermaid, block.title.clone(), block.body.clone(), env.theme.clone());
+                    let card = cx.new(|cx| {
+                        let mut card = viz::card::VizCard::new(mermaid, title.clone(), body.clone(), &theme, actions, false, cx);
+                        card.update(mermaid, &title, &body, live, &theme, cx);
+                        card
+                    });
+                    viz.insert(key, card);
+                }
+            }
+        }
+    }
+}
+
+/// What a card asks of its stream: send in its chat, toast, and open or close the full-window view.
+fn viz_actions<H: StreamHost>(host: &Entity<H>, session: &str) -> Rc<viz::card::VizActions> {
+    let (send_host, toast_host, expand_host) = (host.downgrade(), host.downgrade(), host.downgrade());
+    let session = session.to_string();
+    Rc::new(viz::card::VizActions {
+        send: Box::new(move |text, cx| {
+            let _ = send_host.update(cx, |h, cx| h.stream_send(&session, text, cx));
+        }),
+        toast: Box::new(move |text, cx| {
+            let _ = toast_host.update(cx, |h, cx| h.stream_toast(text, cx));
+        }),
+        expand: Box::new(move |card, cx| {
+            let _ = expand_host.update(cx, |h, cx| {
+                let focus = cx.focus_handle();
+                h.stream_ui().expanded = card.map(|c| (c, focus));
+                cx.notify();
+            });
+        }),
+    })
+}
+
+fn close_viz<H: StreamHost>(host: &Entity<H>, cx: &mut App) {
+    host.update(cx, |h, cx| {
+        h.stream_ui().expanded = None;
+        cx.notify();
+    });
 }
 
 impl StreamHost for Shell {
@@ -480,5 +610,9 @@ impl StreamHost for Shell {
 
     fn stream_open_link(&mut self, url: &str, cx: &mut Context<Self>) {
         self.open_url(url, cx);
+    }
+
+    fn stream_send(&mut self, session: &str, text: String, cx: &mut Context<Self>) {
+        self.send_or_queue(session, &text, cx);
     }
 }
