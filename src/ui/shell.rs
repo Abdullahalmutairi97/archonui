@@ -154,10 +154,15 @@ impl Shell {
 
     /// A developer switch for screenshots: `ARCHONUI_OPEN=settings:appearance` opens that settings page,
     /// and `ARCHONUI_SCROLL=600` scrolls it down by that many pixels; `ARCHONUI_OPEN=ide:<path>` opens a
-    /// file in the built-in editor, scrolled to row `ARCHONUI_SCROLL`. Unset, nothing happens.
+    /// file in the built-in editor, scrolled to row `ARCHONUI_SCROLL`; `ARCHONUI_OPEN=browser:<url>` opens
+    /// a page in the Browser tab. Unset, nothing happens.
     fn dev_open(&mut self, cx: &mut Context<Self>) {
         let Ok(target) = std::env::var("ARCHONUI_OPEN") else { return };
         let scroll = std::env::var("ARCHONUI_SCROLL").ok().and_then(|v| v.parse::<f32>().ok());
+        if let Some(url) = target.strip_prefix("browser:") {
+            self.browser_open(url, cx);
+            return;
+        }
         if let Some(path) = target.strip_prefix("ide:") {
             self.state.settings.ide = crate::store::IdeKind::Builtin;
             self.ide_dev_open(std::path::Path::new(path), scroll.unwrap_or(0.) as usize, cx);

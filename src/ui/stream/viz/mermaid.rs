@@ -21,7 +21,8 @@ const MERMAID_JS: &str = include_str!("../../../../assets/mermaid/mermaid-11.17.
 /// Longest one diagram may take, Chrome's start included.
 const RENDER_TIMEOUT: Duration = Duration::from_secs(30);
 
-type Job = (String, mpsc::Sender<Result<String, String>>);
+/// A diagram's script, the font family it draws in, and where its SVG goes.
+type Job = (String, String, mpsc::Sender<Result<String, String>>);
 
 /// Diagrams drawn so far, by the hash of their source and theme.
 fn cache() -> &'static Mutex<HashMap<u64, Result<String, String>>> {
@@ -52,7 +53,7 @@ pub fn render(src: &str, ink: &Ink) -> Result<String, String> {
     }
     let script = render_script(src, ink);
     let (tx, rx) = mpsc::channel();
-    worker().lock().map_err(|_| "The diagram renderer stopped".to_string())?.send((script, tx)).map_err(|_| "The diagram renderer stopped".to_string())?;
+    worker().lock().map_err(|_| "The diagram renderer stopped".to_string())?.send((script, ink.ui_font.clone(), tx)).map_err(|_| "The diagram renderer stopped".to_string())?;
     let result = rx.recv_timeout(RENDER_TIMEOUT).unwrap_or_else(|_| Err("Drawing took too long".into()));
     if let Ok(mut c) = cache().lock() {
         c.insert(k, result.clone());
@@ -67,10 +68,10 @@ fn worker() -> &'static Mutex<mpsc::Sender<Job>> {
         let (tx, rx) = mpsc::channel::<Job>();
         std::thread::spawn(move || {
             let mut page: Option<Result<Page, String>> = None;
-            for (script, reply) in rx {
+            for (script, family, reply) in rx {
                 let page = page.get_or_insert_with(Page::open);
                 let result = match page {
-                    Ok(page) => page.evaluate(&script),
+                    Ok(page) => page.load_font(&family).and_then(|()| page.evaluate(&script)),
                     Err(e) => Err(e.clone()),
                 };
                 let _ = reply.send(result);
@@ -184,6 +185,8 @@ pub fn theme_variables(ink: &Ink) -> Value {
 /// The blank page mermaid.js runs in, and the Chrome behind it.
 struct Page {
     ws: WebSocket<MaybeTlsStream<TcpStream>>,
+    /// Bundled font families already given to the page.
+    fonts: std::collections::HashSet<String>,
     session: String,
     next: u64,
     child: Child,
@@ -193,7 +196,7 @@ struct Page {
 impl Page {
     fn open() -> Result<Page, String> {
         let (child, profile, ws) = crate::preview::launch_chrome().map_err(|e| format!("Diagrams need Chrome: {e}"))?;
-        let mut page = Page { ws, session: String::new(), next: 0, child, profile };
+        let mut page = Page { ws, fonts: Default::default(), session: String::new(), next: 0, child, profile };
         let targets = page.call(None, "Target.getTargets", json!({}))?;
         let target = targets["targetInfos"]
             .as_array()
@@ -207,6 +210,32 @@ impl Page {
         page.session = attached["sessionId"].as_str().ok_or("Chrome would not attach to its page")?.to_string();
         page.evaluate_raw(MERMAID_JS, false)?;
         Ok(page)
+    }
+
+    /// Gives the page the app's own copy of `family`, once, so mermaid measures labels with the font
+    /// the SVG is drawn in. A family the app doesn't bundle is left to the system.
+    fn load_font(&mut self, family: &str) -> Result<(), String> {
+        use base64::Engine;
+        if !self.fonts.insert(family.to_string()) {
+            return Ok(());
+        }
+        let faces: Vec<String> = crate::ui::fonts::FONTS
+            .iter()
+            .filter(|(f, _, _, _)| *f == family)
+            .map(|(f, weight, italic, bytes)| {
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                format!(
+                    "new FontFace({}, 'url(data:font/ttf;base64,{data})', {{weight: '{weight}', style: '{}'}})",
+                    Value::from(*f),
+                    if *italic { "italic" } else { "normal" }
+                )
+            })
+            .collect();
+        if faces.is_empty() {
+            return Ok(());
+        }
+        let script = format!("(async () => {{ for (const f of [{}]) {{ document.fonts.add(f); await f.load(); }} return ''; }})()", faces.join(","));
+        self.evaluate(&script).map(|_| ())
     }
 
     /// Runs `script`, which returns a promise of a string, and returns the string.

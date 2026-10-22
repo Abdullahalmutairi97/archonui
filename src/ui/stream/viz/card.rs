@@ -817,12 +817,12 @@ impl VizCard {
                 let max_h = if self.big { 1400. } else { 520. };
                 let scale = (max_h / size.1).min(1.);
                 let (w, h) = (size.0 * scale, size.1 * scale);
+                // Wider than the card, it shrinks to fit rather than being cut off.
                 div()
                     .id("viz-diagram")
                     .flex()
                     .justify_center()
-                    .overflow_x_scroll()
-                    .child(img(image.clone()).flex_none().w(px(w)).h(px(h)).object_fit(ObjectFit::Contain))
+                    .child(img(image.clone()).w_full().max_w(px(w)).h(px(h)).object_fit(ObjectFit::Contain))
                     .into_any_element()
             }
         }

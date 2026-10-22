@@ -441,7 +441,7 @@ impl Shell {
 }
 
 /// `path` with the home folder shown as `~`.
-pub(super) fn tilde(path: &std::path::Path) -> String {
+pub(crate) fn tilde(path: &std::path::Path) -> String {
     match std::env::var_os("HOME").map(std::path::PathBuf::from) {
         Some(home) if !home.as_os_str().is_empty() => match path.strip_prefix(&home) {
             Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),

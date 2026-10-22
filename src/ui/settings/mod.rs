@@ -14,6 +14,7 @@ mod tools;
 
 pub(crate) use controls::key_label;
 pub(crate) use models::long_context_model;
+pub(crate) use general::tilde;
 
 use super::{
     shell::Shell,
