@@ -1237,9 +1237,10 @@ impl Shell {
     /// The active file's path under the tool folder.
     fn ide_breadcrumb(&self, root: &Path, theme: &Theme, _cx: &mut Context<Self>) -> AnyElement {
         let Some(doc) = self.tabs.ide.docs.get(self.tabs.ide.active) else { return div().into_any_element() };
-        let rel = workspace::relative(root, &doc.path);
-        let parts: Vec<&str> = rel.split('/').collect();
-        let last = parts.len() - 1;
+        // A file outside the folder is named from home, as `~/…`.
+        let rel = if doc.path.starts_with(root) { workspace::relative(root, &doc.path) } else { crate::ui::settings::tilde(&doc.path) };
+        let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
+        let last = parts.len().saturating_sub(1);
         let mut path = div().flex().items_center().gap(px(5.)).min_w_0().overflow_hidden().whitespace_nowrap().flex_1();
         for (i, part) in parts.iter().enumerate() {
             if i > 0 {

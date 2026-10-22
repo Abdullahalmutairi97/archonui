@@ -228,7 +228,7 @@ impl Shell {
                     .text_ellipsis()
                     .text_size(px(11.))
                     .text_color(theme.muted.to_hsla())
-                    .child(project.path.display().to_string()),
+                    .child(crate::ui::settings::tilde(&project.path)),
             )
             .child(
                 div()
