@@ -7,7 +7,8 @@
 //! Commands: `new`, `split`, `agent <id>`, `type <text>` (typed into the focused chat, a key at a time),
 //! `send`, `idle [max s]` (waits for every agent to finish), `follow on|off`, `panel <tab>|off`,
 //! `url <address>` (typed into the browser's address bar, then opened), `wheel <dy>`, `theme next|<id>`,
-//! `settings <page>|close`, `sidebar sessions|projects`, `focus next|prev`, `quit`.
+//! `settings <page>|close`, `sidebar sessions|projects`, `focus next|prev`, `open <title>`, `opensplit <title>`,
+//! `quit`.
 
 use super::shell::Shell;
 use crate::app::{settings::Action, workspace::{LeftTab, RightTab}};
@@ -215,6 +216,20 @@ impl Shell {
             "sidebar" => {
                 self.state.workspace.left_tab = if arg == "sessions" { LeftTab::Sessions } else { LeftTab::Projects };
                 cx.notify();
+            }
+            "open" | "opensplit" => {
+                let wanted = arg.to_lowercase();
+                let Some(id) = self.state.sessions().iter().find(|s| s.title.to_lowercase().contains(&wanted)).map(|s| s.id.clone()) else { return };
+                let split = command == "opensplit";
+                match self.tiles.area {
+                    Some((area, gap)) if split => {
+                        if !self.state.workspace.layout.open_in_new_split(&id, area, gap) {
+                            self.state.workspace.layout.open_in_focused(&id);
+                        }
+                    }
+                    _ => self.state.workspace.layout.open_in_focused(&id),
+                }
+                self.save(cx);
             }
             "focus" => self.run_action(if arg == "prev" { Action::FocusPrev } else { Action::FocusNext }, cx),
             _ => {}

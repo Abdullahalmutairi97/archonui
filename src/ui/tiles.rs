@@ -47,7 +47,7 @@ pub struct TilesUi {
     /// The session whose info popover is open.
     info: Option<String>,
     /// Centre area and gap from the last frame, for actions that run outside a render.
-    area: Option<(Rect, f32)>,
+    pub(super) area: Option<(Rect, f32)>,
 }
 
 impl Lerp for Rect {
