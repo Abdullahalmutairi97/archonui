@@ -281,7 +281,15 @@ const FORMAT_NOTE: &str = "Your replies are shown in a chat that renders Markdow
      short paragraphs of 1-3 sentences separated by a blank line; `##` or `###` headings to split a longer \
      reply into sections; bulleted or numbered lists for steps, options and changes; **bold** for the key \
      term at the start of a list item; tables for comparisons; and fenced code blocks with a language for \
-     code. A short answer stays a short paragraph, without headings.";
+     code. A short answer stays a short paragraph, without headings.\n\n\
+     The chat also draws charts and diagrams. When numbers or a flow say it faster than prose, use a fenced \
+     `viz` block holding one JSON object: {\"type\":\"bar\"|\"line\"|\"area\",\"title\",\"unit\",\"x\":[labels],\
+     \"series\":[{\"name\",\"data\":[numbers]}],\"stacked\":bool}; {\"type\":\"pie\"|\"donut\",\"title\",\
+     \"data\":[{\"label\",\"value\"}]}; {\"type\":\"scatter\",\"title\",\"xLabel\",\"yLabel\",\
+     \"series\":[{\"name\",\"points\":[[x,y,\"label\"]]}]}; {\"type\":\"table\",\"title\",\"columns\",\
+     \"rows\"}; or {\"type\":\"stats\",\"title\",\"items\":[{\"label\",\"value\",\"delta\",\
+     \"good\":\"up\"|\"down\",\"trend\":[numbers]}]}. For a flowchart, sequence, gantt, mind map or git \
+     graph, use a fenced `mermaid <title>` block with Mermaid source.";
 
 /// Everything ArchonUI tells the agent about the chat: the reply format, and the project if any.
 fn chat_note(input: &TurnInput) -> String {
