@@ -372,7 +372,7 @@ impl Shell {
                             .truncate()
                             .child(name),
                     )
-                    .child(div().text_size(px(11.5)).text_color(muted).truncate().child(root.display().to_string())),
+                    .child(div().text_size(px(11.5)).text_color(muted).truncate().child(crate::ui::settings::tilde(&root))),
             )
             .child(button("files-new-file", FILE, |this, window, cx| this.files_new(false, window, cx)))
             .child(button("files-new-folder", FOLDER, |this, window, cx| this.files_new(true, window, cx)))
