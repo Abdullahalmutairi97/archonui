@@ -325,7 +325,14 @@ impl Shell {
             }
         }
 
-        match action {
+        if let Some(action) = action {
+            self.run_action(action, cx);
+        }
+    }
+
+    /// Runs a global shortcut's action.
+    pub(super) fn run_action(&mut self, action: Action, cx: &mut Context<Self>) {
+        match Some(action) {
             Some(Action::SplitNewSession) => self.new_session_split(cx),
             Some(Action::CloseTile) => {
                 if let Some(id) = self.state.workspace.layout.focus.clone() {
