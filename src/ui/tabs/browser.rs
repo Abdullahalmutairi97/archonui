@@ -609,6 +609,26 @@ impl Shell {
         (m.control || m.alt || m.platform) && self.state.settings.keys.values().any(|spec| keystroke_matches(spec, ks))
     }
 
+    /// Shows `text` in the address bar as if typed; with `submit`, goes there as Enter would.
+    pub(in crate::ui) fn autopilot_address(&mut self, text: &str, submit: bool, cx: &mut Context<Self>) {
+        if let Some(bar) = &self.tabs.browser.address {
+            let input = bar.input.clone();
+            input.update(cx, |input, cx| input.set_text(text, cx));
+        }
+        if submit {
+            let root = self.tool_folder();
+            let cwd = root.clone().unwrap_or_else(|| self.default_folder());
+            let url = preview::normalize_address(text, &cwd);
+            self.tabs.browser.view.navigate(url, root, browser_view, cx);
+        }
+        cx.notify();
+    }
+
+    /// Scrolls the page by `dy` CSS px, as the wheel over its middle would.
+    pub(in crate::ui) fn autopilot_wheel(&mut self, dy: f32) {
+        self.tabs.browser.view.send(Command::Wheel { x: 260., y: 360., dx: 0., dy });
+    }
+
     fn browser_visible(&self) -> bool {
         let ws = &self.state.workspace;
         ws.right_open && ws.right_tab == RightTab::Browser

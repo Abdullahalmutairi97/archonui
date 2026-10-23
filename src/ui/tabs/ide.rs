@@ -650,6 +650,12 @@ impl Shell {
 
     /// For screenshots (`ARCHONUI_OPEN=ide:<path>`): opens `path` in the built-in editor without a
     /// project and scrolls it so `top` is the first row.
+    /// Turns Follow agent on or off, as its switch does.
+    pub(in crate::ui) fn set_follow(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.tabs.ide.follow = on;
+        cx.notify();
+    }
+
     pub(in crate::ui) fn ide_dev_open(&mut self, path: &Path, top: usize, cx: &mut Context<Self>) {
         let Ok(mut doc) = Doc::open(path) else { return };
         doc.top = top;

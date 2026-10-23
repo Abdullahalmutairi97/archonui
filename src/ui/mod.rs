@@ -4,6 +4,7 @@
 
 pub mod anim;
 pub mod approval;
+mod autopilot;
 pub mod composer;
 pub mod fonts;
 pub mod glass;

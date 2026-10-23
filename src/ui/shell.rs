@@ -148,6 +148,7 @@ impl Shell {
         }
         this.rescan(cx);
         this.dev_open(cx);
+        this.autopilot(cx);
         this.refresh_remote(cx);
         this
     }

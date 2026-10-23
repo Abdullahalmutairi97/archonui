@@ -289,7 +289,8 @@ const FORMAT_NOTE: &str = "Your replies are shown in a chat that renders Markdow
      \"series\":[{\"name\",\"points\":[[x,y,\"label\"]]}]}; {\"type\":\"table\",\"title\",\"columns\",\
      \"rows\"}; or {\"type\":\"stats\",\"title\",\"items\":[{\"label\",\"value\",\"delta\",\
      \"good\":\"up\"|\"down\",\"trend\":[numbers]}]}. For a flowchart, sequence, gantt, mind map or git \
-     graph, use a fenced `mermaid <title>` block with Mermaid source.";
+     graph, use a fenced `mermaid <title>` block with Mermaid source. Keep diagrams compact enough to read in \
+     a narrow column: lay a flow of more than four steps out top to bottom (`flowchart TB`).";
 
 /// Everything ArchonUI tells the agent about the chat: the reply format, and the project if any.
 fn chat_note(input: &TurnInput) -> String {

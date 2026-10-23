@@ -420,7 +420,7 @@ impl Shell {
     }
 
     /// Replaces the draft in session `id` and puts the palette selection back on its first row.
-    fn set_draft(&mut self, id: &str, text: &str, cx: &mut Context<Self>) {
+    pub(super) fn set_draft(&mut self, id: &str, text: &str, cx: &mut Context<Self>) {
         self.composers.set_row(id, 0);
         if let Some(input) = self.composers.input(id) {
             input.update(cx, |input, cx| input.set_text(text, cx));
@@ -432,7 +432,7 @@ impl Shell {
     }
 
     /// Enter in the composer: allows a waiting approval, runs the selected palette row, or sends the draft.
-    fn composer_enter(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(super) fn composer_enter(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.allow_first_approval(id, cx) {
             return;
         }
