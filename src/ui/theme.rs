@@ -686,7 +686,12 @@ pub fn resolve(
         code_font,
         wallpaper: preset.wallpaper.to_string(),
         gradient: preset.gradient,
-        logo: preset.logo.to_string(),
+        // The ArchonUI mark's glow follows the accent; a theme's own logo file is drawn as it is.
+        logo: if preset.logo == DEFAULT_LOGO {
+            format!("{DEFAULT_LOGO}#{:02x}{:02x}{:02x}", t0.acc.r, t0.acc.g, t0.acc.b)
+        } else {
+            preset.logo.to_string()
+        },
         render: preset.render,
     }
 }
@@ -1017,7 +1022,7 @@ mod tests {
         assert_eq!((t.bg, t.tile, t.panel, t.pop), (Rgba::hex(0x2e3440), Rgba::hex(0x3b4252), Rgba::hex(0x2e3440), Rgba::hex(0x434c5e)));
         assert_eq!((t.muted, t.faint), (Rgba::hex(0xd8dee9), Rgba::hex(0x4c566a)));
         assert!(t.wallpaper.is_empty(), "built-in themes draw their gradient");
-        assert_eq!(t.logo, DEFAULT_LOGO);
+        assert_eq!(t.logo, format!("{DEFAULT_LOGO}#88c0d0"), "the mark in the theme's accent");
     }
 
     #[test]
