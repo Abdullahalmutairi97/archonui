@@ -180,6 +180,10 @@ pub trait Harness: Send + Sync {
     }
     /// Arguments, environment and stdin for one turn.
     fn plan(&self, input: &TurnInput) -> Plan;
+    /// `plan` for the CLI installed at `path`, for a harness whose flags differ between versions.
+    fn plan_at(&self, _path: &Path, input: &TurnInput) -> Plan {
+        self.plan(input)
+    }
     /// Launch wiring for `servers`. Only enabled servers are passed. A harness
     /// without MCP config returns nothing, so its own MCP settings still apply.
     fn mcp_args(&self, _servers: &[McpServer]) -> Plan {
@@ -459,7 +463,8 @@ mod tests {
 
     #[test]
     fn opencode_uses_the_plan_agent_outside_auto() {
-        assert!(has_pair(&args("opencode", Mode::Auto, None), "--dir", "/work"));
+        // OpenCode 2 runs in the turn's working folder; `--dir` was removed.
+        assert!(!args("opencode", Mode::Auto, None).contains(&"--dir".to_string()));
         assert!(!args("opencode", Mode::Auto, None).contains(&"--agent".to_string()));
         assert!(has_pair(&args("opencode", Mode::Ask, None), "--agent", "plan"));
         assert!(has_pair(&args("opencode", Mode::Plan, None), "--agent", "plan"));
@@ -481,10 +486,11 @@ mod tests {
         let a = harness("opencode").unwrap().plan(&turn).args;
         assert!(!a.contains(&"--command".to_string()), "{a:?}");
         assert_eq!(a.last().map(String::as_str), Some("/"));
+        // OpenCode 2 reads the command from the message, so the message is sent as typed.
         let turn = TurnInput { prompt: "/review main", ..input(Mode::Plan, None) };
         let a = harness("opencode").unwrap().plan(&turn).args;
-        assert!(has_pair(&a, "--command", "review"));
-        assert_eq!(a.last().map(String::as_str), Some("main"), "command arguments get no preamble");
+        assert!(!a.contains(&"--command".to_string()), "{a:?}");
+        assert_eq!(a.last().map(String::as_str), Some("/review main"), "a command gets no preamble");
     }
 
     #[test]

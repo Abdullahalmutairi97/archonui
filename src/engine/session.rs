@@ -135,7 +135,7 @@ pub fn start_turn(
 
 /// Start the CLI at `path` for one turn. Shared by chats and the connection test.
 pub(super) fn spawn<H: Harness + ?Sized>(harness: &H, path: &Path, input: &TurnInput) -> io::Result<Turn> {
-    let plan = harness.plan(input);
+    let plan = harness.plan_at(path, input);
     for (file, text) in &plan.files {
         write_private(file, text)?;
     }
