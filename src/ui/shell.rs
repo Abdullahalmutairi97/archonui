@@ -287,6 +287,11 @@ impl Shell {
         let bytes = crate::ui::glass::logo_bytes(&key)?;
         // A logo file is cached under its file name; the embedded logo's key is already one.
         let name = Path::new(&key).file_name().map_or_else(|| key.clone(), |n| n.to_string_lossy().into_owned());
+        // The tinted mark is cached per colour, as a .png: `archonui-mark-8fb8e8.png`.
+        let name = match name.split_once(".png#") {
+            Some((stem, hex)) => format!("{stem}-{hex}.png"),
+            None => name,
+        };
         notify::cache_file(&self.paths.data.join("cache"), &name, &bytes).ok()
     }
 
