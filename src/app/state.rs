@@ -612,6 +612,9 @@ impl AppState {
                     s.agent_session = Some(agent_session);
                 }
             }
+            // After Stop, an agent's complaint about being killed (OpenCode 2: "Transport: The socket
+            // connection was closed unexpectedly") is noise; `Finished` reports the stop.
+            Event::Out(Out::Error(_)) if live.cancelled => {}
             Event::Out(Out::Error(e)) => s.push(Role::Error, e),
             Event::Finished(result) => {
                 applied.finished = true;
@@ -1426,6 +1429,20 @@ mod tests {
         assert!(dir.join(format!("{id}.json")).exists(), "the chat is saved on retry");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn errors_after_stop_are_dropped() {
+        let mut app = state();
+        let id = app.new_session("opencode", "/tmp".into(), Placement::Focused);
+        app.sessions.iter_mut().find(|s| s.id == id).unwrap().push(Role::User, "long task");
+        let live = app.live.entry(id.clone()).or_default();
+        live.turn = Some(engine::Turn::mock());
+        app.apply(&id, Event::Out(Out::Error("rate limited".into())));
+        assert!(app.stop(&id));
+        app.apply(&id, Event::Out(Out::Error("Transport: The socket connection was closed unexpectedly.".into())));
+        let errors: Vec<_> = app.sessions.iter().find(|s| s.id == id).unwrap().messages.iter().filter(|m| m.role == Role::Error).map(|m| m.text.clone()).collect();
+        assert_eq!(errors, ["rate limited"]);
     }
 
     #[test]
