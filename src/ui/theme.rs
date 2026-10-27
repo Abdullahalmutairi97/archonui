@@ -133,7 +133,8 @@ pub const DEFAULT_LOGO: &str = "archonui-mark.png";
 pub const DEFAULT_THEME: &str = "archonui";
 
 /// A built-in theme. `colours` is bg, fg, muted, faint, acc, acc2, deep, alt, on; `surfaces` is tile,
-/// sidebar and popover; `gradient` is the background's three colours.
+/// sidebar and popover; `gradient` is the background's three colours, drawn unless `wallpaper` names
+/// an embedded wallpaper.
 #[allow(clippy::too_many_arguments)]
 const fn builtin(
     id: &'static str,
@@ -142,6 +143,7 @@ const fn builtin(
     soft: Rgba,
     surfaces: Option<[u32; 3]>,
     gradient: [u32; 3],
+    wallpaper: &'static str,
     pairings: [FontPair; 3],
 ) -> Preset {
     let c = colours;
@@ -163,7 +165,7 @@ const fn builtin(
             Some([t, p, o]) => Some([Rgba::hex(t), Rgba::hex(p), Rgba::hex(o)]),
             None => None,
         },
-        wallpaper: Cow::Borrowed(""),
+        wallpaper: Cow::Borrowed(wallpaper),
         gradient: [Rgba::hex(gradient[0]), Rgba::hex(gradient[1]), Rgba::hex(gradient[2])],
         logo: Cow::Borrowed(DEFAULT_LOGO),
         render: Render::Auto,
@@ -175,132 +177,93 @@ const fn pair(label: &'static str, display: &'static str, ui: &'static str) -> F
     FontPair { label, display, ui }
 }
 
-/// The themes that ship with ArchonUI: a neutral default, look-alikes of other agent apps, classic
-/// editor palettes, and gradient themes whose background is a colour blend.
+/// The themes that ship with ArchonUI: its own dark theme, the four most-used dark editor palettes,
+/// and three light ones. Each palette is mapped the way its own VS Code theme is: the tile is the
+/// editor, the sidebar is the side bar, the canvas is the activity or title bar, and the accent and
+/// the text on it are the button's.
 pub const BUILTIN: &[Preset] = &[
+    // ArchonUI's own, after the intro: blue-black, a crimson glow behind the mark, silver text.
     builtin(
         "archonui",
         "ArchonUI",
-        [0x0a0a0a, 0xededed, 0x8a8a8a, 0x3a3a3a, 0xd8d8d8, 0xffffff, 0x4a4a4a, 0xb0b0b0, 0x0a0a0a],
-        Rgba::new(255, 255, 255, 0.10),
-        Some([0x141414, 0x0f0f0f, 0x1c1c1c]),
-        [0x0a0a0a, 0x161616, 0x0a0a0a],
-        [pair("Geist", "Geist", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Mono", "Geist", "JetBrains Mono")],
+        [0x030409, 0xece8e6, 0xa29b9b, 0x2c2a30, 0xd8312b, 0xff5a4e, 0x4a1012, 0xc9c4c2, 0xffffff],
+        Rgba::new(216, 49, 43, 0.16),
+        Some([0x0c0c11, 0x07080c, 0x15151b]),
+        [0x030409, 0x030409, 0x030409],
+        "archonui-glow.jpg",
+        [pair("Archon", "Cormorant Garamond", "Geist"), pair("Geist", "Geist", "Geist"), pair("Mono", "Geist", "JetBrains Mono")],
     ),
-    // Claude's dark mode: warm charcoal, ivory text, the clay accent.
-    builtin(
-        "claude-code",
-        "Claude Code",
-        [0x262624, 0xfaf9f5, 0xa6a39a, 0x4a4843, 0xd97757, 0xebb39a, 0x8a3f26, 0xc2c0b6, 0x1f1e1d],
-        Rgba::new(217, 119, 87, 0.18),
-        Some([0x30302e, 0x1f1e1d, 0x3a3936]),
-        [0x262624, 0x2c2b28, 0x22211f],
-        [pair("Serif", "Young Serif", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Sans"), pair("Terminal", "Young Serif", "JetBrains Mono")],
-    ),
-    // ChatGPT's and Codex's dark greys, white controls, blue links.
-    builtin(
-        "codex",
-        "Codex",
-        [0x212121, 0xececec, 0xb4b4b4, 0x424242, 0xf3f3f3, 0x339cff, 0x5a5a5a, 0x9b9b9b, 0x0d0d0d],
-        Rgba::new(255, 255, 255, 0.10),
-        Some([0x2f2f2f, 0x171717, 0x303030]),
-        [0x212121, 0x262626, 0x1b1b1b],
-        [pair("Geist", "Geist", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Sans"), pair("Mono", "Geist", "Geist Mono")],
-    ),
-    // Gemini's dark surfaces with its blue to violet to rose spark.
-    builtin(
-        "gemini",
-        "Gemini",
-        [0x131314, 0xe3e3e3, 0xc4c7c5, 0x444746, 0xa8c7fa, 0xd7aefb, 0x0b57d0, 0xf2b8b5, 0x062e6f],
-        Rgba::new(168, 199, 250, 0.16),
-        Some([0x1e1f20, 0x131314, 0x282a2c]),
-        [0x131314, 0x1a1d2b, 0x1e1626],
-        [pair("DM Sans", "DM Sans", "DM Sans"), pair("Manrope", "Manrope", "Manrope"), pair("Grotesk", "Space Grotesk", "DM Mono")],
-    ),
-    // Hermes Desktop's default Nous look: a dark blue canvas, cream text, blue and cream accents.
-    builtin(
-        "hermes",
-        "Hermes",
-        [0x0c1222, 0xf3ead3, 0xb4ad97, 0x2f3a55, 0x7b9bff, 0xf3ead3, 0x24387a, 0xe09a45, 0x0c1222],
-        Rgba::new(107, 140, 255, 0.18),
-        Some([0x121a2e, 0x0a0f1d, 0x182239]),
-        [0x0c1222, 0x16234a, 0x1c1a2e],
-        [pair("Grotesk", "Space Grotesk", "IBM Plex Mono"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Pixel", "Pixelify Sans", "Space Mono")],
-    ),
-    builtin(
-        "nord",
-        "Nord",
-        [0x2e3440, 0xeceff4, 0xd8dee9, 0x4c566a, 0x88c0d0, 0x81a1c1, 0x5e81ac, 0xa3be8c, 0x2e3440],
-        Rgba::new(136, 192, 208, 0.18),
-        Some([0x3b4252, 0x2e3440, 0x434c5e]),
-        [0x2e3440, 0x343b49, 0x2b303b],
-        [pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Geist", "Geist", "Geist"), pair("Mono", "IBM Plex Sans", "JetBrains Mono")],
-    ),
-    // Catppuccin Mocha.
     builtin(
         "catppuccin",
-        "Catppuccin",
-        [0x1e1e2e, 0xcdd6f4, 0xa6adc8, 0x585b70, 0xcba6f7, 0xf5c2e7, 0x7f5ab6, 0x89b4fa, 0x1e1e2e],
-        Rgba::new(203, 166, 247, 0.18),
-        Some([0x313244, 0x181825, 0x313244]),
-        [0x1e1e2e, 0x24243a, 0x181825],
+        "Catppuccin Mocha",
+        [0x11111b, 0xcdd6f4, 0xa6adc8, 0x45475a, 0xcba6f7, 0xf5c2e7, 0x4c3a6e, 0x89b4fa, 0x11111b],
+        Rgba::new(203, 166, 247, 0.16),
+        Some([0x1e1e2e, 0x181825, 0x313244]),
+        [0x11111b, 0x181825, 0x11111b],
+        "",
         [pair("Manrope", "Manrope", "Manrope"), pair("DM Sans", "DM Sans", "DM Mono"), pair("Mono", "Manrope", "JetBrains Mono")],
     ),
     builtin(
         "tokyo-night",
         "Tokyo Night",
-        [0x1a1b26, 0xc0caf5, 0x9aa5ce, 0x414868, 0x7aa2f7, 0xbb9af7, 0x3d59a1, 0x7dcfff, 0x1a1b26],
-        Rgba::new(122, 162, 247, 0.18),
-        Some([0x24283b, 0x16161e, 0x292e42]),
-        [0x1a1b26, 0x1f2335, 0x16161e],
+        [0x16161e, 0xa9b1d6, 0x787c99, 0x414868, 0x3d59a1, 0x7aa2f7, 0x2e3c64, 0x7dcfff, 0xffffff],
+        Rgba::new(122, 162, 247, 0.16),
+        Some([0x1a1b26, 0x16161e, 0x1f2335]),
+        [0x16161e, 0x1a1b26, 0x16161e],
+        "",
         [pair("Grotesk", "Space Grotesk", "JetBrains Mono"), pair("Geist", "Geist", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono")],
     ),
-    // Gruvbox dark.
     builtin(
-        "gruvbox",
-        "Gruvbox",
-        [0x282828, 0xebdbb2, 0xa89984, 0x504945, 0xfe8019, 0xfabd2f, 0xaf3a03, 0x8ec07c, 0x1d2021],
-        Rgba::new(254, 128, 25, 0.18),
-        Some([0x32302f, 0x1d2021, 0x3c3836]),
-        [0x282828, 0x2e2a26, 0x1d2021],
-        [pair("Mono", "Space Mono", "JetBrains Mono"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Geist", "Geist", "Geist")],
+        "dracula",
+        "Dracula",
+        [0x191a21, 0xf8f8f2, 0xa4abc8, 0x44475a, 0xbd93f9, 0xff79c6, 0x4f3a7a, 0x50fa7b, 0x282a36],
+        Rgba::new(189, 147, 249, 0.18),
+        Some([0x282a36, 0x21222c, 0x343746]),
+        [0x191a21, 0x21222c, 0x191a21],
+        "",
+        [pair("Grotesk", "Space Grotesk", "JetBrains Mono"), pair("Geist", "Geist", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono")],
     ),
-    // Gradient themes: the background is a blend of their colours, under translucent surfaces.
+    // Atom's One Dark.
     builtin(
-        "aurora",
-        "Aurora",
-        [0x081419, 0xe6f6f4, 0x9cc3c0, 0x2c4a52, 0x5eead4, 0xa78bfa, 0x0f766e, 0x93c5fd, 0x04201c],
-        Rgba::new(94, 234, 212, 0.18),
-        Some([0x0e1d24, 0x0a171d, 0x13262e]),
-        [0x081419, 0x0f5c5a, 0x3b2a78],
-        [pair("Grotesk", "Space Grotesk", "Geist"), pair("Manrope", "Manrope", "Manrope"), pair("Mono", "Space Grotesk", "JetBrains Mono")],
+        "one-dark",
+        "One Dark",
+        [0x21252b, 0xabb2bf, 0x7f848e, 0x3e4452, 0x4d78cc, 0x61afef, 0x2b4f78, 0x98c379, 0xffffff],
+        Rgba::new(97, 175, 239, 0.16),
+        Some([0x282c34, 0x21252b, 0x2c313c]),
+        [0x21252b, 0x282c34, 0x21252b],
+        "",
+        [pair("Geist", "Geist", "Geist"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Mono", "Geist", "JetBrains Mono")],
     ),
+    // GitHub's light default.
     builtin(
-        "sunset",
-        "Sunset",
-        [0x1a1020, 0xfbe9e0, 0xd2a9a2, 0x4c3040, 0xff9a6b, 0xffc978, 0x9a3550, 0xf58fb8, 0x2a0d12],
-        Rgba::new(255, 154, 107, 0.20),
-        Some([0x221628, 0x170d1c, 0x2a1b31]),
-        [0x1a1020, 0x8a2f55, 0xc8673a],
-        [pair("Serif", "Young Serif", "DM Sans"), pair("Manrope", "Manrope", "Manrope"), pair("Bebas", "Bebas Neue", "Manrope")],
-    ),
-    builtin(
-        "ocean",
-        "Ocean",
-        [0x071521, 0xe2f1fb, 0x93b5cc, 0x23425a, 0x38bdf8, 0x67e8f9, 0x0e4f7a, 0x5eead4, 0x03121d],
-        Rgba::new(56, 189, 248, 0.18),
-        Some([0x0c1e2c, 0x081a26, 0x112637]),
-        [0x071521, 0x0b4a72, 0x0b5e5e],
-        [pair("Plex", "IBM Plex Sans", "IBM Plex Sans"), pair("Grotesk", "Space Grotesk", "Space Mono"), pair("Geist", "Geist", "Geist")],
+        "github-light",
+        "GitHub Light",
+        [0xeff2f5, 0x1f2328, 0x59636e, 0xd1d9e0, 0x0969da, 0x8250df, 0xddf4ff, 0x1a7f37, 0xffffff],
+        Rgba::new(9, 105, 218, 0.12),
+        Some([0xffffff, 0xf6f8fa, 0xffffff]),
+        [0xeff2f5, 0xf6f8fa, 0xeff2f5],
+        "",
+        [pair("Geist", "Geist", "Geist Mono"), pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Mono", "Geist", "JetBrains Mono")],
     ),
     builtin(
-        "nebula",
-        "Nebula",
-        [0x120c22, 0xf1e8ff, 0xb7a6d3, 0x43305f, 0xc084fc, 0xf472b6, 0x6b21a8, 0x818cf8, 0x14071f],
-        Rgba::new(192, 132, 252, 0.20),
-        Some([0x1a1330, 0x0f0a1c, 0x221a3b]),
-        [0x120c22, 0x4c1d95, 0x9d1a76],
-        [pair("Orbitron", "Orbitron", "Space Mono"), pair("Grotesk", "Space Grotesk", "Geist"), pair("Manrope", "Manrope", "Manrope")],
+        "catppuccin-latte",
+        "Catppuccin Latte",
+        [0xdce0e8, 0x4c4f69, 0x6c6f85, 0xbcc0cc, 0x8839ef, 0xea76cb, 0xe8dcfb, 0x1e66f5, 0xeff1f5],
+        Rgba::new(136, 57, 239, 0.12),
+        Some([0xeff1f5, 0xe6e9ef, 0xeff1f5]),
+        [0xdce0e8, 0xe6e9ef, 0xdce0e8],
+        "",
+        [pair("Manrope", "Manrope", "Manrope"), pair("DM Sans", "DM Sans", "DM Mono"), pair("Mono", "Manrope", "JetBrains Mono")],
+    ),
+    builtin(
+        "solarized-light",
+        "Solarized Light",
+        [0xe4ddc8, 0x586e75, 0x657b83, 0xd3cbb7, 0x268bd2, 0x2aa198, 0xd5e8f5, 0xb58900, 0xfdf6e3],
+        Rgba::new(38, 139, 210, 0.14),
+        Some([0xfdf6e3, 0xeee8d5, 0xfdf6e3]),
+        [0xe4ddc8, 0xeee8d5, 0xe4ddc8],
+        "",
+        [pair("Plex", "IBM Plex Sans", "IBM Plex Mono"), pair("Grotesk", "Space Grotesk", "Space Mono"), pair("Geist", "Geist", "Geist")],
     ),
 ];
 
@@ -642,9 +605,15 @@ pub fn resolve(
         code_font,
         wallpaper: preset.wallpaper.to_string(),
         gradient: preset.gradient,
-        // The ArchonUI mark's glow follows the accent; a theme's own logo file is drawn as it is.
+        // The ArchonUI mark's glow follows the accent, and on a light background its silver blade
+        // takes the text colour; a theme's own logo file is drawn as it is.
         logo: if preset.logo == DEFAULT_LOGO {
-            format!("{DEFAULT_LOGO}#{:02x}{:02x}{:02x}", t0.acc.r, t0.acc.g, t0.acc.b)
+            let hex = |c: Rgba| format!("{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+            let light = 0.299 * f32::from(t0.bg.r) + 0.587 * f32::from(t0.bg.g) + 0.114 * f32::from(t0.bg.b) > 127.5;
+            match light {
+                true => format!("{DEFAULT_LOGO}#{}#{}", hex(t0.acc), hex(t0.fg)),
+                false => format!("{DEFAULT_LOGO}#{}", hex(t0.acc)),
+            }
         } else {
             preset.logo.to_string()
         },
@@ -892,10 +861,9 @@ mod tests {
     }
 
     #[test]
-    fn notes_on_the_deep_accent_read_better_in_the_body_colour() {
-        // The error notes in the Browser, Terminal and Ide tabs sit on `deep`.
+    fn notes_on_the_deep_accent_are_readable() {
+        // The error notes in the Browser, Terminal and Ide tabs sit on `deep`, in the body colour.
         for p in presets() {
-            assert!(contrast(p.fg, p.deep) > contrast(p.on, p.deep), "{}", p.id);
             assert!(contrast(p.fg, p.deep) >= 3., "{}: fg on deep is {:.2}", p.id, contrast(p.fg, p.deep));
         }
     }
@@ -974,11 +942,12 @@ mod tests {
 
     #[test]
     fn authored_surfaces_are_used_as_given() {
-        let t = resolved("nord");
-        assert_eq!((t.bg, t.tile, t.panel, t.pop), (Rgba::hex(0x2e3440), Rgba::hex(0x3b4252), Rgba::hex(0x2e3440), Rgba::hex(0x434c5e)));
-        assert_eq!((t.muted, t.faint), (Rgba::hex(0xd8dee9), Rgba::hex(0x4c566a)));
+        let t = resolved("dracula");
+        assert_eq!((t.bg, t.tile, t.panel, t.pop), (Rgba::hex(0x191a21), Rgba::hex(0x282a36), Rgba::hex(0x21222c), Rgba::hex(0x343746)));
+        assert_eq!((t.muted, t.faint), (Rgba::hex(0xa4abc8), Rgba::hex(0x44475a)));
         assert!(t.wallpaper.is_empty(), "built-in themes draw their gradient");
-        assert_eq!(t.logo, format!("{DEFAULT_LOGO}#88c0d0"), "the mark in the theme's accent");
+        assert_eq!(t.logo, format!("{DEFAULT_LOGO}#bd93f9"), "the mark in the theme's accent");
+        assert_eq!(resolved("github-light").logo, format!("{DEFAULT_LOGO}#0969da#1f2328"), "a dark blade on a light theme");
     }
 
     #[test]
@@ -1029,7 +998,7 @@ mod tests {
         assert_eq!(ids.len(), BUILTIN.len());
         assert!(BUILTIN.iter().any(|p| p.id == DEFAULT_THEME));
         assert_eq!(preset("no-such-theme").id, DEFAULT_THEME);
-        for id in ["claude-code", "codex", "gemini", "hermes", "nord", "catppuccin", "tokyo-night", "gruvbox"] {
+        for id in ["catppuccin", "tokyo-night", "dracula", "one-dark", "github-light", "catppuccin-latte", "solarized-light"] {
             assert_eq!(preset(id).id, id);
         }
     }

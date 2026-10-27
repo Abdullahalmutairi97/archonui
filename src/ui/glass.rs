@@ -36,21 +36,29 @@ const IMAGE_CAP: usize = 8;
 /// Glass crops kept in memory. A crop is at most one surface at device resolution.
 const CROP_CAP: usize = 32;
 
-/// A wallpaper embedded at build time, by file name. None ship yet; the backgrounds folder holds the
-/// user's.
-pub fn wallpaper_bytes(_name: &str) -> Option<&'static [u8]> {
-    None
+/// Wallpapers embedded at build time, by file name: the ArchonUI theme's glow. The backgrounds folder
+/// holds the user's.
+const EMBEDDED_WALLPAPERS: [(&str, &[u8]); 1] =
+    [("archonui-glow.jpg", include_bytes!("../../assets/wallpapers/archonui-glow.jpg"))];
+
+pub fn wallpaper_bytes(name: &str) -> Option<&'static [u8]> {
+    EMBEDDED_WALLPAPERS.iter().find(|(n, _)| *n == name).map(|(_, bytes)| *bytes)
 }
 
 /// A theme's logo: the embedded ArchonUI mark by name, or a logo file by path. Files are read once.
 pub fn logo_bytes(name: &str) -> Option<Arc<[u8]>> {
     static FILES: OnceLock<Mutex<HashMap<String, Option<Arc<[u8]>>>>> = OnceLock::new();
-    // `archonui-mark.png#rrggbb`: the mark with its red glow in that colour, made once per colour.
-    if let Some((base, hex)) = name.split_once('#') {
-        let tint = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
+    // `archonui-mark.png#rrggbb`: the mark with its red glow in that colour, and `#rrggbb#rrggbb` also
+    // with its blade in the second colour. Made once per name.
+    if let Some((base, hexes)) = name.split_once('#') {
+        let parse = |hex: &str| u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6);
+        let (tint, blade) = match hexes.split_once('#') {
+            Some((tint, blade)) => (parse(tint)?, Some(parse(blade)?)),
+            None => (parse(hexes)?, None),
+        };
         let plain = logo_bytes(base)?;
         let mut files = FILES.get_or_init(Default::default).lock().ok()?;
-        return files.entry(name.to_string()).or_insert_with(|| tint_logo(&plain, tint).map(Arc::from)).clone();
+        return files.entry(name.to_string()).or_insert_with(|| tint_logo(&plain, tint, blade).map(Arc::from)).clone();
     }
     match name {
         "archonui-mark.png" => Some(Arc::from(include_bytes!("../../assets/logo/archonui-mark.png").as_slice())),
@@ -63,20 +71,27 @@ pub fn logo_bytes(name: &str) -> Option<Arc<[u8]>> {
 }
 
 /// The logo PNG with its red parts repainted in `tint` (`0xrrggbb`): each pixel's red beyond its green
-/// and blue is the glow, and that much of the tint replaces it. The white blade stays white.
-pub fn tint_logo(png: &[u8], tint: u32) -> Option<Vec<u8>> {
+/// and blue is the glow, and that much of the tint replaces it. The white blade stays white, or with
+/// `blade` takes that colour, its shading kept as darker shades of it.
+pub fn tint_logo(png: &[u8], tint: u32, blade: Option<u32>) -> Option<Vec<u8>> {
     let mut img = image::load_from_memory(png).ok()?.to_rgba8();
-    let (tr, tg, tb) = ((tint >> 16) as u8 as f32, (tint >> 8) as u8 as f32, tint as u8 as f32);
+    let rgb = |c: u32| [(c >> 16) as u8 as f32, (c >> 8) as u8 as f32, c as u8 as f32];
+    let [tr, tg, tb] = rgb(tint);
     let peak = tr.max(tg).max(tb).max(1.);
+    let blade = blade.map(rgb);
     for p in img.pixels_mut() {
         let [r, g, b, a] = p.0;
         let base = g.max(b);
         let glow = f32::from(r.saturating_sub(base));
-        if glow <= 0. {
+        if glow <= 0. && blade.is_none() {
             continue;
         }
-        let mix = |c: u8, t: f32| (f32::from(c.min(base)) + glow * t / peak).round().clamp(0., 255.) as u8;
-        p.0 = [mix(r, tr), mix(g, tg), mix(b, tb), a];
+        let body = |c: u8, i: usize| {
+            let c = f32::from(c.min(base));
+            blade.map_or(c, |bl| bl[i] * c / 255.)
+        };
+        let mix = |c: u8, t: f32, i: usize| (body(c, i) + glow * t / peak).round().clamp(0., 255.) as u8;
+        p.0 = [mix(r, tr, 0), mix(g, tg, 1), mix(b, tb, 2), a];
     }
     let mut out = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
@@ -105,8 +120,11 @@ pub struct Dither {
 }
 
 impl WallpaperSource {
-    /// A theme's background: its wallpaper file, else its gradient.
+    /// A theme's background: its embedded wallpaper or wallpaper file, else its gradient.
     pub fn theme(theme: &crate::ui::theme::Theme) -> Self {
+        if let Some((name, _)) = EMBEDDED_WALLPAPERS.iter().find(|(n, _)| *n == theme.wallpaper) {
+            return Self::Embedded(name);
+        }
         let path = Path::new(&theme.wallpaper);
         if !theme.wallpaper.is_empty() && path.is_file() {
             return Self::File(path.to_path_buf());
@@ -849,9 +867,12 @@ mod tint_tests {
         img.put_pixel(1, 0, image::Rgba([240, 240, 240, 255]));
         let mut png = Vec::new();
         img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
-        let out = image::load_from_memory(&tint_logo(&png, 0x3080ff).unwrap()).unwrap().to_rgba8();
+        let out = image::load_from_memory(&tint_logo(&png, 0x3080ff, None).unwrap()).unwrap().to_rgba8();
         assert_eq!(out.get_pixel(0, 0).0, [30 + 38, 30 + 100, 230, 255], "red glow becomes blue glow");
         assert_eq!(out.get_pixel(1, 0).0, [240, 240, 240, 255]);
+        let dark = image::load_from_memory(&tint_logo(&png, 0x3080ff, Some(0x202020)).unwrap()).unwrap().to_rgba8();
+        assert_eq!(dark.get_pixel(1, 0).0, [30, 30, 30, 255], "the blade takes the given colour");
+        assert_eq!(dark.get_pixel(0, 0).0[2], 4 + 200, "the glow is still the tint");
     }
 }
 
@@ -889,6 +910,10 @@ mod tests {
         assert!(logo_bytes("logo-bm.png").is_none(), "personal logos are files, not embedded");
         assert!(logo_bytes("archonui-mark.png#8fb8e8").is_some(), "the mark in a theme's accent");
         assert!(logo_bytes("archonui-mark.png#nothex").is_none());
+        assert!(logo_bytes("archonui-mark.png#0969da#1f2328").is_some(), "with a blade colour");
+        assert!(logo_bytes("archonui-mark.png#0969da#nothex").is_none());
+        assert!(wallpaper_bytes("archonui-glow.jpg").is_some(), "the ArchonUI theme's glow ships inside");
+        assert!(wallpaper_bytes("bloodmoon2.jpg").is_none(), "personal wallpapers are files");
         // The glows' colours lead in their corners and the base shows between them.
         let blend = gradient_image([0x000000, 0xff0000, 0x0000ff]);
         let (w, h) = GRADIENT_SIZE;
