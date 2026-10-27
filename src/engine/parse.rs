@@ -433,8 +433,9 @@ impl Parser {
                 out.extend(s("/part/tool").map(|t| Out::Status(format!("using {t}"))));
                 out.extend(self.opencode_tool(&v["part"]));
             }
+            // OpenCode 1 nests the message in `data`; OpenCode 2 puts it on the error.
             Some("error") => out.push(Out::Error(
-                s("/error/data/message").or(s("/error/name")).unwrap_or_else(|| line.to_string()),
+                s("/error/data/message").or(s("/error/message")).or(s("/error/name")).unwrap_or_else(|| line.to_string()),
             )),
             // One per model step, with that step's tokens.
             Some("step_finish") => {
@@ -457,9 +458,10 @@ impl Parser {
     }
 
     /// A tool call from OpenCode. Each `tool_use` event carries the call's input,
-    /// and once the call has ended, its status and output.
+    /// and once the call has ended, its status and output. OpenCode 1 names the call `callID`,
+    /// OpenCode 2 `id`.
     fn opencode_tool(&self, part: &Value) -> Vec<Out> {
-        let (Some(id), Some(name)) = (part["callID"].as_str(), part["tool"].as_str()) else {
+        let (Some(id), Some(name)) = (part["callID"].as_str().or(part["id"].as_str()), part["tool"].as_str()) else {
             return vec![];
         };
         let state = &part["state"];
@@ -472,7 +474,8 @@ impl Parser {
                 let detail = match tool_kind(name) {
                     ToolKind::Run => {
                         let output = state["output"].as_str().unwrap_or_default();
-                        run_detail(output, state["metadata"]["exit"].as_i64())
+                        let meta = &state["metadata"];
+                        run_detail(output, meta["exit"].as_i64().or(meta["metadata"]["exit"].as_i64()))
                     }
                     _ => opencode_diff(name, &state["input"]),
                 };
@@ -563,7 +566,8 @@ fn tool_kind(name: &str) -> ToolKind {
         "glob" => ToolKind::Glob,
         "edit" | "multiedit" | "notebookedit" | "patch" => ToolKind::Edit,
         "write" => ToolKind::Write,
-        "bash" => ToolKind::Run,
+        // OpenCode 2 calls its shell tool `shell`.
+        "bash" | "shell" => ToolKind::Run,
         "websearch" | "codesearch" => ToolKind::Web,
         "webfetch" => ToolKind::Fetch,
         "task" => ToolKind::Task,
@@ -837,6 +841,46 @@ mod tests {
                 "end 52c97414-3fbd-4e40-9d28-dd91883fb583 ok=true -",
             ]
         );
+    }
+
+    /// OpenCode 2.1.2 (`opencode run --format json --auto`), sanitized: calls are `id` not `callID`,
+    /// the shell tool is `shell`, paths are `path`, and the exit code sits in `metadata.metadata`.
+    #[test]
+    fn opencode2_tool_calls_usage_and_reply() {
+        let out = stream(Protocol::OpenCode, "/home/user/proj", include_str!("fixtures/opencode2-tools.jsonl"));
+        let sessions: Vec<_> = out.iter().filter_map(|o| if let Out::Session(s) = o { Some(s.as_str()) } else { None }).collect();
+        assert!(!sessions.is_empty() && sessions.iter().all(|s| *s == "ses_e8092feb7ffeVFN3yjgZeir42W"));
+        let usage: Vec<_> = out.iter().filter_map(|o| if let Out::Usage(u) = o { Some(u) } else { None }).collect();
+        assert_eq!(usage.len(), 3, "one per finished step");
+        assert_eq!((usage[0].input, usage[0].output, usage[0].cache_read), (11265, 94, 1536));
+        let shown: Vec<String> = show(&out).into_iter().filter(|l| !l.starts_with("Usage") && !l.starts_with("ContextUsed")).collect();
+        assert_eq!(
+            shown,
+            [
+                "Break",
+                "Text(\"I'll create the file, list the directory, then edit the file.\")",
+                "status using write",
+                "start call_df5be074c20d4f69b10ad2b2 Write hello.txt",
+                "end call_df5be074c20d4f69b10ad2b2 ok=true +1",
+                "status using shell",
+                "start call_f5aa5f9759744b1b91a7e072 Run ls -la",
+                "end call_f5aa5f9759744b1b91a7e072 ok=true -",
+                "status using shell",
+                "start call_fail1 Run false",
+                "end call_fail1 ok=true exit 1",
+                "status using edit",
+                "start call_84166fb0814649b4bf39a4ee Edit hello.txt",
+                "end call_84166fb0814649b4bf39a4ee ok=true +1 −1",
+                "Break",
+                "Text(\"DONE\")",
+            ]
+        );
+    }
+
+    #[test]
+    fn opencode2_errors_show_their_message() {
+        let l = r#"{"type":"error","timestamp":1,"sessionID":"ses_1","error":{"type":"provider.invalid-request","message":"Upstream request failed: model unavailable","status":400}}"#;
+        assert_eq!(show(&events(Protocol::OpenCode, l)), ["Error(\"Upstream request failed: model unavailable\")"]);
     }
 
     #[test]
