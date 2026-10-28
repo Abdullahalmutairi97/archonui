@@ -37,7 +37,7 @@ pub fn discover() -> Result<Tailnet, String> {
     let output = match status(BINARY) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => match status(MAC_BINARY) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err("Tailscale is not installed".to_string());
+                return Err(NOT_INSTALLED.to_string());
             }
             other => other,
         },
@@ -49,10 +49,75 @@ pub fn discover() -> Result<Tailnet, String> {
     })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() { "Tailscale is not running".to_string() } else { stderr });
+        return Err(explain_failure(&String::from_utf8_lossy(&output.stderr)));
     }
     parse(&String::from_utf8_lossy(&output.stdout))
+}
+
+const NOT_INSTALLED: &str = "Tailscale is not installed. Get it from tailscale.com/download, sign in, and open this page again";
+
+/// What a `BackendState` other than `Running` means, and what to do about it.
+pub fn explain_state(state: &str) -> String {
+    match state {
+        "NeedsLogin" => "Tailscale is installed but signed out. Sign in with `sudo tailscale up` (or the Tailscale app), using the same account as your other devices".into(),
+        "NeedsMachineAuth" => "This device is waiting for approval in the Tailscale admin console (login.tailscale.com/admin/machines)".into(),
+        "Stopped" => "Tailscale is turned off on this device. Turn it on with `sudo tailscale up` (or the Tailscale app)".into(),
+        "Starting" | "NoState" | "" => "Tailscale is still starting. Give it a few seconds".into(),
+        other => format!("Tailscale is not connected (state: {other})"),
+    }
+}
+
+/// What a failed `tailscale status` means: most often the background service isn't running.
+fn explain_failure(stderr: &str) -> String {
+    let stderr = stderr.trim();
+    let lower = stderr.to_lowercase();
+    if lower.contains("tailscaled") || lower.contains("connection refused") || lower.contains("no such file") {
+        "Tailscale's background service isn't running. Start it with `sudo systemctl enable --now tailscaled`, then sign in".into()
+    } else if lower.contains("logged out") || lower.contains("needslogin") {
+        explain_state("NeedsLogin")
+    } else if stderr.is_empty() {
+        "Tailscale is not running".into()
+    } else {
+        stderr.to_string()
+    }
+}
+
+/// Whether ArchonUI answers on a peer's port, from a quick TCP connect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Probe {
+    /// Something listens there: ArchonUI with sharing on, or `archonui --serve`.
+    Answers,
+    /// The device is up but nothing listens: ArchonUI isn't running there, or its sharing is off.
+    Closed,
+    /// No answer in time: asleep, or a firewall drops the port on the Tailscale interface.
+    Silent,
+}
+
+/// How long a probe waits for a peer. Tailscale peers answer in well under this when they are up.
+pub const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Probes `port` on each peer that could run ArchonUI (online, not a phone), all at once. Returns
+/// `(device id, result)` for each one probed.
+pub fn probe(peers: &[Peer], port: u16) -> Vec<(String, Probe)> {
+    let probes: Vec<_> = peers
+        .iter()
+        .filter(|p| p.online && !matches!(p.os.to_lowercase().as_str(), "ios" | "android"))
+        .map(|p| {
+            let (id, addr) = (p.device.id.clone(), p.device.addr.clone());
+            thread::spawn(move || (id, probe_one(&addr, port, PROBE_TIMEOUT)))
+        })
+        .collect();
+    probes.into_iter().filter_map(|h| h.join().ok()).collect()
+}
+
+/// One TCP connect to `addr:port`.
+pub fn probe_one(addr: &str, port: u16, timeout: Duration) -> Probe {
+    let Ok(ip) = addr.parse::<IpAddr>() else { return Probe::Silent };
+    match std::net::TcpStream::connect_timeout(&std::net::SocketAddr::new(ip, port), timeout) {
+        Ok(_) => Probe::Answers,
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => Probe::Closed,
+        Err(_) => Probe::Silent,
+    }
 }
 
 /// Pure parser for the JSON, so tests need no Tailscale.
@@ -62,8 +127,7 @@ pub fn parse(json: &str) -> Result<Tailnet, String> {
 
     let state = text(&root, "BackendState");
     if state != "Running" {
-        let shown = if state.is_empty() { "unknown" } else { state };
-        return Err(format!("Tailscale is not connected (state: {})", shown));
+        return Err(explain_state(state));
     }
 
     let self_node = root
@@ -332,7 +396,29 @@ mod tests {
     fn stopped_backend_is_an_error() {
         let json = FIXTURE.replace("\"Running\"", "\"Stopped\"");
         let err = parse(&json).unwrap_err();
-        assert!(err.contains("Stopped"), "{}", err);
+        assert!(err.contains("turned off") && err.contains("tailscale up"), "{}", err);
+    }
+
+    #[test]
+    fn each_tailscale_problem_says_what_to_do() {
+        assert!(explain_state("NeedsLogin").contains("signed out"));
+        assert!(explain_state("NeedsMachineAuth").contains("admin console"));
+        assert!(explain_state("Starting").contains("starting"));
+        assert!(explain_state("Weird").contains("Weird"));
+        let daemon = "failed to connect to local tailscaled; it doesn't appear to be running (sudo systemctl start tailscaled ?)";
+        assert!(explain_failure(daemon).contains("systemctl enable --now tailscaled"));
+        assert_eq!(explain_failure(""), "Tailscale is not running");
+        assert_eq!(explain_failure("something else\n"), "something else");
+    }
+
+    #[test]
+    fn a_probe_tells_a_listener_from_a_closed_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(probe_one("127.0.0.1", port, Duration::from_secs(2)), Probe::Answers);
+        drop(listener);
+        assert_eq!(probe_one("127.0.0.1", port, Duration::from_secs(2)), Probe::Closed);
+        assert_eq!(probe_one("not an ip", port, Duration::from_secs(2)), Probe::Silent);
     }
 
     #[test]

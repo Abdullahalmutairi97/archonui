@@ -91,14 +91,11 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
     let state = AppState::load(&Paths::current());
-    // `discover` gives up on a stuck Tailscale daemon by itself.
-    let tailnet = tailscale::discover();
+    // Without --bind: this device's Tailscale address. At boot Tailscale may still be coming up, so
+    // wait for it a while rather than fail (a systemd unit then starts cleanly).
+    let tailnet = if bind.is_some() { tailscale::discover() } else { wait_for_tailnet(TAILNET_WAIT) };
     let addr = match bind {
         Some(addr) => addr,
-        None if !state.settings.sync.enabled => {
-            eprintln!("Devices sharing is off. Turn it on in settings, or pass --bind ADDR:PORT.");
-            return 1;
-        }
         None => match &tailnet {
             Ok(t) => match t.me.addr.parse::<IpAddr>() {
                 Ok(ip) => SocketAddr::new(ip, state.settings.sync.port),
@@ -108,7 +105,8 @@ pub fn run(args: &[String]) -> i32 {
                 }
             },
             Err(e) => {
-                eprintln!("{e}");
+                eprintln!("archonui host: {e}.");
+                eprintln!("archonui host: --serve listens on this device's Tailscale address; or pass --bind ADDR:PORT.");
                 return 1;
             }
         },
@@ -123,6 +121,28 @@ pub fn run(args: &[String]) -> i32 {
             eprintln!("archonui host: {}", bind_error(addr, &e));
             1
         }
+    }
+}
+
+/// How long `--serve` without `--bind` waits for Tailscale to connect.
+const TAILNET_WAIT: Duration = Duration::from_secs(90);
+
+/// `tailscale::discover`, retried every few seconds for up to `wait` while Tailscale or its service is
+/// still starting; a missing, signed-out or stopped Tailscale is reported at once, as waiting won't fix it.
+fn wait_for_tailnet(wait: Duration) -> Result<tailscale::Tailnet, String> {
+    let deadline = std::time::Instant::now() + wait;
+    let mut said = false;
+    loop {
+        let found = tailscale::discover();
+        let retry = matches!(&found, Err(e) if e.contains("starting") || e.contains("background service") || e.contains("did not answer"));
+        if !retry || std::time::Instant::now() >= deadline {
+            return found;
+        }
+        if !said {
+            eprintln!("archonui host: waiting for Tailscale ({})", found.as_ref().err().map(String::as_str).unwrap_or(""));
+            said = true;
+        }
+        thread::sleep(Duration::from_secs(3));
     }
 }
 

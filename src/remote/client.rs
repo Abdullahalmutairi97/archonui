@@ -203,6 +203,12 @@ pub fn run(args: &[String]) -> i32 {
     let me = super::local_host_name().unwrap_or_else(|| "client".to_string());
     let client = match Client::connect(&addr, port, &me) {
         Ok(client) => client,
+        Err(e) if e.contains("reset") || e.contains("Connection closed") => {
+            return fail(format!("{e}\n  It doesn't let this device in: on it, open Settings → Devices and turn on {me}."))
+        }
+        Err(e) if e.contains("refused") => {
+            return fail(format!("{e}\n  Nothing answers there: open ArchonUI on it with sharing on, or run `archonui --serve`."))
+        }
         Err(e) => return fail(e),
     };
     match command {
@@ -211,6 +217,37 @@ pub fn run(args: &[String]) -> i32 {
         Command::Ask(id, prompt) => ask(&client, &id, &prompt),
         Command::New(agent, folder, prompt) => new_chat(&client, &agent, &folder, &prompt),
     }
+}
+
+/// `--devices`: this device and its tailnet peers, marking those where ArchonUI answers, so a new
+/// setup can be checked from a terminal (or a server without a screen).
+pub fn devices() -> i32 {
+    let net = match super::tailscale::discover() {
+        Ok(net) => net,
+        Err(e) => return fail(format!("{e}.")),
+    };
+    // The port from Settings → Devices, read without loading (or writing) anything else.
+    let settings = crate::app::persist::Paths::current().config.join("settings.json");
+    let port = std::fs::read_to_string(settings)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v.pointer("/sync/port")?.as_u64())
+        .and_then(|p| u16::try_from(p).ok())
+        .unwrap_or(DEFAULT_PORT);
+    println!("this device: {} {}", net.me.name, net.me.addr);
+    let probes = super::tailscale::probe(&net.peers, port);
+    for p in &net.peers {
+        let probe = probes.iter().find(|(id, _)| *id == p.device.id).map(|(_, probe)| *probe);
+        let state = match (p.online, probe) {
+            (false, _) => "offline",
+            (true, Some(super::tailscale::Probe::Answers)) => "runs ArchonUI",
+            (true, Some(super::tailscale::Probe::Closed)) => "online, ArchonUI not running",
+            (true, Some(super::tailscale::Probe::Silent)) => "online, no answer on the port (firewall?)",
+            (true, None) => "online",
+        };
+        println!("{:<20} {:<16} {:<8} {state}", p.device.name, p.device.addr, p.os);
+    }
+    0
 }
 
 /// Splits `pc`, `pc:9000` or `100.1.2.3:81` into a host and a port. Without a port the

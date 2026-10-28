@@ -15,7 +15,7 @@ use std::{
         mpsc, Arc, Mutex, MutexGuard,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// How long a new connection may take to send its WebSocket handshake.
@@ -48,7 +48,13 @@ struct Inner {
     next_conn: u64,
     /// Set by `stop`: the listener and every connection close.
     stopped: bool,
+    /// Tailnet devices refused because they aren't included, newest last: the Devices page offers to
+    /// let them in.
+    asked: Vec<(IpAddr, Instant)>,
 }
+
+/// How long a refused device keeps showing as asking to connect.
+pub const ASKED_FOR: Duration = Duration::from_secs(10 * 60);
 
 /// One open connection: its outgoing queue and the peer's address.
 struct Conn {
@@ -78,6 +84,7 @@ impl Hub {
                 conns: HashMap::new(),
                 next_conn: 1,
                 stopped: false,
+                asked: Vec::new(),
             })),
             local: listener.local_addr()?,
         };
@@ -87,6 +94,13 @@ impl Hub {
         let accepting = hub.clone();
         thread::spawn(move || accept(listener, accepting, requests));
         Ok((hub, rx))
+    }
+
+    /// The tailnet addresses refused in the last `ASKED_FOR` because they aren't included here:
+    /// devices that have this one ticked and are trying to connect.
+    pub fn asked(&self) -> Vec<IpAddr> {
+        let inner = self.lock();
+        inner.asked.iter().filter(|(_, at)| at.elapsed() < ASKED_FOR).map(|(ip, _)| *ip).collect()
     }
 
     /// The address the host listens on, with the real port when it was started on port 0.
@@ -284,6 +298,9 @@ fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Reque
         let allowed = same_user_if_local(peer, local) && peer_allowed(ip, &hub.lock().sync, tailscale::is_tailscale_addr(&ip));
         if !allowed {
             eprintln!("archonui host: refused a connection from {ip}");
+            if tailscale::is_tailscale_addr(&ip) && !ip.is_loopback() {
+                note_asked(&mut hub.lock().asked, ip, Instant::now());
+            }
             continue;
         }
         if live.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
@@ -345,6 +362,15 @@ fn connection(stream: TcpStream, ip: IpAddr, hub: Hub, requests: smol::channel::
     }
     let _ = ws.close(None);
     hub.disconnect(conn);
+}
+
+/// Remembers that `ip` was refused at `now`: once per address, newest last, at most 16.
+fn note_asked(asked: &mut Vec<(IpAddr, Instant)>, ip: IpAddr, now: Instant) {
+    asked.retain(|(seen, _)| *seen != ip);
+    asked.push((ip, now));
+    if asked.len() > 16 {
+        asked.remove(0);
+    }
 }
 
 /// Refuses a handshake that carries an `Origin` header. Browsers always send one and archonui clients
@@ -430,6 +456,21 @@ mod tests {
 
     fn device(addr: &str) -> Device {
         Device { id: "n1".into(), name: "pc".into(), dns_name: String::new(), addr: addr.into(), addr6: String::new() }
+    }
+
+    #[test]
+    fn refused_devices_are_remembered_once_each_and_capped() {
+        let mut asked = Vec::new();
+        let now = Instant::now();
+        let a: IpAddr = "100.64.0.1".parse().unwrap();
+        note_asked(&mut asked, a, now);
+        note_asked(&mut asked, "100.64.0.2".parse().unwrap(), now);
+        note_asked(&mut asked, a, now);
+        assert_eq!(asked.iter().map(|(ip, _)| ip.to_string()).collect::<Vec<_>>(), ["100.64.0.2", "100.64.0.1"]);
+        for i in 0..40u8 {
+            note_asked(&mut asked, IpAddr::from([100, 64, 1, i]), now);
+        }
+        assert_eq!(asked.len(), 16);
     }
 
     #[test]

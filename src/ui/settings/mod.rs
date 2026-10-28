@@ -244,6 +244,8 @@ pub struct SettingsUi {
     pub(super) tailnet: Option<Result<crate::remote::tailscale::Tailnet, String>>,
     /// Whether a Tailscale search is running.
     pub(super) tailnet_loading: bool,
+    /// Which tailnet devices answer on the sharing port (ArchonUI runs there), by `Device::id`.
+    pub(super) probes: std::collections::HashMap<String, crate::remote::tailscale::Probe>,
     /// Whether the Devices page lists offline devices that aren't shared with.
     pub(super) show_offline: bool,
     /// The app's own theme while the dialog draws with its tokens, for previews and swatches.

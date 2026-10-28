@@ -1,7 +1,7 @@
 //! The Devices page: share chats with other devices on the tailnet, and pick the cloud copy. Off by default.
 
 use super::controls::{act, edit, toggle_row};
-use crate::remote::{Device, SyncSettings};
+use crate::remote::{tailscale::Probe, Device, SyncSettings};
 use crate::ui::{
     composer::icons::stroke_icon,
     scale::px,
@@ -30,6 +30,8 @@ const AWAY: Rgba = crate::ui::theme::AMBER;
 enum Status {
     ThisDevice,
     Connected,
+    /// Refused here lately because it isn't included: it has this device ticked and wants in.
+    Asking,
     Online,
     Offline,
     Gone,
@@ -40,6 +42,7 @@ impl Status {
         match self {
             Status::ThisDevice => "This device",
             Status::Connected => "Connected",
+            Status::Asking => "Wants to connect · turn on to allow",
             Status::Online => "Online",
             Status::Offline => "Offline",
             Status::Gone => "Not on your tailnet",
@@ -50,7 +53,7 @@ impl Status {
         match self {
             Status::ThisDevice | Status::Connected | Status::Online => LIVE,
             Status::Offline => theme.faint,
-            Status::Gone => AWAY,
+            Status::Asking | Status::Gone => AWAY,
         }
     }
 }
@@ -61,6 +64,8 @@ struct Row {
     os: String,
     status: Status,
     shared: bool,
+    /// Whether ArchonUI answers on the device's sharing port; `None` when not probed.
+    found: Option<Probe>,
 }
 
 impl Shell {
@@ -127,13 +132,14 @@ impl Shell {
         let net = match self.settings.tailnet.clone() {
             None => return div().child(header).child(list.child(note("Looking for Tailscale devices…", &theme))).into_any_element(),
             Some(Err(message)) => {
-                let text = format!("{message}. Install Tailscale and sign in, then press Refresh.");
+                let text = format!("{message}. Then press Refresh.");
                 return div().child(header).child(list.child(note(&text, &theme))).into_any_element();
             }
             Some(Ok(net)) => net,
         };
 
-        let rows = device_rows(sync, &net, |id| self.device_connected(id));
+        let asking = self.devices_asking();
+        let rows = device_rows(sync, &net, |id| self.device_connected(id), &self.settings.probes, &asking);
         let hidden = rows.iter().filter(|r| hidden_unless_asked(r)).count();
         let show_offline = self.settings.show_offline;
         let mut list = list;
@@ -189,10 +195,11 @@ impl Shell {
         };
         let lit = row.shared || this_device;
         let status = row.status;
-        let detail = match os_name(&row.os) {
-            Some(os) => format!("{} · {os}", status.label()),
-            None => status.label().to_string(),
+        let me = match &self.settings.tailnet {
+            Some(Ok(net)) => net.me.name.clone(),
+            _ => "this device".to_string(),
         };
+        let detail = detail_line(&row, self.remote.connect_errors.get(&id).map(String::as_str), &me);
 
         let mut controls = div().flex_none().flex().items_center().gap(px(10.));
         // The cloud is one of the shared devices or this one.
@@ -386,10 +393,45 @@ impl Shell {
                     let seen = std::iter::once(&net.me).chain(net.peers.iter().map(|p| &p.device));
                     this.state.settings.sync.refresh_devices(seen)
                 });
+                let peers = found.as_ref().map(|net| net.peers.clone()).unwrap_or_default();
                 this.settings.tailnet = Some(found);
                 this.settings.tailnet_loading = false;
                 if refreshed {
                     this.save(cx);
+                }
+                cx.notify();
+                this.probe_devices(peers, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Checks which tailnet devices run ArchonUI (their sharing port answers), off the UI thread. The
+    /// first time sharing is set up (no device included yet) every one that answers is included, so
+    /// devices pair without picking them one by one; they can still be turned off.
+    fn probe_devices(&mut self, peers: Vec<crate::remote::tailscale::Peer>, cx: &mut Context<Self>) {
+        let port = self.state.settings.sync.port;
+        cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { crate::remote::tailscale::probe(&peers, port) }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.settings.probes = found.iter().cloned().collect();
+                let sync = &mut this.state.settings.sync;
+                if sync.enabled && sync.devices.is_empty() {
+                    let answering: Vec<Device> = match &this.settings.tailnet {
+                        Some(Ok(net)) => net
+                            .peers
+                            .iter()
+                            .filter(|p| found.iter().any(|(id, probe)| *id == p.device.id && *probe == Probe::Answers))
+                            .map(|p| p.device.clone())
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    if !answering.is_empty() {
+                        for device in &answering {
+                            set_included(sync, device, true);
+                        }
+                        this.save(cx);
+                    }
                 }
                 cx.notify();
             });
@@ -487,32 +529,85 @@ fn note(text: &str, theme: &Theme) -> AnyElement {
 
 /// The device list in its order: this device, the shared ones, the other online ones, then the rest;
 /// each group by name. Shared devices Tailscale no longer lists stay, so they can be turned off.
-fn device_rows(sync: &SyncSettings, net: &crate::remote::tailscale::Tailnet, connected: impl Fn(&str) -> bool) -> Vec<Row> {
+fn device_rows(
+    sync: &SyncSettings,
+    net: &crate::remote::tailscale::Tailnet,
+    connected: impl Fn(&str) -> bool,
+    probes: &std::collections::HashMap<String, Probe>,
+    asking: &[std::net::IpAddr],
+) -> Vec<Row> {
     let shared = |id: &str| sync.devices.iter().any(|d| d.id == id);
-    let mut rows = vec![Row { device: net.me.clone(), os: String::new(), status: Status::ThisDevice, shared: true }];
+    let asked = |d: &Device| {
+        asking.iter().any(|ip| {
+            let ip = ip.to_canonical().to_string();
+            ip == d.addr || (!d.addr6.is_empty() && d.addr6.parse::<std::net::IpAddr>().is_ok_and(|a| a.to_canonical().to_string() == ip))
+        })
+    };
+    let mut rows = vec![Row { device: net.me.clone(), os: String::new(), status: Status::ThisDevice, shared: true, found: None }];
     for peer in &net.peers {
         let id = peer.device.id.as_str();
         let status = if connected(id) {
             Status::Connected
+        } else if !shared(id) && asked(&peer.device) {
+            Status::Asking
         } else if peer.online {
             Status::Online
         } else {
             Status::Offline
         };
-        rows.push(Row { device: peer.device.clone(), os: peer.os.clone(), status, shared: shared(id) });
+        let found = probes.get(id).copied();
+        rows.push(Row { device: peer.device.clone(), os: peer.os.clone(), status, shared: shared(id), found });
     }
     let peer_ids: Vec<String> = net.peers.iter().map(|p| p.device.id.clone()).collect();
     for device in gone_devices(sync, &net.me.id, &peer_ids) {
-        rows.push(Row { device, os: String::new(), status: Status::Gone, shared: true });
+        rows.push(Row { device, os: String::new(), status: Status::Gone, shared: true, found: None });
     }
+    // This device, the shared ones, those asking in, those running ArchonUI, the other online ones, the rest.
     let rank = |r: &Row| match (r.status, r.shared) {
         (Status::ThisDevice, _) => 0,
         (_, true) => 1,
-        (Status::Connected | Status::Online, false) => 2,
-        _ => 3,
+        (Status::Asking, false) => 2,
+        (Status::Connected | Status::Online, false) if r.found == Some(Probe::Answers) => 3,
+        (Status::Connected | Status::Online, false) => 4,
+        _ => 5,
     };
     rows.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.device.name.to_lowercase().cmp(&b.device.name.to_lowercase())));
     rows
+}
+
+/// A row's status line: its state, what to do when it can't connect, and its OS. `error` is why the
+/// last connection to it failed; `me` is this device's name.
+fn detail_line(row: &Row, error: Option<&str>, me: &str) -> String {
+    let status = match (row.status, row.shared, row.found) {
+        (Status::Online, false, Some(Probe::Answers)) => "Runs ArchonUI · turn on to share".to_string(),
+        (Status::Online, true, _) => match error.map(connect_problem) {
+            Some(Some(problem)) => problem.replace("{me}", me),
+            _ => "Online · connecting…".to_string(),
+        },
+        (Status::Online, false, Some(Probe::Closed)) => "Online · ArchonUI isn't running there".to_string(),
+        (status, _, _) => status.label().to_string(),
+    };
+    match os_name(&row.os) {
+        Some(os) => format!("{status} · {os}"),
+        None => status,
+    }
+}
+
+/// What a failed connection to a shared device means, in words that say what to do. `{me}` stands
+/// for this device's name.
+fn connect_problem(error: &str) -> Option<String> {
+    let e = error.to_lowercase();
+    Some(if e.contains("refused") && e.contains("cannot connect") && !e.contains("handshake") {
+        "Not answering · open ArchonUI there and turn sharing on, or run archonui --serve".to_string()
+    } else if e.contains("timed out") || e.contains("timeout") || e.contains("would block") || e.contains("temporarily unavailable") {
+        "No answer · it may be asleep, or a firewall blocks port 7420 on tailscale0".to_string()
+    } else if e.contains("version") {
+        "Runs another ArchonUI version · update both".to_string()
+    } else if e.contains("reset") || e.contains("closed") || e.contains("eof") || e.contains("handshake") || e.contains("protocol") {
+        "Won't let this device in · on it, open Settings → Devices and turn on {me}".to_string()
+    } else {
+        return None;
+    })
 }
 
 /// An offline device that isn't shared with: listed only when asked, to keep the list short.
@@ -563,6 +658,40 @@ mod tests {
     }
 
     #[test]
+    fn devices_running_archonui_or_asking_in_come_before_other_online_ones() {
+        let sync = SyncSettings { enabled: true, devices: vec![device("pc")], ..Default::default() };
+        let mut asker = device("asker");
+        asker.addr = "100.64.0.42".into();
+        let net = Tailnet {
+            me: device("me"),
+            peers: vec![
+                peer("aaa-tv", true),
+                peer("vps", true),
+                Peer { device: asker, online: true, os: "linux".into() },
+                peer("pc", true),
+            ],
+        };
+        let probes = [("vps".to_string(), Probe::Answers), ("aaa-tv".to_string(), Probe::Closed)].into_iter().collect();
+        let rows = device_rows(&sync, &net, |_| false, &probes, &["100.64.0.42".parse().unwrap()]);
+        let order: Vec<(&str, Status)> = rows.iter().map(|r| (r.device.id.as_str(), r.status)).collect();
+        assert_eq!(
+            order,
+            [("me", Status::ThisDevice), ("pc", Status::Online), ("asker", Status::Asking), ("vps", Status::Online), ("aaa-tv", Status::Online)]
+        );
+        let line = |id: &str, error: Option<&str>| detail_line(rows.iter().find(|r| r.device.id == id).unwrap(), error, "ashpc");
+        assert_eq!(line("vps", None), "Runs ArchonUI · turn on to share · Linux");
+        assert_eq!(line("aaa-tv", None), "Online · ArchonUI isn't running there · Linux");
+        assert_eq!(line("asker", None), "Wants to connect · turn on to allow · Linux");
+        assert_eq!(line("pc", None), "Online · connecting… · Linux");
+        assert_eq!(
+            line("pc", Some("cannot connect to 100.64.0.9:7420: Connection reset without closing handshake")),
+            "Won't let this device in · on it, open Settings → Devices and turn on ashpc · Linux"
+        );
+        assert!(line("pc", Some("cannot connect to 100.64.0.9:7420: Connection refused (os error 111)")).starts_with("Not answering"));
+        assert!(line("pc", Some("cannot connect to 100.64.0.9:7420: connection timed out")).contains("firewall"));
+    }
+
+    #[test]
     fn a_device_that_left_the_tailnet_can_still_be_unticked() {
         let mut sync = SyncSettings { enabled: true, devices: vec![device("pc"), device("vps")], cloud: Some("vps".into()), ..Default::default() };
         // Only the pc is still on the tailnet.
@@ -581,7 +710,7 @@ mod tests {
             me: device("me"),
             peers: vec![peer("phone", false), peer("box", true), peer("zed", false), peer("alpha", true)],
         };
-        let rows = device_rows(&sync, &net, |id| id == "box");
+        let rows = device_rows(&sync, &net, |id| id == "box", &Default::default(), &[]);
         let order: Vec<(&str, Status)> = rows.iter().map(|r| (r.device.id.as_str(), r.status)).collect();
         assert_eq!(
             order,
