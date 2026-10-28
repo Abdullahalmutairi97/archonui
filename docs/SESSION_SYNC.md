@@ -32,7 +32,9 @@ Tailscale works exactly as before: no listener, no `tailscale` calls, no backgro
    with Add. A shared device can be turned off with its switch. A shared device that can't be reached
    says why: nothing answering, no answer (asleep, or a firewall on tailscale0), or that it doesn't let
    this device in yet.
-   Mark one device as the cloud.
+   The cloud: when an added device turns out to be an `archonui --serve` host (its Welcome says so), it
+   becomes the cloud by itself, once, if no cloud is chosen yet; a toast says so. After you pick or
+   turn off the cloud yourself (the "Use as cloud" / "Cloud" pill), that choice is left alone.
 3. On a device without a screen (a VPS or mini PC): `archonui --serve`. It listens on the device's
    Tailscale address by itself, whether or not sharing is on in its settings, and at boot waits up to
    90 s for Tailscale to come up. Pass `--bind <ip>:<port>` to choose. A `--serve` device keeps a cloud
@@ -64,7 +66,7 @@ resolve (MagicDNS off), it is looked up in `tailscale status` by host name.
 
 | Piece | File | Role |
 |---|---|---|
-| Settings | `remote/mod.rs` | `SyncSettings { enabled, port, devices, cloud }` |
+| Settings | `remote/mod.rs` | `SyncSettings { enabled, port, devices, cloud, cloud_picked }` |
 | Discovery | `remote/tailscale.rs` | `tailscale status --json` → this device and its peers |
 | Protocol | `remote/proto.rs` | JSON messages, one per WebSocket frame |
 | Sockets | `remote/hub.rs` | Listens on the Tailscale address, handshake, subscriptions |

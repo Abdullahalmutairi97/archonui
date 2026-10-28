@@ -40,6 +40,8 @@ pub struct Client {
     pub events: smol::channel::Receiver<ClientEvent>,
     /// The host's device name, from its `Welcome`.
     pub host: String,
+    /// Whether the host is a headless `archonui --serve`, from its `Welcome` (false from older hosts).
+    pub serve: bool,
 }
 
 impl Client {
@@ -55,13 +57,13 @@ impl Client {
                 .map_err(|e| format!("cannot connect to {addr}:{port}: {e}"))?;
         let hello = encode(&ClientMsg::Hello { device: this_device.to_string(), version: VERSION });
         ws.send(Message::Text(hello.into())).map_err(|e| format!("cannot send Hello: {e}"))?;
-        let host = read_welcome(&mut ws)?;
+        let (host, serve) = read_welcome(&mut ws)?;
         set_read_timeout(&ws, Some(POLL))?;
 
         let (tx, outgoing) = mpsc::channel();
         let (events_tx, events) = smol::channel::unbounded();
         thread::spawn(move || io_loop(ws, outgoing, events_tx));
-        Ok(Client { tx, events, host })
+        Ok(Client { tx, events, host, serve })
     }
 
     /// Queues `msg` for the host.
@@ -106,8 +108,8 @@ fn set_read_timeout(ws: &Socket, timeout: Option<Duration>) -> Result<(), String
     Ok(())
 }
 
-/// Reads the host's answer to `Hello` and returns its device name.
-fn read_welcome(ws: &mut Socket) -> Result<String, String> {
+/// Reads the host's answer to `Hello` and returns its device name and whether it is `--serve`.
+fn read_welcome(ws: &mut Socket) -> Result<(String, bool), String> {
     loop {
         let text = match ws.read() {
             Ok(Message::Text(text)) => text,
@@ -120,7 +122,7 @@ fn read_welcome(ws: &mut Socket) -> Result<String, String> {
             Err(e) => return Err(format!("handshake failed: {e}")),
         };
         return match decode::<HostMsg>(text.as_str())? {
-            HostMsg::Welcome { device, version } if version == VERSION => Ok(device),
+            HostMsg::Welcome { device, version, serve } if version == VERSION => Ok((device, serve)),
             HostMsg::Welcome { version, .. } => Err(format!("host speaks protocol {version}, this client {VERSION}")),
             HostMsg::Error { message, .. } => Err(message),
             _ => Err("the host did not send Welcome".into()),
@@ -474,7 +476,7 @@ mod tests {
             .find_map(|_| {
                 let port = std::net::TcpListener::bind("127.0.0.1:0").ok()?.local_addr().ok()?.port();
                 let bind = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-                Hub::start(bind, "host".into(), SyncSettings::default()).ok().map(|h| (port, h))
+                Hub::start(bind, "host".into(), false, SyncSettings::default()).ok().map(|h| (port, h))
             })
             .expect("a free port");
         let client = Client::connect("127.0.0.1", port, "me").unwrap();
@@ -521,7 +523,7 @@ mod tests {
         let Ok(listener) = std::net::TcpListener::bind("[::1]:0") else { return };
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        let Ok((_hub, _requests)) = crate::remote::hub::Hub::start(format!("[::1]:{port}").parse().unwrap(), "host".into(), Default::default()) else {
+        let Ok((_hub, _requests)) = crate::remote::hub::Hub::start(format!("[::1]:{port}").parse().unwrap(), "host".into(), false, Default::default()) else {
             return;
         };
         let client = Client::connect("::1", port, "me").unwrap();

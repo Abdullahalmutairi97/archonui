@@ -39,6 +39,8 @@ pub struct Request {
 struct Inner {
     /// The host name sent in `Welcome`.
     device: String,
+    /// Sent in `Welcome`: this host is a headless `archonui --serve`.
+    serve: bool,
     /// Who may connect. Checked for each new connection.
     sync: SyncSettings,
     /// Connection ids subscribed to each chat.
@@ -74,11 +76,12 @@ impl Hub {
     /// Binds `bind`, accepts connections on a background thread (same peer checks as before, using
     /// `sync`), does the Hello/Welcome handshake itself, and forwards every later message as a
     /// `Request` on the returned channel. Returns once bound, so a bind error comes back here.
-    pub fn start(bind: SocketAddr, device: String, sync: SyncSettings) -> io::Result<(Hub, smol::channel::Receiver<Request>)> {
+    pub fn start(bind: SocketAddr, device: String, serve: bool, sync: SyncSettings) -> io::Result<(Hub, smol::channel::Receiver<Request>)> {
         let listener = TcpListener::bind(bind)?;
         let hub = Hub {
             inner: Arc::new(Mutex::new(Inner {
                 device,
+                serve,
                 sync,
                 subs: HashMap::new(),
                 conns: HashMap::new(),
@@ -420,8 +423,11 @@ fn incoming(
         return match msg {
             ClientMsg::Hello { version, .. } if version == proto::VERSION => {
                 *hello = true;
-                let device = hub.lock().device.clone();
-                queue(me, &HostMsg::Welcome { device, version: proto::VERSION });
+                let (device, serve) = {
+                    let inner = hub.lock();
+                    (inner.device.clone(), inner.serve)
+                };
+                queue(me, &HostMsg::Welcome { device, version: proto::VERSION, serve });
                 Next::Continue
             }
             ClientMsg::Hello { version, .. } => {
@@ -485,7 +491,7 @@ mod tests {
 
     #[test]
     fn a_browser_handshake_is_refused_on_the_socket() {
-        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "h".into(), SyncSettings::default()).unwrap();
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "h".into(), false, SyncSettings::default()).unwrap();
         let url = format!("ws://{}", hub.local_addr());
         let mut page = tungstenite::client::IntoClientRequest::into_client_request(url.as_str()).unwrap();
         page.headers_mut().insert("Origin", "http://localhost:3000".parse().unwrap());
@@ -537,7 +543,7 @@ mod tests {
 
     #[test]
     fn open_connections_are_capped() {
-        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "h".into(), SyncSettings::default()).unwrap();
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "h".into(), false, SyncSettings::default()).unwrap();
         let addr = hub.local_addr();
         // Silent sockets still in the handshake hold every slot.
         let mut held: Vec<TcpStream> = (0..MAX_CONNECTIONS).map(|_| TcpStream::connect(addr).unwrap()).collect();
@@ -582,12 +588,16 @@ mod tests {
     /// A real listener on loopback answers a client that says hello, whatever the settings.
     #[test]
     fn a_loopback_hub_reports_its_port_and_welcomes_a_client() {
-        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "box".into(), SyncSettings::default()).unwrap();
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "box".into(), false, SyncSettings::default()).unwrap();
         let addr = hub.local_addr();
         assert!(addr.ip().is_loopback());
         assert_ne!(addr.port(), 0);
         let client = crate::remote::client::Client::connect("127.0.0.1", addr.port(), "laptop").unwrap();
         assert_eq!(client.host, "box");
+        assert!(!client.serve, "the desktop app's host is not the always-on box");
+        let (serving, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "vps".into(), true, SyncSettings::default()).unwrap();
+        let client = crate::remote::client::Client::connect("127.0.0.1", serving.local_addr().port(), "laptop").unwrap();
+        assert!(client.serve, "--serve says so in its Welcome");
     }
 
     #[test]
@@ -613,7 +623,7 @@ mod tests {
     fn stop_frees_the_port_and_closes_connections() {
         let bind = free_addr();
         let sync = SyncSettings { enabled: true, ..Default::default() };
-        let (hub, _requests) = Hub::start(bind, "host".into(), sync).unwrap();
+        let (hub, _requests) = Hub::start(bind, "host".into(), false, sync).unwrap();
         let client = crate::remote::client::Client::connect("127.0.0.1", bind.port(), "pc").unwrap();
         hub.stop();
         let closed = smol::block_on(async {
@@ -638,7 +648,7 @@ mod tests {
 
     #[test]
     fn settings_that_refuse_a_peer_close_its_connection() {
-        let (hub, _requests) = Hub::start(free_addr(), "host".into(), SyncSettings::default()).unwrap();
+        let (hub, _requests) = Hub::start(free_addr(), "host".into(), false, SyncSettings::default()).unwrap();
         let picked = SyncSettings { enabled: true, devices: vec![device("100.100.1.3")], ..Default::default() };
         let (tx, _rx) = mpsc::channel();
         assert!(hub.add_conn(tx, "100.100.1.3".parse().unwrap()).is_none(), "sharing off: refused after its handshake");
