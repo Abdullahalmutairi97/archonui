@@ -42,7 +42,7 @@ impl Status {
         match self {
             Status::ThisDevice => "This device",
             Status::Connected => "Connected",
-            Status::Asking => "Wants to connect · turn on to allow",
+            Status::Asking => "Wants to connect · add it to allow",
             Status::Online => "Online",
             Status::Offline => "Offline",
             Status::Gone => "Not on your tailnet",
@@ -241,6 +241,18 @@ impl Shell {
         if this_device {
             // Where the other rows have their switch, so the cloud pills line up.
             controls = controls.child(div().w(px(34.)));
+        } else if offers_add(&row) {
+            // A device that runs ArchonUI (or is asking in) but isn't shared: one explicit Add per device.
+            let device = row.device.clone();
+            controls = controls.child(
+                Button::new(SharedString::from(format!("device-add-{id}")), "Add", theme).style(ButtonStyle::Filled).on_click(act(
+                    weak,
+                    move |this: &mut Shell, cx| {
+                        set_included(&mut this.state.settings.sync, &device, true);
+                        this.save(cx);
+                    },
+                )),
+            );
         } else {
             let device = row.device.clone();
             controls = controls.child(
@@ -406,33 +418,14 @@ impl Shell {
         .detach();
     }
 
-    /// Checks which tailnet devices run ArchonUI (their sharing port answers), off the UI thread. The
-    /// first time sharing is set up (no device included yet) every one that answers is included, so
-    /// devices pair without picking them one by one; they can still be turned off.
+    /// Checks which tailnet devices run ArchonUI (their sharing port answers), off the UI thread. Rows
+    /// that answer get an Add button; nothing is shared until the user adds a device (no auto-include).
     fn probe_devices(&mut self, peers: Vec<crate::remote::tailscale::Peer>, cx: &mut Context<Self>) {
         let port = self.state.settings.sync.port;
         cx.spawn(async move |this, cx| {
             let found = cx.background_executor().spawn(async move { crate::remote::tailscale::probe(&peers, port) }).await;
             let _ = this.update(cx, |this, cx| {
-                this.settings.probes = found.iter().cloned().collect();
-                let sync = &mut this.state.settings.sync;
-                if sync.enabled && sync.devices.is_empty() {
-                    let answering: Vec<Device> = match &this.settings.tailnet {
-                        Some(Ok(net)) => net
-                            .peers
-                            .iter()
-                            .filter(|p| found.iter().any(|(id, probe)| *id == p.device.id && *probe == Probe::Answers))
-                            .map(|p| p.device.clone())
-                            .collect(),
-                        _ => Vec::new(),
-                    };
-                    if !answering.is_empty() {
-                        for device in &answering {
-                            set_included(sync, device, true);
-                        }
-                        this.save(cx);
-                    }
-                }
+                this.settings.probes = found.into_iter().collect();
                 cx.notify();
             });
         })
@@ -579,7 +572,7 @@ fn device_rows(
 /// last connection to it failed; `me` is this device's name.
 fn detail_line(row: &Row, error: Option<&str>, me: &str) -> String {
     let status = match (row.status, row.shared, row.found) {
-        (Status::Online, false, Some(Probe::Answers)) => "Runs ArchonUI · turn on to share".to_string(),
+        (Status::Online, false, Some(Probe::Answers)) => "Runs ArchonUI · add it to share".to_string(),
         (Status::Online, true, _) => match error.map(connect_problem) {
             Some(Some(problem)) => problem.replace("{me}", me),
             _ => "Online · connecting…".to_string(),
@@ -608,6 +601,12 @@ fn connect_problem(error: &str) -> Option<String> {
     } else {
         return None;
     })
+}
+
+/// Whether a row gets an Add button instead of the switch: not shared yet, and it runs ArchonUI or is
+/// asking to connect. Shared devices keep their switch, to turn sharing off.
+fn offers_add(row: &Row) -> bool {
+    !row.shared && (row.status == Status::Asking || (row.status != Status::ThisDevice && row.found == Some(Probe::Answers)))
 }
 
 /// An offline device that isn't shared with: listed only when asked, to keep the list short.
@@ -679,9 +678,9 @@ mod tests {
             [("me", Status::ThisDevice), ("pc", Status::Online), ("asker", Status::Asking), ("vps", Status::Online), ("aaa-tv", Status::Online)]
         );
         let line = |id: &str, error: Option<&str>| detail_line(rows.iter().find(|r| r.device.id == id).unwrap(), error, "ashpc");
-        assert_eq!(line("vps", None), "Runs ArchonUI · turn on to share · Linux");
+        assert_eq!(line("vps", None), "Runs ArchonUI · add it to share · Linux");
         assert_eq!(line("aaa-tv", None), "Online · ArchonUI isn't running there · Linux");
-        assert_eq!(line("asker", None), "Wants to connect · turn on to allow · Linux");
+        assert_eq!(line("asker", None), "Wants to connect · add it to allow · Linux");
         assert_eq!(line("pc", None), "Online · connecting… · Linux");
         assert_eq!(
             line("pc", Some("cannot connect to 100.64.0.9:7420: Connection reset without closing handshake")),
@@ -689,6 +688,16 @@ mod tests {
         );
         assert!(line("pc", Some("cannot connect to 100.64.0.9:7420: Connection refused (os error 111)")).starts_with("Not answering"));
         assert!(line("pc", Some("cannot connect to 100.64.0.9:7420: connection timed out")).contains("firewall"));
+
+        // Nothing is shared by being found: devices running ArchonUI or asking in get an Add button each,
+        // and stay unshared until it is pressed.
+        let row = |id: &str| rows.iter().find(|r| r.device.id == id).unwrap();
+        assert!(!row("vps").shared && offers_add(row("vps")));
+        assert!(!row("asker").shared && offers_add(row("asker")));
+        assert!(!offers_add(row("aaa-tv")), "not running ArchonUI: the plain switch");
+        assert!(!offers_add(row("pc")), "already shared: its switch turns it off");
+        assert!(!offers_add(row("me")));
+        assert_eq!(sync.devices, [device("pc")], "finding devices added none");
     }
 
     #[test]
