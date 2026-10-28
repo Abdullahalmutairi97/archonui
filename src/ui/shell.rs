@@ -236,6 +236,17 @@ impl Shell {
         }
     }
 
+    /// There is no agent to start a chat with: say why and what to do. With none installed it also
+    /// looks again, so an agent installed while ArchonUI was open is picked up on the next try.
+    pub(super) fn no_agent(&mut self, cx: &mut Context<Self>) {
+        if self.agents.is_empty() {
+            self.toast("No agent CLI found. Install Claude Code, Codex, Gemini, OpenCode or Pi, then try again.", cx);
+            self.rescan(cx);
+        } else {
+            self.toast("Every agent is turned off. Turn one on in Settings → Harnesses.", cx);
+        }
+    }
+
     pub(super) fn toast(&self, msg: impl Into<String>, cx: &mut Context<Self>) {
         let msg = msg.into();
         self.toasts.update(cx, |t, cx| t.show(msg, cx));
@@ -513,7 +524,7 @@ impl Shell {
         }
         let files = std::mem::take(&mut self.startup_files);
         let Some(agent) = pick_harness(self.state.settings.default_harness.as_deref(), &self.agents) else {
-            self.toast("No agent is enabled", cx);
+            self.no_agent(cx);
             return;
         };
         let id = self.state.new_session(agent, self.default_folder(), crate::app::state::Placement::Focused);

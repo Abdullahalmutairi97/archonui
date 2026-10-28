@@ -17,9 +17,11 @@ jobs:
       - name: Package
         run: |
           name=archonui-${GITHUB_REF_NAME}-linux-x86_64
-          mkdir "$name"
+          mkdir -p "$name/assets/icons" "$name/scripts"
           cp target/release/archonui LICENSE README.md "$name"/
-          cp -r assets/archonui.desktop assets/icons/hicolor scripts/install-desktop.sh "$name"/
+          cp assets/archonui.desktop "$name/assets/"
+          cp -r assets/icons/hicolor "$name/assets/icons/"
+          cp scripts/install-desktop.sh "$name/scripts/"
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
       - uses: softprops/action-gh-release@v2
