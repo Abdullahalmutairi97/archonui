@@ -375,7 +375,7 @@ impl Shell {
             .map(|s| s.agent.clone())
             .or_else(|| self.preferred_agent());
         let Some(agent) = agent else {
-            self.toast("No agent is installed", cx);
+            self.no_agent(cx);
             return;
         };
         let (model, effort) = match focused.filter(|s| s.agent == agent) {

@@ -51,8 +51,12 @@ fn headless(args: &[String]) -> bool {
             env!("CARGO_PKG_VERSION")
         ),
         Some("--detect") => {
-            for a in engine::detect(&harness_settings()) {
+            let agents = engine::detect(&harness_settings());
+            for a in &agents {
                 println!("{:<10} {:<12} {:<9} {}", a.harness.id(), a.version, a.auth.label(), a.path.display());
+            }
+            if agents.is_empty() {
+                eprintln!("no agent CLI found (claude, codex, gemini, opencode or pi) on PATH or in the usual install folders");
             }
         }
         // `--preview-shot <url> <out.png> [<x> <y> <out2.png>]`: load a page in
@@ -476,6 +480,9 @@ fn tmux_test() -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A launcher's PATH often lacks ~/.local/bin, npm, nvm and the like: add them before any thread
+    // starts, so agents, `node` and MCP servers are found the same as from a terminal.
+    engine::extend_path();
     if headless(&args) {
         return;
     }
