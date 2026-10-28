@@ -399,7 +399,7 @@ fn empty_state(env: &StreamEnv) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(px(12.))
-        .child(div().opacity(0.55).children(logo(theme, 44.)))
+        .child(div().opacity(0.8).children(logo(theme, 64.)))
         .child(
             div()
                 .font_family(theme.display_font.clone())

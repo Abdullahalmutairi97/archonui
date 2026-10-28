@@ -745,7 +745,7 @@ impl Shell {
     fn render_empty(&self, area: Rect, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
         let logo = logo_bytes(&theme.logo)
-            .map(|bytes| img(Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))).size(px(72.)).opacity(0.8));
+            .map(|bytes| img(Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))).size(px(104.)).opacity(0.95));
         let button = div()
             .id("tile-empty-new")
             .px(px(22.))
