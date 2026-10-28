@@ -22,7 +22,7 @@ use super::{
     },
 };
 use crate::{
-    app::settings::{Action, AppIcon},
+    app::settings::Action,
     engine::{self, mcp::McpStatus, plugins::Extension, skills::Skill},
 };
 use gpui::{
@@ -442,7 +442,7 @@ impl Shell {
     /// The nav column: logo and title, then the pages with their counts, and the version footer.
     fn settings_nav(&mut self, width: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let logo = self.icon_logo();
+        let logo = self.icon_logo(28.);
         let active = self.settings.page;
         let counts = self.nav_counts();
         let mut nav = div()
@@ -666,30 +666,14 @@ impl Shell {
         counts
     }
 
-    /// The app's logo: the chosen icon, or the theme's logo when the icon follows the theme.
-    pub(super) fn icon_logo(&mut self) -> Option<Arc<Image>> {
-        match self.state.settings.icon.clone() {
-            AppIcon::Custom(path) if path.is_file() => {
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                self.cached_image(format!("file:{}", path.display()), || {
-                    let bytes = std::fs::read(&path).ok()?;
-                    Some(Arc::new(Image::from_bytes(appearance::image_format(&name), bytes)))
-                })
-            }
-            AppIcon::Preset(id) => self.logo_image(&crate::ui::theme::preset(&id).logo.clone()),
-            AppIcon::Theme | AppIcon::Custom(_) => {
-                let name = self.theme.logo.clone();
-                self.logo_image(&name)
-            }
-        }
+    /// The app's logo (the chosen icon) for drawing at `size` px.
+    pub(super) fn icon_logo(&self, size: f32) -> Option<Arc<Image>> {
+        self.theme.logo_at(size)
     }
 
-    /// The embedded logo `name`, decoded once.
-    pub(super) fn logo_image(&mut self, name: &str) -> Option<Arc<Image>> {
-        let bytes = glass_logo(name)?;
-        self.cached_image(format!("logo:{name}"), || {
-            Some(Arc::new(Image::from_bytes(appearance::image_format(name), bytes.to_vec())))
-        })
+    /// The logo `name` (an embedded logo or a file path) for a 36px icon tile.
+    pub(super) fn logo_image(&self, name: &str) -> Option<Arc<Image>> {
+        super::glass::logo_image(name, 44, false)
     }
 
     /// Keys while the modal is open. Escape closes it or cancels a rebinding; keys stay inside the modal.
@@ -747,10 +731,6 @@ impl Shell {
     }
 }
 
-/// The theme logo `name`, or `None` for an unknown name or a missing file.
-fn glass_logo(name: &str) -> Option<Arc<[u8]>> {
-    super::glass::logo_bytes(name)
-}
 
 /// The update channel's label in the nav footer.
 fn channel_name(channel: crate::app::settings::UpdateChannel) -> &'static str {
