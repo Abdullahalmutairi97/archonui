@@ -195,7 +195,7 @@ impl Shell {
             .pr(px(14.))
             .child(collapse)
             .when_some(logo, |row, logo| {
-                row.child(img(logo).w(px(22.)).h(px(22.)).flex_none().object_fit(ObjectFit::Contain))
+                row.child(img(logo).w(px(28.)).h(px(28.)).flex_none().object_fit(ObjectFit::Contain))
             })
             .child(
                 div()

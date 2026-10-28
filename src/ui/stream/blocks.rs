@@ -414,7 +414,7 @@ fn agent_header<H: StreamHost>(ctx: &RowCtx<H>, item: &Item, streaming: bool) ->
         .gap(px(8.))
         .text_size(px(11.))
         .text_color(ctx.theme.muted.to_hsla())
-        .children(logo(&ctx.theme, 16.))
+        .children(logo(&ctx.theme, 18.))
         .child(ctx.app_name.to_uppercase())
         .when(!meta.is_empty(), |header| header.child(format!("· {}", meta.join(" · "))))
 }
