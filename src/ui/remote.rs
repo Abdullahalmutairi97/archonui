@@ -72,6 +72,8 @@ pub struct RemoteUi {
     sending: HashSet<String>,
     /// Cloud copy errors already shown, so one that repeats every round shows once.
     copy_errors: HashSet<String>,
+    /// Why the last connection to each device failed, by `Device::id`, for its row in Settings → Devices.
+    pub(super) connect_errors: HashMap<String, String>,
     /// Projects too big for one message to the cloud. Skipped until the cloud changes, rather than
     /// packed again, minutes of work for a big history, every round.
     too_big: HashSet<String>,
@@ -583,6 +585,7 @@ impl Shell {
                                 this.remote.cloud_asked = client.send(&ClientMsg::ListCloud).is_ok();
                             }
                             let events = client.events.clone();
+                            this.remote.connect_errors.remove(&device.id);
                             this.remote.clients.insert(device.id.clone(), client);
                             this.remote.dropped.remove(&device.id);
                             this.remote.subscribed.remove(&device.id);
@@ -594,7 +597,8 @@ impl Shell {
                             Some(events)
                         }
                         Ok(_) => None,
-                        Err(_) => {
+                        Err(e) => {
+                            this.remote.connect_errors.insert(device.id.clone(), e);
                             // Offline devices are normal; show their chats from the cloud and try again later.
                             this.ask_cloud_for_chats(&device.id);
                             this.retry_later(cx);
@@ -993,6 +997,11 @@ impl Shell {
     /// Whether this window has a live connection to device `id`.
     pub(super) fn device_connected(&self, id: &str) -> bool {
         self.remote.clients.contains_key(id)
+    }
+
+    /// Tailnet addresses that tried to connect here lately but were refused, as they aren't included.
+    pub(super) fn devices_asking(&self) -> Vec<std::net::IpAddr> {
+        self.remote.hub.as_ref().map(|hub| hub.asked()).unwrap_or_default()
     }
 
     pub(super) fn chat_device_name(&self, device: &str) -> String {
