@@ -47,15 +47,20 @@ This builds ArchonUI and adds an `archonui` command and a launcher icon for your
 installed system-wide. The first build takes a few minutes. Run the same command again to update.
 
 **You need:**
-- A C compiler, `pkg-config` and `git` (Arch: `base-devel pkgconf git`, Debian/Ubuntu:
-  `build-essential pkg-config git`, Fedora: `gcc pkgconf-pkg-config git`).
+- A C compiler, `git`, `pkg-config` and the usual desktop libraries. The installer checks and, if
+  something is missing, prints the one command for your distro. For reference:
+  - Arch: `sudo pacman -S --needed base-devel git pkgconf curl libxkbcommon-x11 libxcb freetype2 fontconfig wayland vulkan-icd-loader`
+  - Debian/Ubuntu: `sudo apt install build-essential git pkg-config curl libxkbcommon-x11-dev libxkbcommon-dev libxcb1-dev libx11-xcb-dev libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1 mesa-vulkan-drivers`
+  - Fedora: `sudo dnf install gcc git pkgconf-pkg-config curl libxkbcommon-x11-devel libxkbcommon-devel libxcb-devel freetype-devel fontconfig-devel wayland-devel vulkan-loader mesa-vulkan-drivers`
 - Rust (the installer sets it up with [rustup](https://rustup.rs) if missing).
 - A Wayland or X11 desktop with a Vulkan driver (already there on most desktops).
-- At least one agent CLI on your `PATH`: `claude`, `codex`, `gemini`, `opencode` or `pi`.
+- At least one agent CLI: `claude`, `codex`, `gemini`, `opencode` or `pi`. ArchonUI finds them on your
+  `PATH` and in the usual install folders (npm, nvm, fnm, volta, bun, pnpm, `~/.local/bin`, …), also
+  when opened from the app launcher. OpenCode works without an account, on its free models.
 
 **Other ways to install**
 - **Prebuilt:** download the `.tar.gz` from [Releases](https://github.com/Abdullahalmutairi97/archonui/releases),
-  unpack it and run `archonui`. Run `scripts/install-desktop.sh <binary>` for the launcher icon.
+  unpack it and run `./archonui`. Run `./scripts/install-desktop.sh` in the unpacked folder for the launcher icon.
 - **Arch Linux:** `cd packaging && makepkg -si`
 - **Manual:**
   ```sh
