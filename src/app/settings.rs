@@ -128,6 +128,8 @@ pub struct AppSettings {
     pub notify: bool,
     pub sound: bool,
     pub update_channel: UpdateChannel,
+    /// Check GitHub for a newer version once a day at startup (it never installs without a click).
+    pub update_check: bool,
     pub analytics: bool,
     // Keyboard
     /// Action to keystroke in GPUI form (`ctrl-shift-enter`). An empty string leaves the action unbound.
@@ -217,6 +219,7 @@ impl Default for AppSettings {
             sound: false,
             update_channel: UpdateChannel::default(),
             analytics: false,
+            update_check: true,
             keys: default_keys(),
             keys_version: KEYS_VERSION,
             default_harness: None,

@@ -274,6 +274,23 @@ impl Shell {
             &theme,
         );
 
+        let update_check = self.state.settings.update_check;
+        let mut update_rows = self.update_rows(cx);
+        update_rows.push(toggle_row(
+            "update-check",
+            "Check for updates daily",
+            "Looks at GitHub once a day when ArchonUI starts and shows a dot. It never installs without a click.",
+            update_check,
+            &weak,
+            &theme,
+            |this, on, cx| {
+                this.state.settings.update_check = on;
+                this.save(cx);
+            },
+            None,
+        ));
+        let updates = section("Updates", update_rows, &theme);
+
         let data = section(
             "Data",
             vec![
@@ -303,7 +320,7 @@ impl Shell {
         );
 
         let pins = self.project_pins(cx);
-        vec![startup, pins, agent, notifications, data]
+        vec![startup, pins, agent, notifications, updates, data]
     }
 
     /// The first click on Clear history asks for a second within three seconds; the second clears.

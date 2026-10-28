@@ -365,7 +365,7 @@ impl Shell {
     pub(in crate::ui) fn new_session(&mut self, window: &Window, cx: &mut Context<Self>) {
         let agent = crate::ui::shell::pick_harness(self.state.settings.default_harness.as_deref(), &self.agents);
         let Some(agent) = agent else {
-            self.toast("No agent is enabled", cx);
+            self.no_agent(cx);
             return;
         };
         let cwd = self

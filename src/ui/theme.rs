@@ -512,6 +512,11 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// The app's logo (the chosen icon, see `shell::resolve_theme`) scaled for drawing at `size` px.
+    pub fn logo_at(&self, size: f32) -> Option<std::sync::Arc<gpui::Image>> {
+        crate::ui::glass::logo_image(&self.logo, (size * 2.).ceil() as u32, self.render == Render::Pixelated)
+    }
+
     /// Collapsed-rail tint for session `i` (themes.md §3.6). The ramp repeats every six sessions.
     pub fn band(&self, i: usize, focused: bool) -> Rgba {
         let alpha = if focused { BAND_ALPHA_FOCUSED } else { BAND_ALPHA_IDLE };

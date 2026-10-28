@@ -18,7 +18,7 @@ mod harness;
 mod parse;
 mod session;
 
-pub use detect::{detect, DetectedAgent};
+pub use detect::{detect, extend_path, DetectedAgent};
 pub use discover::{discover, Capabilities, ModelInfo};
 pub use harness::{harness, Harness, Mode, ToolSettings};
 /// For the settings page, to show which tool settings each harness applies.

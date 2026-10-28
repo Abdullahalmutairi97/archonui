@@ -49,20 +49,110 @@ fn search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> =
         env::var_os("PATH").map(|p| env::split_paths(&p).collect()).unwrap_or_default();
     if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-        for sub in [
-            ".local/bin",
-            ".cargo/bin",
-            ".npm-global/bin",
-            ".bun/bin",
-            ".opencode/bin",
-            ".local/share/pi-node/current/bin",
-            ".pi/agent/bin",
-        ] {
-            dirs.push(home.join(sub));
+        for dir in user_bin_dirs(&home) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
         }
     }
-    dirs.push("/usr/local/bin".into());
+    if !dirs.iter().any(|d| d == Path::new("/usr/local/bin")) {
+        dirs.push("/usr/local/bin".into());
+    }
     dirs
+}
+
+/// Where agent CLIs and the `node` they run on are installed per user: npm/bun/pnpm/volta global
+/// bins, the newest nvm and fnm Node versions, mise/asdf shims, the npm `prefix` from `~/.npmrc`,
+/// and the agents' own installers. Only dirs that exist, in that order.
+pub fn user_bin_dirs(home: &Path) -> Vec<PathBuf> {
+    let var = |k: &str| env::var_os(k).map(PathBuf::from).filter(|p| p.is_absolute());
+    let data = var("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share"));
+    bin_dirs_in(home, &data, var("NVM_DIR"), var("FNM_DIR"))
+}
+
+fn bin_dirs_in(home: &Path, data: &Path, nvm_dir: Option<PathBuf>, fnm_dir: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = [
+        ".local/bin",
+        "bin",
+        ".cargo/bin",
+        ".npm-global/bin",
+        ".npm-packages/bin",
+        ".bun/bin",
+        ".volta/bin",
+        ".opencode/bin",
+        ".claude/local",
+        ".local/share/pi-node/current/bin",
+        ".pi/agent/bin",
+        ".yarn/bin",
+        ".asdf/shims",
+    ]
+    .iter()
+    .map(|sub| home.join(sub))
+    .collect();
+    dirs.push(data.join("pnpm"));
+    dirs.push(data.join("mise/shims"));
+    if let Some(prefix) = npmrc_prefix(home) {
+        dirs.push(prefix.join("bin"));
+    }
+    // nvm: every installed Node, newest first (the CLIs live in the Node they were installed with).
+    let nvm = nvm_dir.unwrap_or_else(|| home.join(".nvm"));
+    dirs.extend(newest_first(&nvm.join("versions/node")).into_iter().map(|v| v.join("bin")));
+    // fnm: its default alias, then every installed Node, newest first.
+    for fnm in [fnm_dir, Some(data.join("fnm")), Some(home.join(".fnm"))].into_iter().flatten() {
+        dirs.push(fnm.join("aliases/default/bin"));
+        dirs.extend(newest_first(&fnm.join("node-versions")).into_iter().map(|v| v.join("installation/bin")));
+    }
+    let mut seen = Vec::new();
+    dirs.retain(|d| d.is_dir() && !seen.contains(d) && {
+        seen.push(d.clone());
+        true
+    });
+    dirs
+}
+
+/// The subdirectories of `dir` named like versions (`v22.11.0`), newest first.
+fn newest_first(dir: &Path) -> Vec<PathBuf> {
+    let key = |p: &PathBuf| -> Vec<u64> {
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        name.trim_start_matches('v').split('.').map(|n| n.parse().unwrap_or(0)).collect()
+    };
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .unwrap_or_default();
+    found.sort_by_key(|p| std::cmp::Reverse(key(p)));
+    found
+}
+
+/// The `prefix=` line of `~/.npmrc` (`npm config set prefix ~/.npm-global` writes it), `~` expanded.
+fn npmrc_prefix(home: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(home.join(".npmrc")).ok()?;
+    let value = text.lines().find_map(|l| l.trim().strip_prefix("prefix"))?.trim_start().strip_prefix('=')?.trim();
+    let value = value.trim_matches('"');
+    let path = match value.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None => PathBuf::from(value.replace("${HOME}", &home.to_string_lossy()).replace("$HOME", &home.to_string_lossy())),
+    };
+    path.is_absolute().then_some(path)
+}
+
+/// Adds the per-user install dirs (`user_bin_dirs`) to the end of this process's `PATH`, so an app
+/// started from a desktop launcher finds the same agents as a terminal, and the agents it starts find
+/// `node`, `npx` and each other. Dirs already on `PATH` keep their place. Call once at startup,
+/// before any threads.
+pub fn extend_path() {
+    let Some(home) = env::var_os("HOME").map(PathBuf::from) else { return };
+    let mut dirs: Vec<PathBuf> = env::var_os("PATH").map(|p| env::split_paths(&p).collect()).unwrap_or_default();
+    let before = dirs.len();
+    for dir in user_bin_dirs(&home) {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    if dirs.len() != before {
+        if let Ok(path) = env::join_paths(dirs) {
+            env::set_var("PATH", path);
+        }
+    }
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -104,3 +194,46 @@ fn probe_version(path: &Path) -> String {
         .unwrap_or_else(unknown)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agents_installed_with_nvm_fnm_npm_prefix_or_volta_are_found() {
+        let home = std::env::temp_dir().join(format!("archonui-detect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let data = home.join(".local/share");
+        for dir in [
+            ".nvm/versions/node/v18.20.0/bin",
+            ".nvm/versions/node/v22.11.0/bin",
+            ".nvm/versions/node/v9.0.0/bin",
+            ".local/share/fnm/aliases/default/bin",
+            ".local/share/fnm/node-versions/v20.1.0/installation/bin",
+            ".volta/bin",
+            "npm-prefix/bin",
+            ".opencode/bin",
+        ] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        std::fs::write(home.join(".npmrc"), "fund=false\nprefix = ~/npm-prefix\n").unwrap();
+        let dirs = bin_dirs_in(&home, &data, None, None);
+        let rel: Vec<String> =
+            dirs.iter().map(|d| d.strip_prefix(&home).unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            rel,
+            [
+                ".volta/bin",
+                ".opencode/bin",
+                "npm-prefix/bin",
+                ".nvm/versions/node/v22.11.0/bin",
+                ".nvm/versions/node/v18.20.0/bin",
+                ".nvm/versions/node/v9.0.0/bin",
+                ".local/share/fnm/aliases/default/bin",
+                ".local/share/fnm/node-versions/v20.1.0/installation/bin",
+            ],
+            "only dirs that exist, newest Node first"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}

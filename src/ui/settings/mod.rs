@@ -11,6 +11,7 @@ mod keyboard;
 mod models;
 mod skills;
 mod tools;
+mod updates;
 
 pub(crate) use controls::key_label;
 pub(crate) use models::long_context_model;
@@ -24,7 +25,7 @@ use super::{
     },
 };
 use crate::{
-    app::settings::{Action, AppIcon},
+    app::settings::Action,
     engine::{self, mcp::McpStatus, plugins::Extension, skills::Skill},
 };
 use gpui::{
@@ -254,6 +255,8 @@ pub struct SettingsUi {
     pub(super) confirm_clear: bool,
     /// The page body's width inside its padding, in design px, so pages can drop columns as it narrows.
     pub(super) body_w: f32,
+    /// Settings → General → Updates.
+    pub(super) update: updates::UpdateUi,
 }
 
 impl Shell {
@@ -502,7 +505,7 @@ impl Shell {
     /// The nav column: logo and title, the pages in their groups with counts, and the version.
     fn settings_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme.clone();
-        let logo = self.icon_logo();
+        let logo = self.icon_logo(28.);
         let active = self.settings.page;
         let counts = self.nav_counts();
         let selected = crate::ui::theme::mix(theme.bg, theme.fg, 0.16);
@@ -530,7 +533,7 @@ impl Shell {
                     .px(px(8.))
                     .pb(px(10.))
                     .when_some(logo, |row, logo| {
-                        row.child(img(logo).w(px(18.)).h(px(18.)).flex_none().object_fit(ObjectFit::Contain))
+                        row.child(img(logo).w(px(24.)).h(px(24.)).flex_none().object_fit(ObjectFit::Contain))
                     })
                     .child(
                         div()
@@ -567,7 +570,12 @@ impl Shell {
                         .when(is_active, |d| d.bg(selected.to_hsla()).text_color(theme.fg.to_hsla()))
                         .when(!is_active, |d| d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla())))
                         .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
-                        .child(page.label())
+                        .child(
+                            div().flex().items_center().gap(px(6.)).child(page.label()).when(
+                                page == Page::General && self.settings.update.dot(),
+                                |d| d.child(update_dot(&theme)),
+                            ),
+                        )
                         .when_some(count, |row, n| {
                             row.child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
                         }),
@@ -709,30 +717,14 @@ impl Shell {
         counts
     }
 
-    /// The app's logo: the chosen icon, or the theme's logo when the icon follows the theme.
-    pub(super) fn icon_logo(&mut self) -> Option<Arc<Image>> {
-        match self.state.settings.icon.clone() {
-            AppIcon::Custom(path) if path.is_file() => {
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                self.cached_image(format!("file:{}", path.display()), || {
-                    let bytes = std::fs::read(&path).ok()?;
-                    Some(Arc::new(Image::from_bytes(appearance::image_format(&name), bytes)))
-                })
-            }
-            AppIcon::Preset(id) => self.logo_image(&crate::ui::theme::preset(&id).logo.clone()),
-            AppIcon::Theme | AppIcon::Custom(_) => {
-                let name = self.theme.logo.clone();
-                self.logo_image(&name)
-            }
-        }
+    /// The app's logo (the chosen icon) for drawing at `size` px.
+    pub(super) fn icon_logo(&self, size: f32) -> Option<Arc<Image>> {
+        self.theme.logo_at(size)
     }
 
-    /// The embedded logo `name`, decoded once.
-    pub(super) fn logo_image(&mut self, name: &str) -> Option<Arc<Image>> {
-        let bytes = glass_logo(name)?;
-        self.cached_image(format!("logo:{name}"), || {
-            Some(Arc::new(Image::from_bytes(appearance::image_format(name), bytes.to_vec())))
-        })
+    /// The logo `name` (an embedded logo or a file path) for a 36px icon tile.
+    pub(super) fn logo_image(&self, name: &str) -> Option<Arc<Image>> {
+        super::glass::logo_image(name, 44, false)
     }
 
     /// Keys while the modal is open. Escape closes it or cancels a rebinding; keys stay inside the modal.
@@ -837,6 +829,11 @@ fn search_config(placeholder: &str) -> TextInputConfig {
         line_height: px(18.),
         ..Default::default()
     }
+}
+
+/// The small "update available" dot, on the sidebar's Settings button and the General page.
+pub(super) fn update_dot(theme: &crate::ui::theme::Theme) -> gpui::Div {
+    div().w(px(7.)).h(px(7.)).rounded(px(4.)).bg(theme.acc.to_hsla())
 }
 
 #[cfg(test)]

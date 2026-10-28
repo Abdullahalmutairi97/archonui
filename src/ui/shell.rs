@@ -147,6 +147,7 @@ impl Shell {
             this.toast(message, cx);
         }
         this.rescan(cx);
+        this.startup_update_check(cx);
         this.dev_open(cx);
         this.autopilot(cx);
         this.refresh_remote(cx);
@@ -250,6 +251,17 @@ impl Shell {
         }
     }
 
+    /// There is no agent to start a chat with: say why and what to do. With none installed it also
+    /// looks again, so an agent installed while ArchonUI was open is picked up on the next try.
+    pub(super) fn no_agent(&mut self, cx: &mut Context<Self>) {
+        if self.agents.is_empty() {
+            self.toast("No agent CLI found. Install Claude Code, Codex, Gemini, OpenCode or Pi, then try again.", cx);
+            self.rescan(cx);
+        } else {
+            self.toast("Every agent is turned off. Turn one on in Settings → Harnesses.", cx);
+        }
+    }
+
     pub(super) fn toast(&self, msg: impl Into<String>, cx: &mut Context<Self>) {
         let msg = msg.into();
         self.toasts.update(cx, |t, cx| t.show(msg, cx));
@@ -293,11 +305,12 @@ impl Shell {
 
     /// The app identity's icon as a file: the custom icon file, else the logo cached in the data dir.
     fn identity_icon(&self) -> Option<PathBuf> {
-        let key = match &self.state.settings.icon {
-            AppIcon::Custom(path) if path.is_file() => return Some(path.clone()),
-            AppIcon::Preset(id) => theme::preset(id).logo.to_string(),
-            AppIcon::Theme | AppIcon::Custom(_) => self.theme.logo.clone(),
-        };
+        if let AppIcon::Custom(path) = &self.state.settings.icon {
+            if path.is_file() {
+                return Some(path.clone());
+            }
+        }
+        let key = self.theme.logo.clone();
         let bytes = crate::ui::glass::logo_bytes(&key)?;
         // A logo file is cached under its file name; the embedded logo's key is already one.
         let name = Path::new(&key).file_name().map_or_else(|| key.clone(), |n| n.to_string_lossy().into_owned());
@@ -443,7 +456,33 @@ pub(super) fn resolve_theme(state: &AppState) -> Theme {
     let key = theme_key(&s.theme);
     let custom: HashMap<String, String> =
         s.custom_colours.get(key).map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-    theme::resolve(theme::preset(&s.theme), &custom, s.fonts.get(key).cloned().unwrap_or_default())
+    let mut theme = theme::resolve(theme::preset(&s.theme), &custom, s.fonts.get(key).cloned().unwrap_or_default());
+    // The chosen icon is the logo everywhere: sidebar, welcome, empty chat, reply header, Settings and
+    // notifications all draw `theme.logo`. Before, only the sidebar and Settings followed the icon.
+    theme.logo = identity_logo(&s.icon, &theme.logo, |id| theme::preset(id).logo.to_string(), |p| p.is_file());
+    theme
+}
+
+/// The logo key (an embedded logo's name or a file path, see `glass::logo_bytes`) for `icon`, where
+/// `theme_logo` is the theme's own logo and `preset_logo` looks up another theme's. Picking the ArchonUI
+/// mark keeps the current theme's tint of it when the theme has one. A missing custom file falls back
+/// to the theme's logo.
+pub(super) fn identity_logo(
+    icon: &AppIcon,
+    theme_logo: &str,
+    preset_logo: impl Fn(&str) -> String,
+    exists: impl Fn(&Path) -> bool,
+) -> String {
+    match icon {
+        AppIcon::Theme => theme_logo.to_string(),
+        AppIcon::Preset(id) => {
+            let logo = preset_logo(id);
+            let tinted_mark = logo == theme::DEFAULT_LOGO && theme_logo.split('#').next() == Some(theme::DEFAULT_LOGO);
+            if tinted_mark { theme_logo.to_string() } else { logo }
+        }
+        AppIcon::Custom(path) if exists(path) => path.display().to_string(),
+        AppIcon::Custom(_) => theme_logo.to_string(),
+    }
 }
 
 /// The harness new sessions start with: the default from settings when it is detected and enabled,
@@ -551,7 +590,7 @@ impl Shell {
         }
         let files = std::mem::take(&mut self.startup_files);
         let Some(agent) = pick_harness(self.state.settings.default_harness.as_deref(), &self.agents) else {
-            self.toast("No agent is enabled", cx);
+            self.no_agent(cx);
             return;
         };
         let id = self.state.new_session(agent, self.default_folder(), crate::app::state::Placement::Focused);
@@ -611,6 +650,22 @@ mod tests {
         assert_eq!(pick(None), Some("codex"));
         assert_eq!(pick_harness_id(Some("claude"), [("claude", false)].into_iter()), None);
         assert_eq!(pick_harness_id(None, std::iter::empty()), None);
+    }
+
+    #[test]
+    fn the_chosen_icon_is_the_logo_everywhere() {
+        let presets = |id: &str| match id {
+            "blood-moon" => "/cfg/logos/logo-bm.png".to_string(),
+            _ => theme::DEFAULT_LOGO.to_string(),
+        };
+        let tinted = format!("{}#8fb8e8", theme::DEFAULT_LOGO);
+        let pick = |icon: &AppIcon, theme_logo: &str| identity_logo(icon, theme_logo, presets, |p| p.ends_with("mine.png"));
+        assert_eq!(pick(&AppIcon::Theme, &tinted), tinted, "following the theme keeps its tinted mark");
+        assert_eq!(pick(&AppIcon::Preset("blood-moon".into()), &tinted), "/cfg/logos/logo-bm.png");
+        assert_eq!(pick(&AppIcon::Preset("archonui".into()), &tinted), tinted, "the mark keeps the theme's tint");
+        assert_eq!(pick(&AppIcon::Preset("archonui".into()), "/cfg/logos/logo-bm.png"), theme::DEFAULT_LOGO);
+        assert_eq!(pick(&AppIcon::Custom("/data/icons/mine.png".into()), &tinted), "/data/icons/mine.png");
+        assert_eq!(pick(&AppIcon::Custom("/data/icons/gone.png".into()), &tinted), tinted, "a deleted file falls back");
     }
 
     #[test]

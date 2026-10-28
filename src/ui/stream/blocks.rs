@@ -12,25 +12,22 @@ use crate::{
     engine::{attach::{human_size, Attachment, Kind}, Mode},
     store::{Role, Todo, TodoStatus, ToolCall, ToolKind, Usage},
     ui::{
-        glass,
         theme::{Rgba, Theme},
         widgets::{AttachmentCard, CardVariant},
     },
 };
 use gpui::{
     div, img, linear_color_stop, linear_gradient, prelude::*, relative, AnyElement, App, ClipboardItem, Div,
-    FontWeight, HighlightStyle, Hsla, Image as GpuiImage, ImageFormat, MouseButton, MouseDownEvent,
+    FontWeight, HighlightStyle, Hsla, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ObjectFit, Point, Pixels, SharedString, StyledText, TextLayout, UnderlineStyle,
     Window,
 };
 use crate::ui::scale::px;
-use std::{ops::Range, sync::Arc};
+use std::ops::Range;
 
 /// The app logo, or nothing when the theme has none. `size` is the square edge in pixels.
 pub(super) fn logo(theme: &Theme, size: f32) -> Option<AnyElement> {
-    let bytes = glass::logo_bytes(&theme.logo)?;
-    let image = Arc::new(GpuiImage::from_bytes(ImageFormat::Png, bytes.to_vec()));
-    Some(img(image).size(px(size)).into_any_element())
+    Some(img(theme.logo_at(size)?).size(px(size)).into_any_element())
 }
 
 /// One message of the stream, centred, with the 16px gap below it (chat.md §1.1).
@@ -414,7 +411,7 @@ fn agent_header<H: StreamHost>(ctx: &RowCtx<H>, item: &Item, streaming: bool) ->
         .gap(px(8.))
         .text_size(px(11.))
         .text_color(ctx.theme.muted.to_hsla())
-        .children(logo(&ctx.theme, 16.))
+        .children(logo(&ctx.theme, 18.))
         .child(ctx.app_name.to_uppercase())
         .when(!meta.is_empty(), |header| header.child(format!("· {}", meta.join(" · "))))
 }

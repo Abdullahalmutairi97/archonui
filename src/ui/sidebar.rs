@@ -20,21 +20,20 @@ use super::{
 };
 use crate::{
     app::{
-        settings::AppIcon,
         workspace::LeftTab,
     },
     store,
 };
 use gpui::{
-    div, img, prelude::*, transparent_black, AnyElement, ClickEvent, Context, ElementId, Entity, Hsla, Image,
-    ImageFormat, ImageSource, KeyDownEvent, ObjectFit, Pixels, Point, Stateful, Subscription, Task, Window,
+    div, img, prelude::*, transparent_black, AnyElement, ClickEvent, Context, ElementId, Entity, Hsla,
+    ImageSource, KeyDownEvent, ObjectFit, Pixels, Point, Stateful, Subscription, Task, Window,
 };
 use crate::ui::scale::px;
 use icons::Glyph;
 use menu::MenuView;
 use projects::ProjectInfo;
 use sessions::Entry;
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::{Duration, Instant}};
+use std::{collections::HashMap, path::PathBuf, time::{Duration, Instant}};
 
 /// Below this width the sidebar draws the rail, so a collapsing sidebar switches mid-animation.
 const RAIL_BELOW: f32 = 120.;
@@ -53,8 +52,6 @@ pub struct SidebarUi {
     menu: Option<Menu>,
     /// Git branch and language per project folder, probed off the UI thread once.
     probes: HashMap<PathBuf, Probe>,
-    /// The app identity image, decoded once per logo name.
-    logo: Option<(String, Arc<Image>)>,
     /// Redraws every `CLOCK` so relative times stay current.
     clock: Option<Task<()>>,
     /// Focus the shell on the next frame, after an input inside the sidebar went away.
@@ -195,7 +192,7 @@ impl Shell {
             .pr(px(14.))
             .child(collapse)
             .when_some(logo, |row, logo| {
-                row.child(img(logo).w(px(22.)).h(px(22.)).flex_none().object_fit(ObjectFit::Contain))
+                row.child(img(logo).w(px(28.)).h(px(28.)).flex_none().object_fit(ObjectFit::Contain))
             })
             .child(
                 div()
@@ -212,19 +209,9 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The app identity: a custom icon file, a preset icon, or the theme's logo.
+    /// The app identity: the chosen icon (a custom file, a preset icon, or the theme's logo).
     fn identity_logo(&mut self) -> Option<ImageSource> {
-        let key = match &self.state.settings.icon {
-            AppIcon::Custom(path) if path.is_file() => return Some(path.clone().into()),
-            AppIcon::Preset(id) => crate::ui::theme::preset(id).logo.to_string(),
-            AppIcon::Theme | AppIcon::Custom(_) => self.theme.logo.clone(),
-        };
-        if self.sidebar.logo.as_ref().map_or(true, |(name, _)| *name != key) {
-            let bytes = glass::logo_bytes(&key)?;
-            let image = Image::from_bytes(ImageFormat::Png, bytes.to_vec());
-            self.sidebar.logo = Some((key, Arc::new(image)));
-        }
-        self.sidebar.logo.as_ref().map(|(_, image)| image.clone().into())
+        self.theme.logo_at(28.).map(Into::into)
     }
 
     /// Sessions | Projects segmented control (layout.md §2.1 row 2).
@@ -277,7 +264,10 @@ impl Shell {
                     .hover(|s| s.bg(theme.line2.to_hsla()))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.open_settings(cx)))
                     .child(icons::glyph(Glyph::Gear, 18., 1.5, muted))
-                    .child("Settings"),
+                    .child("Settings")
+                    .when(self.settings.update.dot(), |d| {
+                        d.child(super::settings::update_dot(theme)).tooltip(tooltip("Update available", TooltipColors::of(theme)))
+                    }),
             )
             .child(
                 div()
