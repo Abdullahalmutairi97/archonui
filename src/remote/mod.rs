@@ -76,13 +76,17 @@ pub struct SyncSettings {
     /// `Device::id` of the device that keeps the always-on cloud copy, if any. Must be one of
     /// `devices` or this device itself.
     pub cloud: Option<String>,
+    /// The user has picked or cleared the cloud themselves, so a `--serve` host is never made the cloud
+    /// on its own again (see `adopt_serving_cloud`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cloud_picked: bool,
     /// Copy secret-looking files (.env, keys, certificates) to the cloud too. Off: they stay on this device.
     pub copy_secrets: bool,
 }
 
 impl Default for SyncSettings {
     fn default() -> Self {
-        Self { enabled: false, port: DEFAULT_PORT, devices: Vec::new(), cloud: None, copy_secrets: false }
+        Self { enabled: false, port: DEFAULT_PORT, devices: Vec::new(), cloud: None, cloud_picked: false, copy_secrets: false }
     }
 }
 
@@ -110,6 +114,18 @@ impl SyncSettings {
     pub fn is_cloud(&self, id: &str) -> bool {
         self.cloud.as_deref() == Some(id)
     }
+
+    /// After a connection to device `id`: when its `Welcome` says it is a headless `archonui --serve`
+    /// (the always-on box) and no cloud device is chosen yet, it becomes the cloud. Only an included
+    /// device can be, and once the user has picked or cleared the cloud themselves it is left to them.
+    /// Returns whether it changed.
+    pub fn adopt_serving_cloud(&mut self, id: &str, serve: bool) -> bool {
+        if !serve || self.cloud.is_some() || self.cloud_picked || !self.devices.iter().any(|d| d.id == id) {
+            return false;
+        }
+        self.cloud = Some(id.to_string());
+        true
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +139,22 @@ mod tests {
         assert!(!s.enabled);
         assert_eq!(s.port, DEFAULT_PORT);
         assert!(!s.allows("100.1.2.3"));
+    }
+
+    #[test]
+    fn a_serving_device_becomes_the_cloud_only_on_first_setup() {
+        let vps = Device { id: "n-vps".into(), name: "vps".into(), dns_name: String::new(), addr: "100.80.70.23".into(), addr6: String::new() };
+        let mut s = SyncSettings { enabled: true, devices: vec![vps.clone()], ..Default::default() };
+        assert!(!s.adopt_serving_cloud("n-vps", false), "a desktop app answering is not the cloud");
+        assert!(!s.adopt_serving_cloud("n-other", true), "only an added device");
+        assert!(s.adopt_serving_cloud("n-vps", true));
+        assert!(s.is_cloud("n-vps"));
+        assert!(!s.adopt_serving_cloud("n-vps", true), "already the cloud");
+        let mut picked = SyncSettings { cloud: Some("n-pc".into()), ..s.clone() };
+        assert!(!picked.adopt_serving_cloud("n-vps", true), "the user's own pick stays");
+        assert!(picked.is_cloud("n-pc"));
+        let mut cleared = SyncSettings { cloud: None, cloud_picked: true, ..s };
+        assert!(!cleared.adopt_serving_cloud("n-vps", true), "a cloud the user turned off stays off");
     }
 
     #[test]

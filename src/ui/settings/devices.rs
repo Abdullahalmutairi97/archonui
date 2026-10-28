@@ -221,6 +221,7 @@ impl Shell {
                         weak.update(cx, |this, cx| {
                             let sync = &mut this.state.settings.sync;
                             sync.cloud = if sync.is_cloud(&device.id) { None } else { Some(device.id.clone()) };
+                            sync.cloud_picked = true;
                             this.save(cx);
                         })
                         .ok();

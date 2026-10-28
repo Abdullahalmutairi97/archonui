@@ -353,7 +353,7 @@ impl Shell {
     fn start_hub(&mut self, me: &Device, cx: &mut Context<Self>) {
         let Ok(ip) = me.addr.parse::<IpAddr>() else { return };
         let bind = SocketAddr::new(ip, self.state.settings.sync.port);
-        match Hub::start(bind, me.name.clone(), self.state.settings.sync.clone()) {
+        match Hub::start(bind, me.name.clone(), false, self.state.settings.sync.clone()) {
             Ok((hub, requests)) => {
                 self.remote.listen_failed_at = None;
                 self.remote.hub = Some(hub.clone());
@@ -580,6 +580,11 @@ impl Shell {
                     match connected {
                         Ok(client) if wanted => {
                             let _ = client.send(&ClientMsg::ListSessions);
+                            // The first `--serve` host added becomes the cloud (task: auto-mark the VPS).
+                            if this.state.settings.sync.adopt_serving_cloud(&device.id, client.serve) {
+                                this.save(cx);
+                                this.toast(format!("{} runs archonui --serve, so it keeps the cloud copy. Change it in Settings → Devices", device.name), cx);
+                            }
                             let is_cloud = this.state.settings.sync.is_cloud(&device.id);
                             if is_cloud {
                                 this.remote.cloud_asked = client.send(&ClientMsg::ListCloud).is_ok();

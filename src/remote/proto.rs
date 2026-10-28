@@ -139,12 +139,24 @@ pub struct SessionSummary {
     pub messages: usize,
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// Host to client.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostMsg {
-    /// Answer to `Hello`. `device` is the host's Tailscale host name.
-    Welcome { device: String, version: u32 },
+    /// Answer to `Hello`. `device` is the host's Tailscale host name. `serve` is true when the host is a
+    /// headless `archonui --serve` (the always-on box), so a client can make it the cloud device. Optional
+    /// and left out when false, so VERSION stays 1: an older host never sends it (false), and an older
+    /// client ignores it.
+    Welcome {
+        device: String,
+        version: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        serve: bool,
+    },
     /// Every visible chat on the host, newest first.
     Sessions { sessions: Vec<SessionSummary> },
     /// The whole chat, as `store::Session` serializes, so the client can show its history.
@@ -483,7 +495,8 @@ mod tests {
         let summary_wire = r#"{"id":"s1","title":"T","agent":"claude","project":"p","cwd":"/w","updated":5,"busy":false,"messages":2}"#;
         let cloud = CloudProject { project: "p".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), updated: 7 };
         let host: Vec<(HostMsg, String)> = vec![
-            (HostMsg::Welcome { device: "vps".into(), version: 1 }, r#"{"type":"welcome","device":"vps","version":1}"#.into()),
+            (HostMsg::Welcome { device: "pc".into(), version: 1, serve: false }, r#"{"type":"welcome","device":"pc","version":1}"#.into()),
+            (HostMsg::Welcome { device: "vps".into(), version: 1, serve: true }, r#"{"type":"welcome","device":"vps","version":1,"serve":true}"#.into()),
             (HostMsg::Sessions { sessions: vec![summary.clone()] }, format!(r#"{{"type":"sessions","sessions":[{summary_wire}]}}"#)),
             (HostMsg::Snapshot { session: json!({"id": "s1"}), busy: true }, r#"{"type":"snapshot","session":{"id":"s1"},"busy":true}"#.into()),
             (HostMsg::Created { session: summary }, format!(r#"{{"type":"created","session":{summary_wire}}}"#)),
@@ -662,4 +675,23 @@ mod tests {
         let f: HostMsg = decode(r#"{"type":"finished","session":"s","error":null}"#).unwrap();
         assert_eq!(f, HostMsg::Finished { session: "s".into(), error: None, stopped: false });
     }
+
+    /// `serve` is optional, so protocol 1 peers from before it still talk to new ones both ways.
+    #[test]
+    fn welcome_serve_is_optional_both_ways() {
+        // An older host sends no `serve`: not a --serve host.
+        let old: HostMsg = decode(r#"{"type":"welcome","device":"vps","version":1}"#).unwrap();
+        assert_eq!(old, HostMsg::Welcome { device: "vps".into(), version: 1, serve: false });
+        // An older client reads a new host's Welcome with its Welcome shape, ignoring `serve`.
+        #[derive(Deserialize, Debug, PartialEq)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum OldHostMsg {
+            Welcome { device: String, version: u32 },
+        }
+        let new = encode(&HostMsg::Welcome { device: "vps".into(), version: VERSION, serve: true });
+        let read: OldHostMsg = serde_json::from_str(&new).unwrap();
+        assert_eq!(read, OldHostMsg::Welcome { device: "vps".into(), version: 1 });
+        assert_eq!(VERSION, 1);
+    }
+
 }

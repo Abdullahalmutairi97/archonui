@@ -851,7 +851,7 @@ fn listen(bind: SocketAddr, device: String, mut state: AppState) -> io::Result<(
     let (work_tx, work_rx) = smol::channel::unbounded::<Work>();
     // Before any thread starts, so every thread has the signals blocked.
     catch_stop_signals(work_tx.clone());
-    let (hub, requests) = Hub::start(bind, device, sync)?;
+    let (hub, requests) = Hub::start(bind, device, true, sync)?;
     let harness_settings = store::Settings { harnesses: state.settings.harnesses.clone(), ..Default::default() };
     let agents = engine::detect(&harness_settings);
     // The headless host keeps the cloud copy: `--serve` is meant for the always-on box.
@@ -1045,7 +1045,7 @@ mod tests {
     fn a_request_from_a_newer_client_gets_an_error() {
         use crate::remote::client::{Client, ClientEvent};
         // Port 0 and then the port it got: picking a free port first races the other tests for it.
-        let (hub, requests) = Hub::start(SocketAddr::from(([127, 0, 0, 1], 0)), "host".into(), Default::default()).unwrap();
+        let (hub, requests) = Hub::start(SocketAddr::from(([127, 0, 0, 1], 0)), "host".into(), false, Default::default()).unwrap();
         let port = hub.local_addr().port();
         let client = Client::connect("127.0.0.1", port, "newer").unwrap();
         // The frame a newer client would send, as this version reads it.
@@ -1109,7 +1109,7 @@ mod tests {
         let mut app = state();
         let p = app.add_project("open here", project_dir.clone());
         app.workspace.current_project = Some(p.clone());
-        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let agents = [pi_at("/nonexistent/archonui-test-pi")];
         let mut ask = |cwd: PathBuf| -> (PathBuf, Option<String>) {
             let before: Vec<String> = app.sessions().iter().map(|s| s.id.clone()).collect();
@@ -1133,7 +1133,7 @@ mod tests {
     fn a_chat_another_device_starts_keeps_the_hosts_tile_and_waits_for_its_prompt() {
         let mut app = state();
         let mine = app.new_session("pi", std::env::temp_dir(), Placement::Focused);
-        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let agents = [pi_at("/nonexistent/archonui-test-pi")];
         let msg = ClientMsg::NewSession { agent: "pi".into(), cwd: std::env::temp_dir(), project: None };
         handle(&mut app, &agents, &hub, None, Request { conn: 1, msg });
@@ -1153,7 +1153,7 @@ mod tests {
     #[test]
     fn the_cloud_worker_answers_off_the_owner_thread() {
         use super::super::client::Client;
-        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let client = Client::connect("127.0.0.1", hub.local_addr().port(), "c").unwrap();
         client.send(&ClientMsg::ListCloud).unwrap();
         let req = next_request(&requests);
@@ -1170,7 +1170,7 @@ mod tests {
         let mut app = state();
         let id = app.new_session("pi", std::env::temp_dir(), Placement::Focused);
         app.set_options(&id, Some("big".into()), Some("high".into()), Mode::Auto);
-        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, _requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let agents = [pi_at("/nonexistent/archonui-test-pi")];
         let prompt = |default_model, default_effort| ClientMsg::Prompt {
             session: id.clone(),
@@ -1195,7 +1195,7 @@ mod tests {
     #[test]
     fn a_requested_chat_left_empty_goes_when_its_asker_disconnects() {
         use super::super::client::Client;
-        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let port = hub.local_addr().port();
         let asker = Client::connect("127.0.0.1", port, "a").unwrap();
         let follower = Client::connect("127.0.0.1", port, "b").unwrap();
@@ -1260,7 +1260,7 @@ mod tests {
     #[test]
     fn an_approval_reaches_every_follower_and_the_first_answer_wins() {
         use super::super::client::Client;
-        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let port = hub.local_addr().port();
         let a = Client::connect("127.0.0.1", port, "a").unwrap();
         let b = Client::connect("127.0.0.1", port, "b").unwrap();
@@ -1325,7 +1325,7 @@ mod tests {
     #[test]
     fn errors_name_the_request_they_answer() {
         use super::super::client::Client;
-        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let c = Client::connect("127.0.0.1", hub.local_addr().port(), "a").unwrap();
         let put = ClientMsg::PutProject { project: "p1".into(), name: "app".into(), device: "n1".into(), commit: "abc".into(), bundle: "!".into() };
         c.send(&put).unwrap();
@@ -1346,7 +1346,7 @@ mod tests {
     #[test]
     fn rename_and_delete_from_another_device_change_the_hosts_chat() {
         use super::super::client::Client;
-        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let c = Client::connect("127.0.0.1", hub.local_addr().port(), "a").unwrap();
         let mut app = state();
         let id = app.new_session("pi", std::env::temp_dir(), Placement::Focused);
@@ -1391,7 +1391,7 @@ mod tests {
     #[test]
     fn always_allow_settles_the_same_tool_and_a_finished_turn_denies_the_rest() {
         use super::super::client::Client;
-        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), Default::default()).unwrap();
+        let (hub, requests) = Hub::start("127.0.0.1:0".parse().unwrap(), "host".into(), false, Default::default()).unwrap();
         let c = Client::connect("127.0.0.1", hub.local_addr().port(), "a").unwrap();
         c.send(&ClientMsg::Subscribe { session: "s1".into() }).unwrap();
         let conn = next_request(&requests).conn;
