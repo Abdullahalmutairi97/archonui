@@ -183,25 +183,23 @@ impl Shell {
         let theme = self.theme.clone();
         let name = self.settings.name.as_ref().map(|(input, _)| input.clone());
         let app_name = self.state.settings.app_name.clone();
-        let logo = self.icon_logo();
+        let logo = self.icon_logo(18.);
         let reset_op = if matches!(self.state.settings.icon, AppIcon::Theme) { 0.4 } else { 1.0 };
-        let current = self.state.settings.icon.clone();
-        let theme_logo = self.theme.logo.clone();
+        let current_logo = self.theme.logo.clone();
 
         let mut tiles = div().flex().flex_wrap().justify_end().gap(px(6.)).max_w(px(300.));
-        // One tile per distinct logo; themes that share a logo share its tile.
-        let mut seen = std::collections::HashSet::new();
-        let logos: Vec<_> = presets().iter().filter(|p| seen.insert(p.logo.clone())).collect();
-        for (i, preset) in logos.into_iter().enumerate() {
-            let active = match &current {
-                AppIcon::Preset(id) => theme::preset(id).logo == preset.logo,
-                AppIcon::Theme => theme_logo == preset.logo,
-                AppIcon::Custom(_) => false,
-            };
-            let logo_image = self.logo_image(&preset.logo.clone());
-            let id = preset.id.to_string();
-            let tile = div()
+        let theme_logos: Vec<(String, String)> = presets().iter().map(|p| (p.id.to_string(), p.logo.to_string())).collect();
+        let logo_files = image_files(&self.paths.config.join("logos"));
+        let uploads = image_files(&self.icons_dir());
+        for (i, tile) in icon_tiles(&theme_logos, &logo_files, &uploads).into_iter().enumerate() {
+            let active = same_logo(&tile.logo, &current_logo);
+            let logo_image = self.logo_image(&tile.logo);
+            let group: SharedString = format!("icon-tile-{i}").into();
+            let pick = tile.pick.clone();
+            let mut el = div()
                 .id(("icon", i))
+                .group(group.clone())
+                .relative()
                 .w(px(36.))
                 .h(px(36.))
                 .rounded(px(8.))
@@ -212,31 +210,44 @@ impl Shell {
                 .bg(if active { theme.soft.to_hsla() } else { theme.line.to_hsla() })
                 .border_2()
                 .border_color(if active { theme.acc.to_hsla() } else { gpui::transparent_black() })
+                .hover(|s| s.bg(theme.line2.to_hsla()))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.settings.icon = AppIcon::Preset(id.clone());
-                    this.save(cx);
+                    this.state.settings.icon = pick.clone();
+                    this.refresh_theme(cx);
                 }))
                 .when_some(logo_image, |d, src| {
                     d.child(img(src).w(gpui::relative(0.6)).h(gpui::relative(0.6)).object_fit(ObjectFit::Contain))
                 });
-            tiles = tiles.child(tile);
-        }
-        if let AppIcon::Custom(_) = &current {
-            if let Some(src) = logo.clone() {
-                tiles = tiles.child(
+            if let (true, AppIcon::Custom(path)) = (tile.removable, &tile.pick) {
+                let path = path.clone();
+                el = el.child(
                     div()
-                        .w(px(36.))
-                        .h(px(36.))
+                        .id(("icon-remove", i))
+                        .absolute()
+                        .top(px(-5.))
+                        .right(px(-5.))
+                        .w(px(16.))
+                        .h(px(16.))
                         .rounded(px(8.))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(theme.soft.to_hsla())
-                        .border_2()
-                        .border_color(theme.acc.to_hsla())
-                        .child(img(src).w(gpui::relative(0.6)).h(gpui::relative(0.6)).object_fit(ObjectFit::Contain)),
+                        .bg(theme.pop.to_hsla())
+                        .border_1()
+                        .border_color(theme.line2.to_hsla())
+                        .text_size(px(10.))
+                        .text_color(theme.fg.to_hsla())
+                        .opacity(0.)
+                        .group_hover(group, |s| s.opacity(1.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.remove_icon(&path, cx);
+                        }))
+                        .child("×"),
                 );
             }
+            tiles = tiles.child(el);
         }
         tiles = tiles.child(
             div()
@@ -304,7 +315,7 @@ impl Shell {
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.state.settings.icon = AppIcon::Theme;
-                        this.save(cx);
+                        this.refresh_theme(cx);
                     }))
                     .child("Use theme icon"),
             )
@@ -322,20 +333,45 @@ impl Shell {
     /// Opens a picker for an icon image, copies it into the data dir and makes it the app icon.
     fn pick_icon(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
-        let dir = self.paths.data.join("icons");
+        let dir = self.icons_dir();
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
             let Some(src) = paths.into_iter().next() else { return };
             let copied = cx.background_executor().spawn(async move { copy_asset(&dir, &src) }).await;
             let _ = this.update(cx, |this, cx| match copied {
+                Ok(path) if crate::ui::glass::logo_image(&path.display().to_string(), 44, false).is_none() => {
+                    let _ = std::fs::remove_file(&path);
+                    this.toast("Icon not added: that file isn't an image ArchonUI can read".to_string(), cx);
+                }
                 Ok(path) => {
                     this.state.settings.icon = AppIcon::Custom(path);
-                    this.save(cx);
+                    this.refresh_theme(cx);
                 }
                 Err(e) => this.toast(format!("Icon not added: {e}"), cx),
             });
         })
         .detach();
+    }
+
+    /// Where uploaded icons are copied.
+    fn icons_dir(&self) -> PathBuf {
+        self.paths.data.join("icons")
+    }
+
+    /// Deletes an uploaded icon (ArchonUI's own copy in `icons/`); the app goes back to the theme's
+    /// icon if it was the one in use.
+    fn remove_icon(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if !path.starts_with(self.icons_dir()) {
+            return;
+        }
+        if let Err(e) = std::fs::remove_file(path) {
+            self.toast(format!("Icon not removed: {e}"), cx);
+            return;
+        }
+        if self.state.settings.icon == AppIcon::Custom(path.to_path_buf()) {
+            self.state.settings.icon = AppIcon::Theme;
+        }
+        self.refresh_theme(cx);
     }
 
     /// The theme cards, six to a row. Picking one resets its fonts and wallpaper, as the prototype does.
@@ -938,3 +974,98 @@ impl Shell {
     }
 }
 
+
+/// One tile in Settings → Appearance → Identity: the logo it draws and the icon picking it sets.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct IconTile {
+    pub logo: String,
+    pub pick: AppIcon,
+    /// An upload ArchonUI copied into its data dir, which the tile can delete.
+    pub removable: bool,
+}
+
+/// The icon tiles: one per distinct theme logo, then every image in the config `logos` folder that no
+/// theme uses, then the uploaded icons. Before, logo files without a theme and earlier uploads had no
+/// tile, so once another icon was picked they could never be picked again.
+pub(super) fn icon_tiles(themes: &[(String, String)], logo_files: &[PathBuf], uploads: &[PathBuf]) -> Vec<IconTile> {
+    let mut tiles: Vec<IconTile> = Vec::new();
+    for (id, logo) in themes {
+        if !tiles.iter().any(|t| t.logo == *logo) {
+            tiles.push(IconTile { logo: logo.clone(), pick: AppIcon::Preset(id.clone()), removable: false });
+        }
+    }
+    for (files, removable) in [(logo_files, false), (uploads, true)] {
+        for path in files {
+            let logo = path.display().to_string();
+            if !tiles.iter().any(|t| t.logo == logo) {
+                tiles.push(IconTile { logo, pick: AppIcon::Custom(path.clone()), removable });
+            }
+        }
+    }
+    tiles
+}
+
+/// Whether two logo keys draw the same logo, ignoring the mark's tint (`archonui-mark.png#rrggbb`).
+pub(super) fn same_logo(a: &str, b: &str) -> bool {
+    a.split('#').next() == b.split('#').next()
+}
+
+/// The image files in `dir`, by name.
+fn image_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| {
+            p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp")
+            })
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_logo_and_upload_gets_one_tile() {
+        let themes = [
+            ("archonui".to_string(), "archonui-mark.png".to_string()),
+            ("dracula".to_string(), "archonui-mark.png".to_string()),
+            ("blood-moon".to_string(), "/cfg/logos/logo-bm.png".to_string()),
+        ];
+        let files = [PathBuf::from("/cfg/logos/logo-bm.png"), PathBuf::from("/cfg/logos/logo-cat.png")];
+        let uploads = [PathBuf::from("/data/icons/mine.png")];
+        let tiles = icon_tiles(&themes, &files, &uploads);
+        let logos: Vec<&str> = tiles.iter().map(|t| t.logo.as_str()).collect();
+        assert_eq!(logos, ["archonui-mark.png", "/cfg/logos/logo-bm.png", "/cfg/logos/logo-cat.png", "/data/icons/mine.png"]);
+        assert_eq!(tiles[1].pick, AppIcon::Preset("blood-moon".into()), "a theme's logo picks that theme's icon");
+        assert_eq!(tiles[2].pick, AppIcon::Custom("/cfg/logos/logo-cat.png".into()), "a logo no theme uses is still offered");
+        assert!(!tiles[2].removable, "files in the logos folder are the user's; only uploads can be removed");
+        assert!(tiles[3].removable);
+    }
+
+    #[test]
+    fn the_tinted_mark_is_the_same_logo() {
+        assert!(same_logo("archonui-mark.png", "archonui-mark.png#8fb8e8"));
+        assert!(same_logo("archonui-mark.png#0969da#1f2328", "archonui-mark.png"));
+        assert!(!same_logo("archonui-mark.png", "/cfg/logos/logo-bm.png"));
+    }
+
+    #[test]
+    fn only_images_are_listed() {
+        let dir = std::env::temp_dir().join(format!("archonui-icons-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["b.PNG", "a.jpg", "notes.txt"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let names: Vec<String> = image_files(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["a.jpg", "b.PNG"]);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(image_files(Path::new("/no/such/dir")).is_empty());
+    }
+}

@@ -98,6 +98,43 @@ pub fn tint_logo(png: &[u8], tint: u32, blade: Option<u32>) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// The logo `name` (see `logo_bytes`) scaled so its longer side is `edge` pixels, as a GPUI image.
+/// GPUI draws an image by sampling its full-size texture without mipmaps, so a 512px mark drawn at
+/// 28px came out jagged and shimmering; scaling it here first, with Lanczos (or nearest-neighbour for
+/// pixel-art logos), keeps every size crisp. Callers ask for twice the drawn size so HiDPI stays sharp.
+/// A logo smaller than `edge` is used as it is. Made once per name, size and filter.
+pub fn logo_image(name: &str, edge: u32, pixelated: bool) -> Option<Arc<gpui::Image>> {
+    static SIZED: OnceLock<Mutex<HashMap<(String, u32, bool), Option<Arc<gpui::Image>>>>> = OnceLock::new();
+    let key = (name.to_string(), edge, pixelated);
+    if let Some(found) = SIZED.get_or_init(Default::default).lock().ok()?.get(&key) {
+        return found.clone();
+    }
+    let made = logo_bytes(name).and_then(|bytes| {
+        let png = scale_logo(&bytes, edge, pixelated)?;
+        Some(Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)))
+    });
+    SIZED.get_or_init(Default::default).lock().ok()?.insert(key, made.clone());
+    made
+}
+
+/// `bytes` (any format `image` reads) as a PNG whose longer side is at most `edge`.
+pub fn scale_logo(bytes: &[u8], edge: u32, pixelated: bool) -> Option<Vec<u8>> {
+    let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = decoded.dimensions();
+    let longest = w.max(h).max(1);
+    let edge = edge.max(1);
+    let scaled = if longest <= edge {
+        decoded
+    } else {
+        let (sw, sh) = ((w * edge / longest).max(1), (h * edge / longest).max(1));
+        let filter = if pixelated { FilterType::Nearest } else { FilterType::Lanczos3 };
+        image::imageops::resize(&decoded, sw, sh, filter)
+    };
+    let mut out = Vec::new();
+    scaled.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
+    Some(out)
+}
+
 /// Where a wallpaper image comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WallpaperSource {
@@ -912,6 +949,17 @@ mod tests {
         assert!(logo_bytes("archonui-mark.png#nothex").is_none());
         assert!(logo_bytes("archonui-mark.png#0969da#1f2328").is_some(), "with a blade colour");
         assert!(logo_bytes("archonui-mark.png#0969da#nothex").is_none());
+        // Logos are scaled to the size they are drawn at, keeping their shape; small ones stay as they are.
+        let scaled = image::load_from_memory(&scale_logo(&logo_bytes("archonui-mark.png").unwrap(), 56, false).unwrap()).unwrap();
+        assert_eq!((scaled.width(), scaled.height()), (56, 56));
+        let mut wide = Vec::new();
+        RgbaImage::new(40, 20).write_to(&mut std::io::Cursor::new(&mut wide), image::ImageFormat::Png).unwrap();
+        let narrow = image::load_from_memory(&scale_logo(&wide, 10, true).unwrap()).unwrap();
+        assert_eq!((narrow.width(), narrow.height()), (10, 5));
+        let kept = image::load_from_memory(&scale_logo(&wide, 400, false).unwrap()).unwrap();
+        assert_eq!((kept.width(), kept.height()), (40, 20));
+        assert!(logo_image("archonui-mark.png", 64, false).is_some());
+        assert!(logo_image("no-such-logo.png", 64, false).is_none());
         assert!(wallpaper_bytes("archonui-glow.jpg").is_some(), "the ArchonUI theme's glow ships inside");
         assert!(wallpaper_bytes("bloodmoon2.jpg").is_none(), "personal wallpapers are files");
         // The glows' colours lead in their corners and the base shows between them.
