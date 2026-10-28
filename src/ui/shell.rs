@@ -141,6 +141,7 @@ impl Shell {
         this.left_w = Animator::new(l, anim::SIDEBAR_COLLAPSE);
         this.right_w = Animator::new(r, anim::PANEL_COLLAPSE);
         this.rescan(cx);
+        this.startup_update_check(cx);
         this.dev_open(cx);
         this
     }
