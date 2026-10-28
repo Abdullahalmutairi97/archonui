@@ -7,4 +7,5 @@ pub mod persist;
 pub mod sections;
 pub mod settings;
 pub mod state;
+pub mod update;
 pub mod workspace;

@@ -1,0 +1,17 @@
+{
+  "url": "https://api.github.com/repos/Abdullahalmutairi97/archonui/compare/565f2c1...main",
+  "status": "ahead",
+  "ahead_by": 2,
+  "behind_by": 0,
+  "total_commits": 2,
+  "commits": [
+    {
+      "sha": "0063b09000000000000000000000000000000000",
+      "commit": { "message": "brand: the new Archon mark and app icon\n\nThe mark's glow follows each theme's accent." }
+    },
+    {
+      "sha": "bcc0450000000000000000000000000000000000",
+      "commit": { "message": "themes: eight built-in themes\n\nArchonUI's own dark theme and seven more." }
+    }
+  ]
+}

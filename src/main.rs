@@ -48,16 +48,41 @@ fn headless(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => println!("archonui {}", env!("CARGO_PKG_VERSION")),
         Some("--help" | "-h") => println!(
-            "archonui {}\n\nUsage: archonui [FILE]\n       archonui --detect | --discover | --version | --help\n       archonui --ask [--model ID] [--effort LEVEL] [--mode MODE] [--file PATH]... AGENT PROMPT...\n       archonui --serve [--bind ADDR:PORT]\n       archonui --devices\n       archonui --remote DEVICE list | show ID | ask ID PROMPT... | new AGENT FOLDER PROMPT...",
+            "archonui {}\n\nUsage: archonui [FILE]\n       archonui --detect | --discover | --version | --help\n       archonui --check-update | --update\n       archonui --ask [--model ID] [--effort LEVEL] [--mode MODE] [--file PATH]... AGENT PROMPT...\n       archonui --serve [--bind ADDR:PORT]\n       archonui --devices\n       archonui --remote DEVICE list | show ID | ask ID PROMPT... | new AGENT FOLDER PROMPT...",
             env!("CARGO_PKG_VERSION")
         ),
+        // `--check-update`: what Settings → General shows. `--update`: the same update its button runs.
+        Some("--check-update") => {
+            let status = app::update::check(&app::update::follow_branch(app::update::BUILD_BRANCH));
+            println!("{}", status.summary());
+            if let app::update::Source::Elsewhere { why } = app::update::locate(|k| std::env::var(k).ok(), &home_dir()) {
+                eprintln!("{why}. To update, run:\n  {}", app::update::INSTALL_COMMAND);
+            }
+        }
+        Some("--update") => match app::update::locate(|k| std::env::var(k).ok(), &home_dir()) {
+            app::update::Source::Checkout { src, bin } => {
+                let say = |line: String| eprintln!("{line}");
+                let branch = app::update::follow_branch(app::update::BUILD_BRANCH);
+                match app::update::run(&src, &bin, &branch, &home_dir(), &say) {
+                    Ok(bin) => println!("updated: {}", bin.display()),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            app::update::Source::Elsewhere { why } => {
+                eprintln!("{why}. To update, run:\n  {}", app::update::INSTALL_COMMAND);
+                std::process::exit(1);
+            }
+        },
         Some("--detect") => {
             let agents = engine::detect(&harness_settings());
+            for a in &agents {
+                println!("{:<10} {:<12} {:<9} {}", a.harness.id(), a.version, a.auth.label(), a.path.display());
+            }
             if agents.is_empty() {
                 eprintln!("no agent found: install claude, codex, gemini, opencode or pi, or set its path in Settings");
-            }
-            for a in agents {
-                println!("{:<10} {:<12} {:<9} {}", a.harness.id(), a.version, a.auth.label(), a.path.display());
             }
         }
         // `--preview-shot <url> <out.png> [<x> <y> <out2.png>]`: load a page in
@@ -488,6 +513,9 @@ fn tmux_test() -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A launcher's PATH often lacks ~/.local/bin, npm, nvm and the like: add them before any thread
+    // starts, so agents, `node` and MCP servers are found the same as from a terminal.
+    engine::extend_path();
     if headless(&args) {
         return;
     }
@@ -563,4 +591,8 @@ fn main() {
         })
         .detach();
     });
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }

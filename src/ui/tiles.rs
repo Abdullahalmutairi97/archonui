@@ -2,7 +2,7 @@
 
 use super::{
     anim::{self, Animator, Lerp, INSTANT, TILE_REFLOW},
-    glass::{glass_surface, logo_bytes, Backdrop, Rect as GlassRect},
+    glass::{glass_surface, Backdrop, Rect as GlassRect},
     shell::Shell,
     sigil::{sigil_element, status_dot, SessionState, StatusDotColours},
     theme::{presets, Theme, TileFill, TileState},
@@ -18,11 +18,11 @@ use gpui::{
     canvas, div, hsla, img, linear_color_stop, linear_gradient, point, prelude::*, AnyElement, Background,
     BoxShadow, ClickEvent, ClipboardItem, Context, CursorStyle, Div, DispatchPhase, ElementId, ExternalPaths,
     FontWeight, Hsla,
-    Image, ImageFormat, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Stateful,
+    KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Stateful,
     Window,
 };
 use crate::ui::scale::px;
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, time::Instant};
 
 /// Session info popover width in px.
 const INFO_W: f32 = 300.;
@@ -382,7 +382,7 @@ impl Shell {
             .map(|s| s.agent.clone())
             .or_else(|| self.preferred_agent());
         let Some(agent) = agent else {
-            self.toast("No agent is installed", cx);
+            self.no_agent(cx);
             return;
         };
         let (model, effort) = match focused.filter(|s| s.agent == agent) {
@@ -758,8 +758,7 @@ impl Shell {
     /// The empty state: logo, brand and a "New session" button, centred in `area`. Spec: layout.md §3.
     fn render_empty(&self, area: Rect, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
-        let logo = logo_bytes(&theme.logo)
-            .map(|bytes| img(Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))).size(px(72.)).opacity(0.8));
+        let logo = theme.logo_at(104.).map(|image| img(image).size(px(104.)).opacity(0.95));
         let button = div()
             .id("tile-empty-new")
             .px(px(22.))
