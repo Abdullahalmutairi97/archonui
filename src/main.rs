@@ -47,9 +47,34 @@ fn headless(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => println!("archonui {}", env!("CARGO_PKG_VERSION")),
         Some("--help" | "-h") => println!(
-            "archonui {}\n\nUsage: archonui [FILE]\n       archonui --detect | --discover | --version | --help\n       archonui --ask [--model ID] [--effort LEVEL] [--mode MODE] [--file PATH]... AGENT PROMPT...",
+            "archonui {}\n\nUsage: archonui [FILE]\n       archonui --detect | --discover | --version | --help\n       archonui --check-update | --update\n       archonui --ask [--model ID] [--effort LEVEL] [--mode MODE] [--file PATH]... AGENT PROMPT...",
             env!("CARGO_PKG_VERSION")
         ),
+        // `--check-update`: what Settings → General shows. `--update`: the same update its button runs.
+        Some("--check-update") => {
+            let status = app::update::check(&app::update::follow_branch(app::update::BUILD_BRANCH));
+            println!("{}", status.summary());
+            if let app::update::Source::Elsewhere { why } = app::update::locate(|k| std::env::var(k).ok(), &home_dir()) {
+                eprintln!("{why}. To update, run:\n  {}", app::update::INSTALL_COMMAND);
+            }
+        }
+        Some("--update") => match app::update::locate(|k| std::env::var(k).ok(), &home_dir()) {
+            app::update::Source::Checkout { src, bin } => {
+                let say = |line: String| eprintln!("{line}");
+                let branch = app::update::follow_branch(app::update::BUILD_BRANCH);
+                match app::update::run(&src, &bin, &branch, &home_dir(), &say) {
+                    Ok(bin) => println!("updated: {}", bin.display()),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            app::update::Source::Elsewhere { why } => {
+                eprintln!("{why}. To update, run:\n  {}", app::update::INSTALL_COMMAND);
+                std::process::exit(1);
+            }
+        },
         Some("--detect") => {
             let agents = engine::detect(&harness_settings());
             for a in &agents {
@@ -547,4 +572,8 @@ fn main() {
         })
         .detach();
     });
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }
