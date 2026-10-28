@@ -44,7 +44,13 @@ curl -fsSL https://raw.githubusercontent.com/Abdullahalmutairi97/archonui/main/i
 ```
 
 This builds ArchonUI and adds an `archonui` command and a launcher icon for your user only. Nothing is
-installed system-wide. The first build takes a few minutes. Run the same command again to update.
+installed system-wide. The first build takes a few minutes.
+
+To update, open Settings → General → Updates: it shows how many commits are new on GitHub and
+updates with one click (it pulls the checkout install.sh made, builds it and swaps the binary, then
+offers Restart now). A checkout with local changes is left alone, and a failed build keeps the old
+version. A small dot on Settings means an update is available (checked at most once a day; turn it off
+there). From a terminal: `archonui --check-update`, `archonui --update`, or run the install command again.
 
 **You need:**
 - A C compiler, `git`, `pkg-config` and the usual desktop libraries. The installer checks and, if

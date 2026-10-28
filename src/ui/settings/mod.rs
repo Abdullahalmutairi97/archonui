@@ -10,6 +10,7 @@ mod keyboard;
 mod models;
 mod skills;
 mod tools;
+mod updates;
 
 pub(crate) use controls::key_label;
 pub(crate) use models::long_context_model;
@@ -222,6 +223,8 @@ pub struct SettingsUi {
     pub(super) testing: Option<&'static str>,
     /// The page body's width inside its padding, in design px, so pages can drop columns as it narrows.
     pub(super) body_w: f32,
+    /// Settings → General → Updates.
+    pub(super) update: updates::UpdateUi,
 }
 
 impl Shell {
@@ -509,7 +512,12 @@ impl Shell {
                                 d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla()))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
-                            .child(page.label())
+                            .child(
+                                div().flex().items_center().gap(px(6.)).child(page.label()).when(
+                                    page == Page::General && self.settings.update.dot(),
+                                    |d| d.child(update_dot(&theme)),
+                                ),
+                            )
                             .when_some(count, |row, n| {
                                 row.child(div().text_size(px(11.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
                             }),
@@ -759,6 +767,11 @@ fn search_config() -> TextInputConfig {
         line_height: px(18.),
         ..Default::default()
     }
+}
+
+/// The small "update available" dot, on the sidebar's Settings button and the General page.
+pub(super) fn update_dot(theme: &crate::ui::theme::Theme) -> gpui::Div {
+    div().w(px(7.)).h(px(7.)).rounded(px(4.)).bg(theme.acc.to_hsla())
 }
 
 #[cfg(test)]

@@ -264,7 +264,10 @@ impl Shell {
                     .hover(|s| s.bg(theme.line2.to_hsla()))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.open_settings(cx)))
                     .child(icons::glyph(Glyph::Gear, 18., 1.5, muted))
-                    .child("Settings"),
+                    .child("Settings")
+                    .when(self.settings.update.dot(), |d| {
+                        d.child(super::settings::update_dot(theme)).tooltip(tooltip("Update available", TooltipColors::of(theme)))
+                    }),
             )
             .child(
                 div()
