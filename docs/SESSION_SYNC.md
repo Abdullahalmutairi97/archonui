@@ -25,11 +25,13 @@ Tailscale works exactly as before: no listener, no `tailscale` calls, no backgro
    missing when it isn't: not installed, the service not running, signed out, turned off, or waiting
    for approval in the admin console, each with the command or place that fixes it.
 2. On each device running the app: Settings → Devices → turn sharing on. The page checks which tailnet
-   devices answer on the sharing port, and the first time (nothing included yet) includes every one
-   that runs ArchonUI, so devices pair in one step. Rows say "Runs ArchonUI · turn on to share",
-   "ArchonUI isn't running there", or, for a device that has this one ticked but isn't ticked here,
-   "Wants to connect · turn on to allow". A shared device that can't be reached says why: nothing
-   answering, no answer (asleep, or a firewall on tailscale0), or that it doesn't let this device in yet.
+   devices answer on the sharing port, but adds none by itself: each device that runs ArchonUI gets an
+   **Add** button ("Runs ArchonUI · add it to share"), and nothing is shared with a device until you
+   add it. "ArchonUI isn't running there" marks the others (they keep a switch, to add by hand). A
+   device that has this one added but isn't added here shows "Wants to connect · add it to allow", also
+   with Add. A shared device can be turned off with its switch. A shared device that can't be reached
+   says why: nothing answering, no answer (asleep, or a firewall on tailscale0), or that it doesn't let
+   this device in yet.
    Mark one device as the cloud.
 3. On a device without a screen (a VPS or mini PC): `archonui --serve`. It listens on the device's
    Tailscale address by itself, whether or not sharing is on in its settings, and at boot waits up to
