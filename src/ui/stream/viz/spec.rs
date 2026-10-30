@@ -142,81 +142,13 @@ impl Spec {
         let title = text(&v["title"]);
         let unit = text(&v["unit"]);
         let spec = match ty {
-            "bar" | "line" | "area" => {
-                let kind = match ty {
-                    "bar" => View::Bar,
-                    "line" => View::Line,
-                    _ => View::Area,
-                };
-                let x: Vec<String> = v["x"].as_array().ok_or("A chart needs an \"x\" list")?.iter().map(text).collect();
-                let series: Vec<Series> = v["series"]
-                    .as_array()
-                    .ok_or("A chart needs a \"series\" list")?
-                    .iter()
-                    .map(|s| Series { name: text(&s["name"]), data: s["data"].as_array().map_or_else(Vec::new, |d| d.iter().map(num).collect()) })
-                    .collect();
-                if x.is_empty() || series.is_empty() {
-                    return Err("A chart needs at least one x and one series".into());
-                }
-                Spec::Xy(Xy { kind, title, unit, x_label: text(&v["xLabel"]), x, series, stacked: v["stacked"].as_bool().unwrap_or(false) })
-            }
-            "pie" | "donut" => {
-                let data: Vec<(String, f64)> = v["data"]
-                    .as_array()
-                    .ok_or("A pie needs a \"data\" list")?
-                    .iter()
-                    .map(|d| (text(&d["label"]), num(&d["value"]).max(0.)))
-                    .collect();
-                if data.iter().map(|d| d.1).sum::<f64>() <= 0. {
-                    return Err("A pie needs values above zero".into());
-                }
-                Spec::Pie(Pie { donut: ty == "donut", title, unit, data })
-            }
-            "scatter" => {
-                let series: Vec<Points> = v["series"]
-                    .as_array()
-                    .ok_or("A scatter plot needs a \"series\" list")?
-                    .iter()
-                    .map(|s| Points {
-                        name: text(&s["name"]),
-                        points: s["points"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|p| Some((num(p.get(0)?), num(p.get(1)?), p.get(2).map(text).unwrap_or_default())))
-                            .collect(),
-                    })
-                    .collect();
-                if series.iter().all(|s| s.points.is_empty()) {
-                    return Err("A scatter plot needs points".into());
-                }
-                Spec::Scatter(Scatter { title, x_label: text(&v["xLabel"]), y_label: text(&v["yLabel"]), series })
-            }
-            "table" => {
-                let columns: Vec<String> = v["columns"].as_array().ok_or("A table needs \"columns\"")?.iter().map(text).collect();
-                let rows = v["rows"]
-                    .as_array()
-                    .ok_or("A table needs \"rows\"")?
-                    .iter()
-                    .map(|r| r.as_array().into_iter().flatten().map(cell).collect())
-                    .collect();
-                Spec::Table(Table { title, columns, rows })
-            }
-            "stats" => {
-                let items = v["items"]
-                    .as_array()
-                    .ok_or("Stats need an \"items\" list")?
-                    .iter()
-                    .map(|i| Stat {
-                        label: text(&i["label"]),
-                        value: text(&i["value"]),
-                        delta: text(&i["delta"]),
-                        up_is_good: i["good"].as_str() != Some("down"),
-                        trend: i["trend"].as_array().map_or_else(Vec::new, |t| t.iter().map(num).collect()),
-                    })
-                    .collect();
-                Spec::Stats(Stats { title, items })
-            }
+            "bar" => parse_xy(&v, View::Bar, title, unit)?,
+            "line" => parse_xy(&v, View::Line, title, unit)?,
+            "area" => parse_xy(&v, View::Area, title, unit)?,
+            "pie" | "donut" => parse_pie(&v, ty == "donut", title, unit)?,
+            "scatter" => parse_scatter(&v, title)?,
+            "table" => parse_table(&v, title)?,
+            "stats" => parse_stats(&v, title)?,
             other => return Err(format!("Unknown chart type \"{other}\"")),
         };
         Ok(spec)
@@ -236,12 +168,7 @@ impl Spec {
     /// stats have only themselves.
     pub fn views(&self) -> Vec<View> {
         match self {
-            Spec::Xy(s) => {
-                let mut v = vec![View::Bar, View::Line, View::Area, View::Table];
-                v.retain(|x| *x != s.kind);
-                v.insert(0, s.kind);
-                v
-            }
+            Spec::Xy(s) => std::iter::once(s.kind).chain([View::Bar, View::Line, View::Area, View::Table].into_iter().filter(|x| *x != s.kind)).collect(),
             Spec::Pie(p) if p.donut => vec![View::Donut, View::Pie, View::Bar, View::Table],
             Spec::Pie(_) => vec![View::Pie, View::Donut, View::Bar, View::Table],
             Spec::Scatter(_) => vec![View::Scatter, View::Table],
@@ -400,6 +327,81 @@ pub fn mermaid_kind(src: &str) -> &'static str {
         "architecture-beta" => "Architecture",
         _ => "Diagram",
     }
+}
+
+fn parse_xy(v: &Value, kind: View, title: String, unit: String) -> Result<Spec, String> {
+    let x: Vec<String> = v["x"].as_array().ok_or("A chart needs an \"x\" list")?.iter().map(text).collect();
+    let series: Vec<Series> = v["series"]
+        .as_array()
+        .ok_or("A chart needs a \"series\" list")?
+        .iter()
+        .map(|s| Series { name: text(&s["name"]), data: s["data"].as_array().map_or_else(Vec::new, |d| d.iter().map(num).collect()) })
+        .collect();
+    if x.is_empty() || series.is_empty() {
+        return Err("A chart needs at least one x and one series".into());
+    }
+    Ok(Spec::Xy(Xy { kind, title, unit, x_label: text(&v["xLabel"]), x, series, stacked: v["stacked"].as_bool().unwrap_or(false) }))
+}
+
+fn parse_pie(v: &Value, donut: bool, title: String, unit: String) -> Result<Spec, String> {
+    let data: Vec<(String, f64)> = v["data"]
+        .as_array()
+        .ok_or("A pie needs a \"data\" list")?
+        .iter()
+        .map(|d| (text(&d["label"]), num(&d["value"]).max(0.)))
+        .collect();
+    if data.iter().map(|d| d.1).sum::<f64>() <= 0. {
+        return Err("A pie needs values above zero".into());
+    }
+    Ok(Spec::Pie(Pie { donut, title, unit, data }))
+}
+
+fn parse_scatter(v: &Value, title: String) -> Result<Spec, String> {
+    let series: Vec<Points> = v["series"]
+        .as_array()
+        .ok_or("A scatter plot needs a \"series\" list")?
+        .iter()
+        .map(|s| Points {
+            name: text(&s["name"]),
+            points: s["points"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| Some((num(p.get(0)?), num(p.get(1)?), p.get(2).map(text).unwrap_or_default())))
+                .collect(),
+        })
+        .collect();
+    if series.iter().all(|s| s.points.is_empty()) {
+        return Err("A scatter plot needs points".into());
+    }
+    Ok(Spec::Scatter(Scatter { title, x_label: text(&v["xLabel"]), y_label: text(&v["yLabel"]), series }))
+}
+
+fn parse_table(v: &Value, title: String) -> Result<Spec, String> {
+    let columns: Vec<String> = v["columns"].as_array().ok_or("A table needs \"columns\"")?.iter().map(text).collect();
+    let rows = v["rows"]
+        .as_array()
+        .ok_or("A table needs \"rows\"")?
+        .iter()
+        .map(|r| r.as_array().into_iter().flatten().map(cell).collect())
+        .collect();
+    Ok(Spec::Table(Table { title, columns, rows }))
+}
+
+fn parse_stats(v: &Value, title: String) -> Result<Spec, String> {
+    let items = v["items"]
+        .as_array()
+        .ok_or("Stats need an \"items\" list")?
+        .iter()
+        .map(|i| Stat {
+            label: text(&i["label"]),
+            value: text(&i["value"]),
+            delta: text(&i["delta"]),
+            up_is_good: i["good"].as_str() != Some("down"),
+            trend: i["trend"].as_array().map_or_else(Vec::new, |t| t.iter().map(num).collect()),
+        })
+        .collect();
+    Ok(Spec::Stats(Stats { title, items }))
 }
 
 fn text(v: &Value) -> String {

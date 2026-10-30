@@ -2,11 +2,11 @@
 //! `assets/mermaid/LICENSE`) in a headless Chrome nobody sees. Chrome starts on the first diagram
 //! and stays for the rest; each diagram comes back as SVG, kept by the hash of its source and theme.
 
-use super::scene::Ink;
+use super::scene::{css, Ink};
 use crate::ui::theme::{mix, Rgba};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::TcpStream,
     path::PathBuf,
     process::Child,
@@ -101,10 +101,6 @@ fn render_script(src: &str, ink: &Ink) -> String {
     )
 }
 
-fn css(c: Rgba) -> String {
-    format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
-}
-
 /// mermaid's theme variables from the theme, as the prototype's `mTheme` sets them.
 pub fn theme_variables(ink: &Ink) -> Value {
     let (bg, fg) = (ink.bg, ink.fg);
@@ -186,7 +182,7 @@ pub fn theme_variables(ink: &Ink) -> Value {
 struct Page {
     ws: WebSocket<MaybeTlsStream<TcpStream>>,
     /// Bundled font families already given to the page.
-    fonts: std::collections::HashSet<String>,
+    fonts: HashSet<String>,
     session: String,
     next: u64,
     child: Child,
