@@ -40,12 +40,13 @@ enum Gen {
 fn generation(path: &Path) -> Gen {
     static SEEN: Mutex<Option<HashMap<PathBuf, Gen>>> = Mutex::new(None);
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(&g) = seen.get_or_insert_with(HashMap::new).get(path) {
+    let seen = seen.get_or_insert_with(HashMap::new);
+    if let Some(&g) = seen.get(path) {
         return g;
     }
     let out = Command::new(path).arg("--version").stdin(Stdio::null()).stderr(Stdio::null()).output();
     let g = out.ok().map_or(Gen::V2, |o| gen_of(&String::from_utf8_lossy(&o.stdout)));
-    seen.get_or_insert_with(HashMap::new).insert(path.to_path_buf(), g);
+    seen.insert(path.to_path_buf(), g);
     g
 }
 

@@ -329,22 +329,26 @@ fn serve_call(
         writeln!(stream, "{reply}")?;
         return Ok(());
     }
-    let verdict = if allowances.allowed(&call.session, &call.tool_name) {
-        Verdict::Allow
-    } else {
-        let (answer, waiting) = mpsc::channel();
-        let request = Request { session: call.session, tool_name: call.tool_name, input: call.input.clone(), answer };
-        if requests.send_blocking(request).is_err() {
-            Verdict::Deny("ArchonUI is not showing approvals.".into())
-        } else {
-            match waiting.recv_timeout(timeout) {
-                Ok(verdict) => verdict,
-                Err(mpsc::RecvTimeoutError::Timeout) => Verdict::Deny("Timed out".into()),
-                Err(mpsc::RecvTimeoutError::Disconnected) => Verdict::Deny("The chat stopped before an answer.".into()),
-            }
-        }
-    };
+    let verdict = ask_user(&call, requests, allowances, timeout);
     writeln!(stream, "{}", verdict.reply(&call.input))
+}
+
+/// The verdict for a call that has this run's token: an allowance answers it at once, otherwise the
+/// app's user answers within `timeout`.
+fn ask_user(call: &Call, requests: &smol::channel::Sender<Request>, allowances: &Allowances, timeout: Duration) -> Verdict {
+    if allowances.allowed(&call.session, &call.tool_name) {
+        return Verdict::Allow;
+    }
+    let (answer, waiting) = mpsc::channel();
+    let request = Request { session: call.session.clone(), tool_name: call.tool_name.clone(), input: call.input.clone(), answer };
+    if requests.send_blocking(request).is_err() {
+        return Verdict::Deny("ArchonUI is not showing approvals.".into());
+    }
+    match waiting.recv_timeout(timeout) {
+        Ok(verdict) => verdict,
+        Err(mpsc::RecvTimeoutError::Timeout) => Verdict::Deny("Timed out".into()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Verdict::Deny("The chat stopped before an answer.".into()),
+    }
 }
 
 /// Runs the approval MCP server on stdin and stdout until stdin closes. Each `approve` call is asked of

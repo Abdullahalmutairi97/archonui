@@ -80,6 +80,11 @@ async fn wait(cx: &mut AsyncApp, secs: f64) {
     }
 }
 
+/// Whether any chat has a turn running.
+fn any_busy(this: &WeakEntity<Shell>, cx: &mut AsyncApp) -> bool {
+    this.update(cx, |this, _| this.state.sessions().iter().any(|s| this.state.busy(&s.id))).unwrap_or(false)
+}
+
 async fn run(this: WeakEntity<Shell>, steps: Vec<Step>, file: Option<std::fs::File>, cx: &mut AsyncApp) {
     let mut log = Log { file, start: Instant::now() };
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0., |d| d.as_secs_f64());
@@ -88,8 +93,8 @@ async fn run(this: WeakEntity<Shell>, steps: Vec<Step>, file: Option<std::fs::Fi
     for step in steps {
         let due = if step.relative { previous + step.at } else { step.at };
         wait(cx, due - log.start.elapsed().as_secs_f64()).await;
-        let arg = step.arg.clone();
-        match step.command.as_str() {
+        let (command, arg) = (step.command, step.arg);
+        match command.as_str() {
             "type" => {
                 log.line(&format!("type-start {}", arg.chars().count()));
                 let mut typed = String::new();
@@ -124,16 +129,11 @@ async fn run(this: WeakEntity<Shell>, steps: Vec<Step>, file: Option<std::fs::Fi
                 let max: f64 = arg.parse().unwrap_or(240.);
                 let began = Instant::now();
                 // A turn takes a moment to start: wait for it to be running first, then for it to end.
-                while began.elapsed().as_secs_f64() < 10. {
-                    let busy = this.update(cx, |this, _| this.state.sessions().iter().any(|s| this.state.busy(&s.id))).unwrap_or(false);
-                    if busy {
-                        break;
-                    }
+                while began.elapsed().as_secs_f64() < 10. && !any_busy(&this, cx) {
                     wait(cx, 0.1).await;
                 }
                 loop {
-                    let busy = this.update(cx, |this, _| this.state.sessions().iter().any(|s| this.state.busy(&s.id))).unwrap_or(false);
-                    if !busy || began.elapsed().as_secs_f64() > max {
+                    if !any_busy(&this, cx) || began.elapsed().as_secs_f64() > max {
                         break;
                     }
                     wait(cx, 0.2).await;
@@ -146,7 +146,6 @@ async fn run(this: WeakEntity<Shell>, steps: Vec<Step>, file: Option<std::fs::Fi
                 return;
             }
             _ => {
-                let command = step.command.clone();
                 let done = this.update(cx, |this, cx| this.autopilot_step(&command, &arg, cx));
                 if done.is_err() {
                     return;

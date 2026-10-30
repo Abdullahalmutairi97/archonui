@@ -46,19 +46,26 @@ pub fn detect(settings: &Settings) -> Vec<DetectedAgent> {
 /// `PATH` plus common per-user install dirs, since a desktop launcher often
 /// starts apps with a shorter `PATH` than an interactive shell.
 fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> =
-        env::var_os("PATH").map(|p| env::split_paths(&p).collect()).unwrap_or_default();
+    let mut dirs = path_dirs();
     if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-        for dir in user_bin_dirs(&home) {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
-            }
+        push_missing(&mut dirs, user_bin_dirs(&home));
+    }
+    push_missing(&mut dirs, [PathBuf::from("/usr/local/bin")]);
+    dirs
+}
+
+/// The dirs on `PATH`, in order.
+fn path_dirs() -> Vec<PathBuf> {
+    env::var_os("PATH").map(|p| env::split_paths(&p).collect()).unwrap_or_default()
+}
+
+/// Appends each of `extra` that `dirs` doesn't already have.
+fn push_missing(dirs: &mut Vec<PathBuf>, extra: impl IntoIterator<Item = PathBuf>) {
+    for dir in extra {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
         }
     }
-    if !dirs.iter().any(|d| d == Path::new("/usr/local/bin")) {
-        dirs.push("/usr/local/bin".into());
-    }
-    dirs
 }
 
 /// Where agent CLIs and the `node` they run on are installed per user: npm/bun/pnpm/volta global
@@ -102,12 +109,9 @@ fn bin_dirs_in(home: &Path, data: &Path, nvm_dir: Option<PathBuf>, fnm_dir: Opti
         dirs.push(fnm.join("aliases/default/bin"));
         dirs.extend(newest_first(&fnm.join("node-versions")).into_iter().map(|v| v.join("installation/bin")));
     }
-    let mut seen = Vec::new();
-    dirs.retain(|d| d.is_dir() && !seen.contains(d) && {
-        seen.push(d.clone());
-        true
-    });
-    dirs
+    let mut unique = Vec::new();
+    push_missing(&mut unique, dirs.into_iter().filter(|d| d.is_dir()));
+    unique
 }
 
 /// The subdirectories of `dir` named like versions (`v22.11.0`), newest first.
@@ -141,13 +145,9 @@ fn npmrc_prefix(home: &Path) -> Option<PathBuf> {
 /// before any threads.
 pub fn extend_path() {
     let Some(home) = env::var_os("HOME").map(PathBuf::from) else { return };
-    let mut dirs: Vec<PathBuf> = env::var_os("PATH").map(|p| env::split_paths(&p).collect()).unwrap_or_default();
+    let mut dirs = path_dirs();
     let before = dirs.len();
-    for dir in user_bin_dirs(&home) {
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
-        }
-    }
+    push_missing(&mut dirs, user_bin_dirs(&home));
     if dirs.len() != before {
         if let Ok(path) = env::join_paths(dirs) {
             env::set_var("PATH", path);

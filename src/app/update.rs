@@ -219,9 +219,7 @@ fn git(src: &Path, args: &[&str]) -> Result<String, String> {
 /// cargo on PATH, else rustup's default place (install.sh installs it there).
 fn cargo(home: &Path) -> PathBuf {
     let rustup = home.join(".cargo/bin/cargo");
-    let on_path = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).any(|d| d.join("cargo").is_file()))
-        .unwrap_or(false);
+    let on_path = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("cargo").is_file()));
     if !on_path && rustup.is_file() { rustup } else { PathBuf::from("cargo") }
 }
 
@@ -250,34 +248,12 @@ pub fn run(src: &Path, bin: &Path, branch: &str, home: &Path, say: &dyn Fn(Strin
     git(src, &["reset", "--hard", "--quiet", "FETCH_HEAD"])?;
 
     say("Building (cargo build --release); this takes a few minutes".into());
+    // Any failure from here on puts the checkout back at the commit the installed binary was built from.
     let restore = |why: String| {
         let _ = git(src, &["reset", "--hard", "--quiet", &old]);
         why
     };
-    let mut child = Command::new(cargo(home))
-        .args(["build", "--release", "--color", "never", "--manifest-path"])
-        .arg(src.join("Cargo.toml"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| restore(format!("Couldn't start cargo ({e}). Your current ArchonUI is unchanged")))?;
-    let mut tail: Vec<String> = Vec::new();
-    if let Some(stderr) = child.stderr.take() {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            tail.push(line.clone());
-            if tail.len() > 6 {
-                tail.remove(0);
-            }
-            say(line);
-        }
-    }
-    let built = child.wait().map_err(|e| restore(format!("cargo: {e}")))?;
-    if !built.success() {
-        return Err(restore(format!(
-            "The build failed, so nothing was installed and your current ArchonUI is unchanged:\n{}",
-            tail.join("\n")
-        )));
-    }
+    build(src, home, say).map_err(restore)?;
 
     let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| src.join("target"), PathBuf::from);
     install_binary(&target.join("release/archonui"), bin).map_err(|e| format!("Couldn't install the new binary ({e}). Your current ArchonUI is unchanged"))?;
@@ -290,6 +266,36 @@ pub fn run(src: &Path, bin: &Path, branch: &str, home: &Path, say: &dyn Fn(Strin
         }
     }
     Ok(bin.to_path_buf())
+}
+
+/// Runs `cargo build --release` on the checkout at `src`, passing its stderr to `say`. The error names
+/// the last lines of it when the build fails.
+fn build(src: &Path, home: &Path, say: &dyn Fn(String)) -> Result<(), String> {
+    let mut child = Command::new(cargo(home))
+        .args(["build", "--release", "--color", "never", "--manifest-path"])
+        .arg(src.join("Cargo.toml"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Couldn't start cargo ({e}). Your current ArchonUI is unchanged"))?;
+    let mut tail: Vec<String> = Vec::new();
+    if let Some(stderr) = child.stderr.take() {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            tail.push(line.clone());
+            if tail.len() > 6 {
+                tail.remove(0);
+            }
+            say(line);
+        }
+    }
+    let built = child.wait().map_err(|e| format!("cargo: {e}"))?;
+    if !built.success() {
+        return Err(format!(
+            "The build failed, so nothing was installed and your current ArchonUI is unchanged:\n{}",
+            tail.join("\n")
+        ));
+    }
+    Ok(())
 }
 
 /// Copies `built` next to `bin` and renames it over `bin`, so the old binary is replaced in one step and
