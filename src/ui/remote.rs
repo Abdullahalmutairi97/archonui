@@ -129,13 +129,10 @@ impl RemoteUi {
     /// Project `project` (`name`) needs `bytes` to copy, more than one message holds: it is no longer
     /// tried. Returns what to show, once.
     fn copy_too_big(&mut self, project: String, name: &str, bytes: u64) -> Option<String> {
-        eprintln!("archonui: cloud copy: {name} needs {} MB, more than the {} MB one copy can carry", bytes >> 20, proto::MAX_BUNDLE_BYTES >> 20);
+        let (mb, max) = (bytes >> 20, proto::MAX_BUNDLE_BYTES >> 20);
+        eprintln!("archonui: cloud copy: {name} needs {mb} MB, more than the {max} MB one copy can carry");
         self.too_big.insert(project);
-        let text = format!(
-            "Cloud copy: {name} is too big to copy ({} MB; at most {} MB fits), so it is left out",
-            bytes >> 20,
-            proto::MAX_BUNDLE_BYTES >> 20
-        );
+        let text = format!("Cloud copy: {name} is too big to copy ({mb} MB; at most {max} MB fits), so it is left out");
         self.copy_errors.insert(text.clone()).then_some(text)
     }
 
@@ -988,7 +985,6 @@ impl Shell {
         Some(self.chat_device_name(device))
     }
 
-    /// A device's name, by its id: this device's own too, as in the cloud copy list.
     /// The cloud copy's progress for the Devices page: a round running, the last full backup, the next timed one.
     pub(super) fn backup_status(&self) -> (bool, Option<u64>, Option<Instant>) {
         (self.remote.backing_up, self.remote.last_backup, self.remote.next_backup)
@@ -1009,6 +1005,7 @@ impl Shell {
         self.remote.hub.as_ref().map(|hub| hub.asked()).unwrap_or_default()
     }
 
+    /// A device's name, by its id: this device's own too, as in the cloud copy list.
     pub(super) fn chat_device_name(&self, device: &str) -> String {
         device_name(&self.state.settings.sync, self.remote.me.as_ref(), device)
     }
@@ -1378,11 +1375,10 @@ enum Step {
 }
 
 fn next_step(sync: &crate::remote::SyncSettings, me: Option<&Device>) -> Step {
-    match me {
-        _ if !sync.enabled => Step::Off,
-        None => Step::FindThisDevice,
-        Some(me) => Step::Run(me.clone()),
+    if !sync.enabled {
+        return Step::Off;
     }
+    me.map_or(Step::FindThisDevice, |me| Step::Run(me.clone()))
 }
 
 /// The chats listed by `device` to subscribe to: new ones, and ones shown from the cloud while it was
