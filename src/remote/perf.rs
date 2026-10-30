@@ -28,7 +28,7 @@ fn git(dir: &Path, args: &[&str]) {
 /// Peak resident memory of this process so far, in MiB.
 fn peak_mib() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let kb = status.lines().find(|l| l.starts_with("VmHWM:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u64>().ok());
+    let kb = status.lines().find_map(|l| l.strip_prefix("VmHWM:")?.split_whitespace().next()?.parse::<u64>().ok());
     kb.unwrap_or(0) / 1024
 }
 
