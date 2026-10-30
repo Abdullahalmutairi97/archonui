@@ -11,12 +11,50 @@ use crate::{
         },
     },
 };
-use gpui::{div, prelude::*, AnyElement, Context, SharedString};
+use crate::ui::theme::Theme;
+use gpui::{div, prelude::*, AnyElement, Context, SharedString, WeakEntity};
 use crate::ui::scale::px;
 
 /// Whether `ext` matches the search text (already trimmed and lowercased). An empty query matches everything.
 fn matches(ext: &Extension, query: &str) -> bool {
     query.is_empty() || format!("{} {} {}", ext.name, ext.description, ext.author).to_lowercase().contains(query)
+}
+
+/// One extension's row: its agent, then Remove and the enable switch when `installed`, or Install when not.
+fn extension_row(ext: &Extension, installed: bool, weak: &WeakEntity<Shell>, theme: &Theme, cx: &mut Context<Shell>) -> AnyElement {
+    let agent = engine::harness(&ext.harness).map_or(ext.harness.as_str(), |h| h.name());
+    let note = if ext.description.is_empty() { agent.to_string() } else { format!("{agent} · {}", ext.description) };
+    let mut end = Vec::new();
+    let (id, name) = (ext.id.clone(), ext.name.clone());
+    if installed {
+        end.push(row_button(SharedString::from(format!("remove-{id}")), "Remove", theme, listen(cx, {
+            let (id, name) = (id.clone(), name.clone());
+            move |this, cx| {
+                let id = id.clone();
+                this.change_extension(format!("Removed {name}"), move || engine::plugins::remove(&id), cx);
+            }
+        })));
+        // A switch its CLI can't honour would only toast an error, so those just get Remove.
+        if engine::plugins::can_toggle(&ext.harness) {
+            end.push(
+                Toggle::new(SharedString::from(format!("ext-{id}")), ext.enabled, theme)
+                    .on_change(edit(weak, move |this: &mut Shell, on: bool, cx| {
+                        let id = id.clone();
+                        let done = format!("{} {name}", if on { "Enabled" } else { "Disabled" });
+                        this.change_extension(done, move || engine::plugins::set_enabled(&id, on), cx);
+                    }))
+                    .into_any_element(),
+            );
+        } else {
+            end.push(div().w(px(34.)).flex_none().into_any_element());
+        }
+    } else {
+        end.push(row_button(SharedString::from(format!("install-{id}")), "Install", theme, listen(cx, move |this, cx| {
+            let id = id.clone();
+            this.change_extension(format!("Installed {name}"), move || engine::plugins::install(&id), cx);
+        })));
+    }
+    list_row(ext.name.clone(), Some(note.into()), end, theme).into_any_element()
 }
 
 impl Shell {
@@ -51,42 +89,7 @@ impl Shell {
         } else if shown.is_empty() {
             empty_box(None, if query.is_empty() && chip == 0 { "No extensions yet" } else { "No matching extensions" }, &theme)
         } else {
-            let mut rows = Vec::new();
-            for (ext, inst) in shown.iter().take(limit) {
-                let agent = engine::harness(&ext.harness).map_or(ext.harness.as_str(), |h| h.name());
-                let note = if ext.description.is_empty() { agent.to_string() } else { format!("{agent} · {}", ext.description) };
-                let mut end = Vec::new();
-                let (id, name) = (ext.id.clone(), ext.name.clone());
-                if *inst {
-                    end.push(row_button(SharedString::from(format!("remove-{id}")), "Remove", &theme, listen(cx, {
-                        let (id, name) = (id.clone(), name.clone());
-                        move |this, cx| {
-                            let id = id.clone();
-                            this.change_extension(format!("Removed {name}"), move || engine::plugins::remove(&id), cx);
-                        }
-                    })));
-                    // A switch its CLI can't honour would only toast an error, so those just get Remove.
-                    if engine::plugins::can_toggle(&ext.harness) {
-                        end.push(
-                            Toggle::new(SharedString::from(format!("ext-{id}")), ext.enabled, &theme)
-                                .on_change(edit(&weak, move |this: &mut Shell, on: bool, cx| {
-                                    let id = id.clone();
-                                    let done = format!("{} {name}", if on { "Enabled" } else { "Disabled" });
-                                    this.change_extension(done, move || engine::plugins::set_enabled(&id, on), cx);
-                                }))
-                                .into_any_element(),
-                        );
-                    } else {
-                        end.push(div().w(px(34.)).flex_none().into_any_element());
-                    }
-                } else {
-                    end.push(row_button(SharedString::from(format!("install-{id}")), "Install", &theme, listen(cx, move |this, cx| {
-                        let id = id.clone();
-                        this.change_extension(format!("Installed {name}"), move || engine::plugins::install(&id), cx);
-                    })));
-                }
-                rows.push(list_row(ext.name.clone(), Some(note.into()), end, &theme).into_any_element());
-            }
+            let mut rows: Vec<AnyElement> = shown.iter().take(limit).map(|(ext, inst)| extension_row(ext, *inst, &weak, &theme, cx)).collect();
             if left > 0 {
                 rows.push(more_row("ext-more", 20, left, &theme, listen(cx, |this, cx| this.show_more("ext", 8, 20, cx))));
             }

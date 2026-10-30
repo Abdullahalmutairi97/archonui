@@ -2,8 +2,8 @@
 //! that apply it, and the terminal and preview settings. Spec: settings.md §7.
 
 use super::{
-    controls::{edit, empty_box, icon, link, list_row, listen, path_label, search_box, section, segmented_row, status as status_line, toggle_row},
-    Slide,
+    controls::{edit, empty_box, icon, link, list_row, listen, path_label, search_box, section, segmented_row, status as status_line},
+    flag_row, Slide,
 };
 use crate::{
     app::settings::{Permission, Permissions, TERMINAL_SIZE},
@@ -12,7 +12,7 @@ use crate::{
     ui::{
         composer::icons::stroke_icon,
         shell::Shell,
-        theme::{Theme, AMBER, GREEN},
+        theme::{Rgba, Theme, AMBER, GREEN},
         widgets::{
             agents::{agent_icons, short_name, AgentMark},
             button::{Button, ButtonStyle},
@@ -190,32 +190,8 @@ impl Shell {
         let preview = self.state.settings.auto_open_preview;
         let tmux = self.state.settings.use_tmux;
         let extras = vec![
-            toggle_row(
-                "auto-preview",
-                "Open previews automatically",
-                "",
-                preview,
-                &weak,
-                &theme,
-                |this, on, cx| {
-                    this.state.settings.auto_open_preview = on;
-                    this.save(cx);
-                },
-                None,
-            ),
-            toggle_row(
-                "use-tmux",
-                "Run terminals in tmux",
-                "Keep running after closing",
-                tmux,
-                &weak,
-                &theme,
-                |this, on, cx| {
-                    this.state.settings.use_tmux = on;
-                    this.save(cx);
-                },
-                None,
-            ),
+            flag_row("auto-preview", "Open previews automatically", "", preview, &weak, &theme, |s, on| s.auto_open_preview = on),
+            flag_row("use-tmux", "Run terminals in tmux", "Keep running after closing", tmux, &weak, &theme, |s, on| s.use_tmux = on),
             SettingRow::new("Terminal text size", "", &theme).control(terminal_text),
         ];
 
@@ -248,13 +224,7 @@ impl Shell {
                 continue;
             }
             let open = self.settings.mcp_open.contains(&server.id) || !name_hit;
-            let (dot, word, busy) = match (&status, server.enabled) {
-                (_, false) => (theme.fg.alpha(0.4), "Off", false),
-                (Some(None), true) => (theme.fg.alpha(0.4), "Connecting…", true),
-                (Some(Some(McpStatus::Connected { .. })), true) => (GREEN, "Connected", false),
-                (Some(Some(McpStatus::Failed(_))), true) => (AMBER, "Unreachable", false),
-                _ => (theme.fg.alpha(0.4), "Not checked", false),
-            };
+            let (dot, word, busy) = mcp_mark(&status, server.enabled, &theme);
             let note = if all_tools.is_empty() { reaches.clone() } else { format!("{reaches} · {} tools", all_tools.len()) };
             let (open_id, check_id, toggle_id) = (server.id.clone(), server.id.clone(), server.id.clone());
             // The chevron points down when open and to the side when closed, as if turned a quarter.
@@ -331,42 +301,7 @@ impl Shell {
                 let levels = self.state.settings.mcp_tools.get(&server.name).cloned().unwrap_or_default();
                 for (t, tool) in tools.iter().take(limit).enumerate() {
                     let level = levels.get(tool).copied().unwrap_or(Permission::Ask);
-                    list = list.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .py(px(6.))
-                            .border_b_1()
-                            .border_color(theme.line.to_hsla())
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .font_family(theme.code_font.clone())
-                                    .text_size(px(12.))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .child(tool.clone()),
-                            )
-                            .child(small_seg(SharedString::from(format!("mcp-tool-{i}-{t}")), permission_index(level), &theme, {
-                                let (name, tool) = (server.name.clone(), tool.clone());
-                                edit(weak, move |this: &mut Shell, choice: usize, cx| {
-                                    let level = permission_at(choice);
-                                    let tools = this.state.settings.mcp_tools.entry(name.clone()).or_default();
-                                    if level == Permission::Ask {
-                                        tools.remove(&tool);
-                                    } else {
-                                        tools.insert(tool.clone(), level);
-                                    }
-                                    if tools.is_empty() {
-                                        this.state.settings.mcp_tools.remove(&name);
-                                    }
-                                    this.save(cx);
-                                })
-                            })),
-                    );
+                    list = list.child(mcp_tool_row(&server.name, i, t, tool, level, weak, &theme));
                 }
                 if left > 0 {
                     list = list.child(div().pt(px(10.)).pb(px(2.)).child(link(("mcp-more", i), format!("Show {} more · {left} left", left.min(10)), theme.acc2, listen(cx, move |this, cx| this.show_more(&key, 6, 10, cx)))));
@@ -466,6 +401,60 @@ impl Shell {
         })
         .detach();
     }
+}
+
+/// The status dot, its word, and whether a check is running, for a server that is `enabled` and was last checked as `status`.
+fn mcp_mark(status: &Option<Option<McpStatus>>, enabled: bool, theme: &Theme) -> (Rgba, &'static str, bool) {
+    match (status, enabled) {
+        (_, false) => (theme.fg.alpha(0.4), "Off", false),
+        (Some(None), true) => (theme.fg.alpha(0.4), "Connecting…", true),
+        (Some(Some(McpStatus::Connected { .. })), true) => (GREEN, "Connected", false),
+        (Some(Some(McpStatus::Failed(_))), true) => (AMBER, "Unreachable", false),
+        _ => (theme.fg.alpha(0.4), "Not checked", false),
+    }
+}
+
+/// One tool of an open MCP server: its name, and the Allow, Ask and Off well that sets its permission.
+/// `server` names the server that keys the permissions; `i` and `t` place the server and the tool, for ids.
+fn mcp_tool_row(server: &str, i: usize, t: usize, tool: &str, level: Permission, weak: &gpui::WeakEntity<Shell>, theme: &Theme) -> AnyElement {
+    let (server, tool_name) = (server.to_string(), tool.to_string());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .py(px(6.))
+        .border_b_1()
+        .border_color(theme.line.to_hsla())
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .font_family(theme.code_font.clone())
+                .text_size(px(12.))
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(tool_name.clone()),
+        )
+        .child(small_seg(
+            SharedString::from(format!("mcp-tool-{i}-{t}")),
+            permission_index(level),
+            theme,
+            edit(weak, move |this: &mut Shell, choice: usize, cx| {
+                let level = permission_at(choice);
+                let tools = this.state.settings.mcp_tools.entry(server.clone()).or_default();
+                if level == Permission::Ask {
+                    tools.remove(&tool_name);
+                } else {
+                    tools.insert(tool_name.clone(), level);
+                }
+                if tools.is_empty() {
+                    this.state.settings.mcp_tools.remove(&server);
+                }
+                this.save(cx);
+            }),
+        ))
+        .into_any_element()
 }
 
 /// Allow, Ask and Off in a small well, as each MCP tool row shows them.

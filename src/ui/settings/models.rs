@@ -1,8 +1,8 @@
 //! The Models page: defaults for new sessions, and which discovered models appear in the composer. Spec: settings.md §6.
 
 use super::{
-    controls::{act_button, chips, edit, empty_box, listen, more_row, search_box, section, segmented_row, toggle_row},
-    HARNESS_IDS,
+    controls::{act_button, chips, edit, empty_box, listen, more_row, search_box, section, segmented_row},
+    flag_row, HARNESS_IDS,
 };
 use crate::ui::widgets::section::{card, section_head};
 use crate::{
@@ -49,35 +49,31 @@ impl Shell {
             default_id.is_none().then_some("Enable a harness first."),
         );
 
-        let fast_titles = toggle_row(
+        let fast_titles = flag_row(
             "fast-titles",
             "Use a fast model for titles and summaries",
             "",
             self.state.settings.fast_titles,
             &weak,
             &theme,
-            |this, on, cx| {
-                this.state.settings.fast_titles = on;
-                this.save(cx);
-            },
-            None,
+            |s, on| s.fast_titles = on,
         );
-
-        let long_context = toggle_row(
+        let long_context = flag_row(
             "long-context",
             "Prefer long-context variants",
             "",
             self.state.settings.long_context,
             &weak,
             &theme,
-            |this, on, cx| {
-                this.state.settings.long_context = on;
-                this.save(cx);
-            },
-            None,
+            |s, on| s.long_context = on,
         );
 
         vec![section("Defaults", vec![effort_row, fast_titles, long_context], &theme), self.settings_model_list(&weak, cx)]
+    }
+
+    /// Whether the harness `id` is installed and switched on.
+    fn harness_enabled(&self, id: &str) -> bool {
+        self.agents.iter().any(|a| a.harness.id() == id && a.enabled)
     }
 
     /// The harness that new sessions use: the chosen default if it's installed and enabled, else the
@@ -115,7 +111,7 @@ impl Shell {
         let search = self.settings.searches.get("models").map(|(input, _)| search_box(input, &theme));
         let mut names: Vec<String> = vec!["All".into()];
         names.extend(agents.iter().map(|(_, n)| n.to_string()));
-        let chips = chips("model-chip", &names, chip, &theme, super::controls::edit(weak, |this: &mut Shell, i: usize, cx| this.pick_chip("models", i, cx)));
+        let chips = chips("model-chip", &names, chip, &theme, edit(weak, |this: &mut Shell, i: usize, cx| this.pick_chip("models", i, cx)));
 
         let limit = self.limit("models", 10);
         let left = shown.len().saturating_sub(limit);
@@ -236,7 +232,7 @@ impl Shell {
 
     /// Makes `model` the default for new sessions, on its harness, and enables it.
     fn set_default_model(&mut self, harness: &'static str, model: String, cx: &mut Context<Self>) {
-        if !self.agents.iter().any(|a| a.harness.id() == harness && a.enabled) {
+        if !self.harness_enabled(harness) {
             self.toast("Enable this harness first", cx);
             return;
         }
@@ -249,7 +245,7 @@ impl Shell {
 
     /// Shows or hides one model in the composer. Guarded while its harness is disabled.
     fn set_model_enabled(&mut self, harness: &'static str, model: String, on: bool, cx: &mut Context<Self>) {
-        if !self.agents.iter().any(|a| a.harness.id() == harness && a.enabled) {
+        if !self.harness_enabled(harness) {
             self.toast("Enable this harness first", cx);
             return;
         }
