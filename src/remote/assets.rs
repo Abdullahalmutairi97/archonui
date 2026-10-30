@@ -2,6 +2,7 @@
 //! Each device sends the files the cloud lacks or has older, and takes the ones it lacks or has older.
 //! Nothing is ever deleted: a file removed on one device stays on the others.
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -71,7 +72,7 @@ pub fn manifest(root: &Path) -> Vec<(AssetKey, PathBuf)> {
                 continue;
             }
             let Ok(bytes) = fs::read(&path) else { continue };
-            let modified = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+            let modified = meta.modified().map_or(0, secs_since_epoch);
             out.push((AssetKey { dir: dir.to_string(), name, hash: hash(&bytes), modified }, path));
         }
     }
@@ -92,7 +93,6 @@ pub fn newer<'a>(mine: &[AssetKey], theirs: &'a [AssetKey]) -> Vec<&'a AssetKey>
 
 /// Reads `key`'s file under `root` for sending. `None` if it can't be read or isn't shareable.
 pub fn load(root: &Path, key: &AssetKey) -> Option<AssetFile> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
     if !allowed(&key.dir, &key.name) {
         return None;
     }
@@ -103,7 +103,6 @@ pub fn load(root: &Path, key: &AssetKey) -> Option<AssetFile> {
 /// Writes `file` under `root`, keeping its change time, unless what is there is the same or newer.
 /// Returns whether anything was written.
 pub fn save(root: &Path, file: &AssetFile) -> Result<bool, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
     if !allowed(&file.dir, &file.name) {
         return Err(format!("{}/{} can't be shared", file.dir, file.name));
     }
@@ -119,7 +118,7 @@ pub fn save(root: &Path, file: &AssetFile) -> Result<bool, String> {
     let dir = root.join(&file.dir);
     let path = dir.join(&file.name);
     if let Ok(meta) = fs::metadata(&path) {
-        let theirs = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+        let theirs = meta.modified().map_or(0, secs_since_epoch);
         if theirs >= file.modified || fs::read(&path).is_ok_and(|old| old == bytes) {
             return Ok(false);
         }
@@ -161,13 +160,17 @@ pub fn remove(root: &Path, dir: &str, name: &str) -> Result<(), String> {
     if !allowed(dir, name) {
         return Err(format!("{dir}/{name} isn't a shared file"));
     }
-    match fs::remove_file(root.join(dir).join(name)) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("{name}: {e}")),
+    if let Err(e) = fs::remove_file(root.join(dir).join(name)) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!("{name}: {e}"));
+        }
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    record_deleted(root, dir, name, now)
+    record_deleted(root, dir, name, secs_since_epoch(SystemTime::now()))
+}
+
+/// `t` as whole seconds since the epoch; 0 for a time before it.
+fn secs_since_epoch(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// Whether `key` was removed after it last changed, by one of `deletions`.

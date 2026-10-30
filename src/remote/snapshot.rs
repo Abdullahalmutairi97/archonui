@@ -61,9 +61,7 @@ pub fn current(dir: &Path, project: &str, device: &str) -> Option<String> {
 /// The result is plain files plus a fresh repository whose branch "main" holds the snapshot.
 /// On failure a `dest` made here is removed again, so no half-written copy is left behind.
 pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
-    if !is_hex(commit) {
-        return Err(format!("not a commit id: {commit:?}"));
-    }
+    check_commit(commit)?;
     let created = !dest.exists();
     if created {
         fs::create_dir_all(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
@@ -84,9 +82,7 @@ pub fn restore(bundle: &[u8], commit: &str, dest: &Path) -> Result<(), String> {
 /// The folder is claimed with a single `create_dir`, so two restores at once never write into, or on
 /// failure remove, the same folder.
 pub fn restore_new(bundle: &[u8], commit: &str, base: &Path, stem: &str) -> Result<PathBuf, String> {
-    if !is_hex(commit) {
-        return Err(format!("not a commit id: {commit:?}"));
-    }
+    check_commit(commit)?;
     let mut n = 1;
     let dest = loop {
         let dest = if n == 1 { base.join(stem) } else { base.join(format!("{stem}-{n}")) };
@@ -140,11 +136,9 @@ fn take_with(repo: &Repo, r: &str, index: &Path, secrets: bool) -> Result<Option
     if !seeded && has_head {
         run(indexed(repo, index).args(["read-tree", "HEAD"]))?;
     }
-    match &repo.prefix {
-        None => run(indexed(repo, index).args(["add", "-A"]))?,
-        // Git runs in the project folder, so "." is just the subfolder.
-        Some(_) => run(indexed(repo, index).args(["add", "-A", "--", "."]))?,
-    };
+    // Git runs in the project folder, so "." is just the subfolder.
+    let add: &[&str] = if repo.prefix.is_none() { &["add", "-A"] } else { &["add", "-A", "--", "."] };
+    run(indexed(repo, index).args(add))?;
     if repo.git_dir.is_some() {
         // A private git dir's index is ours: keep it so the next snapshot can skip unchanged files.
         // Only a speed-up, so a failed save is not an error.
@@ -229,14 +223,15 @@ fn bundle_upto(dir: &Path, project: &str, device: &str, since: Option<&str>, sna
     }
 
     let file = temp_path("bundle")?;
-    let out = match create_bundle(&repo, &r, base, &file) {
-        Ok(true) => read_upto(&file, max).and_then(|b| match b {
+    let out = create_bundle(&repo, &r, base, &file).and_then(|made| {
+        if !made {
+            return Ok(Bundle::Ready(Vec::new()));
+        }
+        read_upto(&file, max).and_then(|b| match b {
             Bundle::Ready(b) => rename_ref(b, &r, &wip_ref(device)).map(Bundle::Ready),
             too_big => Ok(too_big),
-        }),
-        Ok(false) => Ok(Bundle::Ready(Vec::new())),
-        Err(e) => Err(e),
-    };
+        })
+    });
     let _ = fs::remove_file(&file);
     out
 }
@@ -562,6 +557,15 @@ fn check_ids(project: &str, device: &str) -> Result<(), String> {
 /// Commit ids come from peers and reach git as arguments, so they must look like hex.
 fn is_hex(s: &str) -> bool {
     (4..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `Err` unless `commit` looks like a commit id (see `is_hex`).
+fn check_commit(commit: &str) -> Result<(), String> {
+    if is_hex(commit) {
+        Ok(())
+    } else {
+        Err(format!("not a commit id: {commit:?}"))
+    }
 }
 
 /// FNV-1a, 64-bit. Stable across runs, so a project always maps to the same private git dir.

@@ -6,7 +6,10 @@
 //! `chats/<device>/<session>.json` is one chat each. Ids come from the network, so `safe_id`
 //! checks every one before it becomes part of a path.
 
-use super::{proto::CloudProject, snapshot::git_cmd};
+use super::{
+    proto::CloudProject,
+    snapshot::{git_cmd, wip_ref},
+};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -60,10 +63,10 @@ impl Store {
             let file = tmp_path(&self.root, "bundle");
             fs::write(&file, bundle).map_err(|e| format!("could not write the bundle: {e}"))?;
             let spec = format!("+{refname}:{refname}");
-            let fetched = match file.to_str() {
-                Some(path) => git(&repo, &["fetch", "-q", path, spec.as_str()]).map(|_| ()),
-                None => Err("bad temp path".to_string()),
-            };
+            let fetched = file
+                .to_str()
+                .ok_or_else(|| "bad temp path".to_string())
+                .and_then(|path| git(&repo, &["fetch", "-q", path, spec.as_str()]));
             let _ = fs::remove_file(&file);
             fetched?;
         }
@@ -81,7 +84,6 @@ impl Store {
         write_atomic(&meta_path, &bytes)
     }
 
-    /// Every stored snapshot, one per project and device, newest first.
     /// The shared appearance files the cloud holds.
     pub fn asset_list(&self) -> Vec<super::assets::AssetKey> {
         super::assets::manifest(&self.root.join("assets")).into_iter().map(|(key, _)| key).collect()
@@ -103,13 +105,9 @@ impl Store {
     pub fn put_assets(&self, files: &[super::assets::AssetFile]) -> Result<(), String> {
         self.make_private()?;
         let root = self.root.join("assets");
-        let mut first = Ok(());
-        for file in files {
-            if let Err(e) = super::assets::save(&root, file) {
-                first = first.and(Err(e));
-            }
-        }
-        first
+        // Every file is tried, even after one fails.
+        let errors: Vec<String> = files.iter().filter_map(|file| super::assets::save(&root, file).err()).collect();
+        errors.into_iter().next().map_or(Ok(()), Err)
     }
 
     /// The files `keys` names that the cloud has. Ones it lacks are left out.
@@ -122,6 +120,7 @@ impl Store {
             .collect()
     }
 
+    /// Every stored snapshot, one per project and device, newest first.
     pub fn projects(&self) -> Vec<CloudProject> {
         let mut out = Vec::new();
         let Ok(entries) = fs::read_dir(self.root.join("projects")) else { return out };
@@ -257,10 +256,6 @@ fn check_id(id: &str, what: &str) -> Result<(), String> {
     } else {
         Err(format!("bad {what} id"))
     }
-}
-
-fn wip_ref(device: &str) -> String {
-    format!("refs/archon/wip/{device}")
 }
 
 /// Runs `git -C repo args` and returns its trimmed stdout, or the error text.
