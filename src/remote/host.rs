@@ -28,7 +28,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// What a waiting approval is told when the user denies it.
@@ -130,16 +130,16 @@ const TAILNET_WAIT: Duration = Duration::from_secs(90);
 /// `tailscale::discover`, retried every few seconds for up to `wait` while Tailscale or its service is
 /// still starting; a missing, signed-out or stopped Tailscale is reported at once, as waiting won't fix it.
 fn wait_for_tailnet(wait: Duration) -> Result<tailscale::Tailnet, String> {
-    let deadline = std::time::Instant::now() + wait;
+    let deadline = Instant::now() + wait;
     let mut said = false;
     loop {
         let found = tailscale::discover();
         let retry = matches!(&found, Err(e) if e.contains("starting") || e.contains("background service") || e.contains("did not answer"));
-        if !retry || std::time::Instant::now() >= deadline {
+        if !retry || Instant::now() >= deadline {
             return found;
         }
         if !said {
-            eprintln!("archonui host: waiting for Tailscale ({})", found.as_ref().err().map(String::as_str).unwrap_or(""));
+            eprintln!("archonui host: waiting for Tailscale ({})", found.as_ref().err().map_or("", String::as_str));
             said = true;
         }
         thread::sleep(Duration::from_secs(3));
@@ -188,6 +188,16 @@ fn no_cloud(about: &About) -> HostMsg {
     HostMsg::error(about, "This device does not keep a cloud copy")
 }
 
+/// The answer when chat `session` is not on this device.
+fn no_chat(about: &About, session: &str) -> HostMsg {
+    HostMsg::error(about, format!("There is no chat {session} on this device"))
+}
+
+/// Answers with `answer` on the cloud copy, or with `no_cloud` when this device keeps none.
+fn with_cloud(cloud: Option<&Store>, about: &About, answer: impl FnOnce(&Store) -> HostMsg) -> HostMsg {
+    cloud.map_or_else(|| no_cloud(about), answer)
+}
+
 /// Saves the chats that changed, and prints the files that could not be written.
 fn flush(state: &mut AppState) {
     for e in state.flush_sessions() {
@@ -211,7 +221,7 @@ pub fn handle(
     let mut turn = None;
     // Chats shown here from another device are not this host's to share.
     if let Some(id) = target(&req.msg).filter(|id| state.is_remote(id).is_some()) {
-        hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {id} on this device")));
+        hub.reply(conn, &no_chat(&about, id));
         return None;
     }
     match req.msg {
@@ -230,7 +240,7 @@ pub fn handle(
                     hub.reply(conn, &HostMsg::Snapshot { session: value, busy });
                 }
                 Some(Err(e)) => hub.reply(conn, &HostMsg::error(&about, format!("Could not send the chat: {e}"))),
-                None => hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device"))),
+                None => hub.reply(conn, &no_chat(&about, &session)),
             }
         }
         ClientMsg::Unsubscribe { session } => hub.unsubscribe(conn, &session),
@@ -250,16 +260,10 @@ pub fn handle(
             };
             let home = std::env::var_os("HOME").map(PathBuf::from);
             let named = !cwd.as_os_str().is_empty();
-            let cwd = if !named {
-                state
-                    .settings
-                    .default_folder
-                    .clone()
-                    .filter(|p| p.is_dir())
-                    .or_else(|| home.clone())
-                    .unwrap_or_else(|| PathBuf::from("/"))
-            } else {
+            let cwd = if named {
                 host_folder(cwd, home.as_deref())
+            } else {
+                state.settings.default_folder.clone().filter(|p| p.is_dir()).or(home).unwrap_or_else(|| PathBuf::from("/"))
             };
             if !agents.iter().any(|a| a.enabled && a.harness.id() == agent.as_str()) {
                 let message = format!("{} is not set up on this device", engine::agent_name(&agent));
@@ -308,7 +312,7 @@ pub fn handle(
         | ClientMsg::DeleteAssets { .. }) => handle_cloud(cloud, hub, Request { conn, msg }),
         ClientMsg::Draft { session, text } => {
             if state.session(&session).is_none() {
-                hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device")));
+                hub.reply(conn, &no_chat(&about, &session));
             } else {
                 state.set_draft(&session, &text);
                 flush(state);
@@ -320,7 +324,7 @@ pub fn handle(
             if title.is_empty() {
                 hub.reply(conn, &HostMsg::error(&about, "The name is empty"));
             } else if !super::cloud::safe_id(&session) || !state.rename_session(&session, &title) {
-                hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device")));
+                hub.reply(conn, &no_chat(&about, &session));
             } else {
                 flush(state);
                 let msg = HostMsg::Renamed { session: session.clone(), title };
@@ -329,7 +333,7 @@ pub fn handle(
         }
         ClientMsg::Delete { session } => {
             if !super::cloud::safe_id(&session) || state.session(&session).is_none() {
-                hub.reply(conn, &HostMsg::error(&about, format!("There is no chat {session} on this device")));
+                hub.reply(conn, &no_chat(&about, &session));
             } else if state.busy(&session) {
                 hub.reply(conn, &HostMsg::error(&about, "A reply is running in that chat; stop it first"));
             } else {
@@ -363,7 +367,7 @@ pub const SWEEP_EVERY: Duration = Duration::from_secs(20);
 /// Drops the empty chats other devices asked for and left (`AppState::expire_requested`), and
 /// tells their followers. Returns their ids.
 pub fn expire_requested(state: &mut AppState, hub: &Hub) -> Vec<String> {
-    let gone = state.expire_requested(|conn| hub.is_open(conn), REQUESTED_IDLE, std::time::Instant::now());
+    let gone = state.expire_requested(|conn| hub.is_open(conn), REQUESTED_IDLE, Instant::now());
     for id in &gone {
         hub.broadcast(id, &HostMsg::Deleted { session: id.clone() }, None);
     }
@@ -396,16 +400,13 @@ pub fn handle_cloud(cloud: Option<&Store>, hub: &Hub, req: Request) {
     let about = About::of(&req.msg);
     match req.msg {
         ClientMsg::PutProject { project, name, device, commit, bundle } => {
-            let reply = match cloud {
-                None => no_cloud(&about),
-                Some(store) => match STANDARD.decode(&bundle) {
-                    Err(e) => HostMsg::error(&about, format!("The bundle is not base64: {e}")),
-                    Ok(bytes) => match store.put_project(&project, &name, &device, &commit, &bytes) {
-                        Ok(()) => HostMsg::Stored { project, device, commit },
-                        Err(message) => HostMsg::error(&about, message),
-                    },
+            let reply = with_cloud(cloud, &about, |store| match STANDARD.decode(&bundle) {
+                Err(e) => HostMsg::error(&about, format!("The bundle is not base64: {e}")),
+                Ok(bytes) => match store.put_project(&project, &name, &device, &commit, &bytes) {
+                    Ok(()) => HostMsg::Stored { project, device, commit },
+                    Err(message) => HostMsg::error(&about, message),
                 },
-            };
+            });
             hub.reply(conn, &reply);
         }
         ClientMsg::PutChats { device, sessions } => match cloud {
@@ -418,37 +419,25 @@ pub fn handle_cloud(cloud: Option<&Store>, hub: &Hub, req: Request) {
             }
         },
         ClientMsg::ListCloud => {
-            let reply = match cloud {
-                None => no_cloud(&about),
-                Some(store) => HostMsg::Cloud { projects: store.projects(), chats: store.chat_devices() },
-            };
+            let reply = with_cloud(cloud, &about, |store| HostMsg::Cloud { projects: store.projects(), chats: store.chat_devices() });
             hub.reply(conn, &reply);
         }
         ClientMsg::GetProject { project, device } => {
-            let reply = match cloud {
-                None => no_cloud(&about),
-                Some(store) => match store.get_project(&project, &device) {
-                    Ok((_, bundle)) if !proto::fits(bundle.len().div_ceil(3) * 4) => {
-                        HostMsg::error(&about, format!("That copy is too big to send ({} MB)", bundle.len() >> 20))
-                    }
-                    Ok((commit, bundle)) => HostMsg::ProjectData { project, device, commit, bundle: STANDARD.encode(bundle) },
-                    Err(message) => HostMsg::error(&about, message),
-                },
-            };
+            let reply = with_cloud(cloud, &about, |store| match store.get_project(&project, &device) {
+                Ok((_, bundle)) if !proto::fits(bundle.len().div_ceil(3) * 4) => {
+                    HostMsg::error(&about, format!("That copy is too big to send ({} MB)", bundle.len() >> 20))
+                }
+                Ok((commit, bundle)) => HostMsg::ProjectData { project, device, commit, bundle: STANDARD.encode(bundle) },
+                Err(message) => HostMsg::error(&about, message),
+            });
             hub.reply(conn, &reply);
         }
         ClientMsg::GetChats { device } => {
-            let reply = match cloud {
-                None => no_cloud(&about),
-                Some(store) => HostMsg::Chats { sessions: store.chats(&device), device },
-            };
+            let reply = with_cloud(cloud, &about, |store| HostMsg::Chats { sessions: store.chats(&device), device });
             hub.reply(conn, &reply);
         }
         ClientMsg::ListAssets => {
-            let reply = match cloud {
-                None => no_cloud(&about),
-                Some(store) => HostMsg::AssetList { assets: store.asset_list(), deleted: store.asset_deletions() },
-            };
+            let reply = with_cloud(cloud, &about, |store| HostMsg::AssetList { assets: store.asset_list(), deleted: store.asset_deletions() });
             hub.reply(conn, &reply);
         }
         ClientMsg::PutAssets { files } => match cloud {
@@ -468,10 +457,7 @@ pub fn handle_cloud(cloud: Option<&Store>, hub: &Hub, req: Request) {
             }
         },
         ClientMsg::GetAssets { assets } => {
-            let reply = match cloud {
-                None => no_cloud(&about),
-                Some(store) => HostMsg::AssetData { files: store.get_assets(&assets) },
-            };
+            let reply = with_cloud(cloud, &about, |store| HostMsg::AssetData { files: store.get_assets(&assets) });
             hub.reply(conn, &reply);
         }
         _ => {}
@@ -543,9 +529,9 @@ fn start_prompt(
     effort: Choice,
     files: Vec<RemoteFile>,
 ) -> Result<Option<(String, smol::channel::Receiver<Event>)>, String> {
-    let (cur_mode, cur_model, cur_effort, agent) = match state.session(session) {
-        Some(s) => (s.mode, s.model.clone(), s.effort.clone(), s.agent.clone()),
-        None => return Err(format!("There is no chat {session} on this device")),
+    let current = state.session(session).map(|s| (s.mode, s.model.clone(), s.effort.clone(), s.agent.clone()));
+    let Some((cur_mode, cur_model, cur_effort, agent)) = current else {
+        return Err(format!("There is no chat {session} on this device"));
     };
     if state.busy(session) {
         return Err("A reply is already running".into());
@@ -720,9 +706,9 @@ fn stop(state: &mut AppState, hub: &Hub, approvals: &mut Approvals, work: &smol:
     for id in &running {
         hub.broadcast(id, &HostMsg::Finished { session: id.clone(), error: None, stopped: true }, None);
     }
-    let deadline = std::time::Instant::now() + STOP_WAIT;
+    let deadline = Instant::now() + STOP_WAIT;
     while !running.is_empty() {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let left = deadline.saturating_duration_since(Instant::now());
         let next = smol::block_on(smol::future::or(async { work.recv().await.ok() }, async {
             smol::Timer::after(left).await;
             None
@@ -748,13 +734,17 @@ struct Approvals {
     waiting: HashMap<u64, approve::Request>,
 }
 
+/// The message that tells clients request `id` waits in its chat.
+fn approval_msg(id: u64, req: &approve::Request) -> HostMsg {
+    HostMsg::Approval { session: req.session.clone(), request: id, tool: req.tool_name.clone(), input: req.input.clone() }
+}
+
 impl Approvals {
     /// Keeps `req` waiting and tells the chat's subscribers about it. Returns its id.
     fn add(&mut self, req: approve::Request, hub: &Hub) -> u64 {
         let id = self.next;
         self.next += 1;
-        let msg = HostMsg::Approval { session: req.session.clone(), request: id, tool: req.tool_name.clone(), input: req.input.clone() };
-        hub.broadcast(&req.session, &msg, None);
+        hub.broadcast(&req.session, &approval_msg(id, &req), None);
         self.waiting.insert(id, req);
         id
     }
@@ -768,8 +758,8 @@ impl Approvals {
     }
 
     /// Applies a client's `Answer` to a request waiting in its chat, from a connection following that chat.
-    /// Returns false when none matches, so `handle` refuses the message. With `always`, the tool is allowed for the rest of the session, and the
-    /// other waiting requests for it are allowed too.
+    /// Returns false when none matches, so `handle` refuses the message. With `always`, the tool is
+    /// allowed for the rest of the session, and the other waiting requests for it are allowed too.
     fn answer(&mut self, req: &Request, allowances: &approve::Allowances, hub: &Hub) -> bool {
         let ClientMsg::Answer { session, request, allow, always } = &req.msg else { return false };
         if !hub.follows(req.conn, session) {
@@ -806,8 +796,7 @@ impl Approvals {
     /// Sends `conn` the requests waiting in chat `session`, when it subscribes.
     fn send_waiting(&self, hub: &Hub, conn: u64, session: &str) {
         for (id, req) in self.waiting.iter().filter(|(_, r)| r.session == session) {
-            let msg = HostMsg::Approval { session: session.to_string(), request: *id, tool: req.tool_name.clone(), input: req.input.clone() };
-            hub.reply(conn, &msg);
+            hub.reply(conn, &approval_msg(*id, req));
         }
     }
 }

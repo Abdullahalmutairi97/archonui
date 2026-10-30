@@ -252,7 +252,12 @@ fn uid_in(table: &str, from: SocketAddr, to: SocketAddr) -> Option<u32> {
     table.lines().skip(1).find_map(|row| {
         let cols: Vec<&str> = row.split_whitespace().collect();
         let (src, dst, uid) = (cols.get(1)?, cols.get(2)?, cols.get(7)?);
-        (from.iter().any(|a| a == src) && to.iter().any(|a| a == dst)).then(|| uid.parse().ok())?
+        let matches = from.iter().any(|a| a == src) && to.iter().any(|a| a == dst);
+        if matches {
+            uid.parse().ok()
+        } else {
+            None
+        }
     })
 }
 
@@ -281,12 +286,10 @@ fn accept(listener: TcpListener, hub: Hub, requests: smol::channel::Sender<Reque
         }
         let stream = match listener.accept() {
             Ok((stream, _)) => stream,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(POLL);
-                continue;
-            }
             Err(e) => {
-                eprintln!("archonui host: could not accept a connection: {e}");
+                if e.kind() != io::ErrorKind::WouldBlock {
+                    eprintln!("archonui host: could not accept a connection: {e}");
+                }
                 thread::sleep(POLL);
                 continue;
             }

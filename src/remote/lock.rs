@@ -14,7 +14,7 @@ pub struct Lock(File);
 pub fn try_lock(dir: &Path, exclusive: bool) -> io::Result<Option<Lock>> {
     crate::store::create_private_dir(dir)?;
     let file = File::open(dir)?;
-    let op = if exclusive { libc::LOCK_EX } else { libc::LOCK_SH } | libc::LOCK_NB;
+    let op = (if exclusive { libc::LOCK_EX } else { libc::LOCK_SH }) | libc::LOCK_NB;
     // SAFETY: `flock` on a descriptor this function owns.
     if unsafe { libc::flock(file.as_raw_fd(), op) } == 0 {
         return Ok(Some(Lock(file)));
