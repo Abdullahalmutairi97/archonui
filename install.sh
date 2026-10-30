@@ -19,31 +19,62 @@ if [ -r /etc/os-release ]; then
   # shellcheck disable=SC1091
   distro="$(. /etc/os-release && echo "${ID:-} ${ID_LIKE:-}")"
 fi
-packages_hint() {
+# The command that installs what the build needs, without `sudo`, or "" for an unknown distro.
+packages_cmd() {
   case " $distro " in
     *" arch "*|*" cachyos "*|*" manjaro "*|*" endeavouros "*)
-      echo "sudo pacman -S --needed base-devel git pkgconf curl libxkbcommon-x11 libxcb freetype2 fontconfig wayland vulkan-icd-loader" ;;
+      echo "pacman -S --needed --noconfirm base-devel git pkgconf curl libxkbcommon-x11 libxcb freetype2 fontconfig wayland vulkan-icd-loader" ;;
     *" debian "*|*" ubuntu "*|*" linuxmint "*|*" pop "*)
-      echo "sudo apt install build-essential git pkg-config curl libxkbcommon-x11-dev libxkbcommon-dev libxcb1-dev libx11-xcb-dev libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1 mesa-vulkan-drivers" ;;
+      echo "apt-get install -y build-essential git pkg-config curl libxkbcommon-x11-dev libxkbcommon-dev libxcb1-dev libx11-xcb-dev libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1 mesa-vulkan-drivers" ;;
     *" fedora "*|*" rhel "*|*" centos "*)
-      echo "sudo dnf install gcc git pkgconf-pkg-config curl libxkbcommon-x11-devel libxkbcommon-devel libxcb-devel freetype-devel fontconfig-devel wayland-devel vulkan-loader mesa-vulkan-drivers" ;;
+      echo "dnf install -y gcc git pkgconf-pkg-config curl libxkbcommon-x11-devel libxkbcommon-devel libxcb-devel freetype-devel fontconfig-devel wayland-devel vulkan-loader mesa-vulkan-drivers" ;;
     *" opensuse"*|*" suse "*)
-      echo "sudo zypper install gcc git pkg-config curl libxkbcommon-x11-devel libxkbcommon-devel libxcb-devel freetype2-devel fontconfig-devel wayland-devel libvulkan1" ;;
-    *) echo "a C compiler, git, pkg-config, curl, and the development files for xkbcommon(-x11), xcb, freetype2 and fontconfig" ;;
+      echo "zypper --non-interactive install gcc git pkg-config curl libxkbcommon-x11-devel libxkbcommon-devel libxcb-devel freetype2-devel fontconfig-devel wayland-devel libvulkan1" ;;
   esac
 }
+packages_hint() {
+  cmd="$(packages_cmd)"
+  if [ -n "$cmd" ]; then
+    echo "sudo $cmd"
+  else
+    echo "a C compiler, git, pkg-config, curl, and the development files for xkbcommon(-x11), xcb, freetype2 and fontconfig"
+  fi
+}
 
-missing=""
-for tool in git cc pkg-config; do
-  command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
-done
-if [ -z "$missing" ]; then
-  for lib in xkbcommon xkbcommon-x11 xcb freetype2 fontconfig; do
-    pkg-config --exists "$lib" 2>/dev/null || missing="$missing $lib"
+# Asks a yes/no question on the terminal, also when this script is piped into sh (stdin is the
+# script then, so the answer is read from /dev/tty). Yes is the default. With no terminal, says no.
+ask() {
+  ( true </dev/tty ) 2>/dev/null || return 1
+  printf 'install: %s [Y/n] ' "$1" >/dev/tty
+  read -r answer </dev/tty || return 1
+  case "$answer" in [nN]*) return 1 ;; *) return 0 ;; esac
+}
+
+find_missing() {
+  missing=""
+  for tool in git cc pkg-config; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
   done
-fi
+  if [ -z "$missing" ]; then
+    for lib in xkbcommon xkbcommon-x11 xcb freetype2 fontconfig; do
+      pkg-config --exists "$lib" 2>/dev/null || missing="$missing $lib"
+    done
+  fi
+}
+
+find_missing
 if [ -n "$missing" ]; then
   echo "install: missing:$missing" >&2
+  cmd="$(packages_cmd)"
+  if [ -n "$cmd" ] && command -v sudo >/dev/null 2>&1 && ask "Install them now with: sudo $cmd ?"; then
+    # sudo asks for the password itself; this script never sees it.
+    # shellcheck disable=SC2086
+    sudo $cmd </dev/tty || die "installing the packages failed"
+    find_missing
+  fi
+fi
+if [ -n "$missing" ]; then
+  echo "install: still missing:$missing" >&2
   echo "install: install them with:" >&2
   echo "  $(packages_hint)" >&2
   exit 1
@@ -78,13 +109,36 @@ case ":$PATH:" in
   *) say "$bin_dir is not on your PATH: start ArchonUI from your app launcher, or add it to PATH to run \`archonui\` in a terminal" ;;
 esac
 
-# Agents: ArchonUI drives the CLIs you already have. Say which it found, and what to do if none.
+# Agents: ArchonUI drives the CLIs you already have. Say which it found, and offer one if none.
 found="$("$bin_dir/archonui" --detect 2>/dev/null || true)"
+if [ -z "$found" ] && ( true </dev/tty ) 2>/dev/null; then
+  say "no agent CLI found yet. Install one now? (all install for your user only)"
+  echo "  1) OpenCode     works without an account, on free models"
+  echo "  2) Claude Code"
+  echo "  3) Codex        needs npm"
+  echo "  4) Gemini CLI   needs npm"
+  printf 'install: pick 1-4, or Enter to skip: ' >/dev/tty
+  read -r pick </dev/tty || pick=""
+  case "$pick" in
+    1) curl -fsSL https://opencode.ai/install | bash || say "installing OpenCode failed" ;;
+    2) curl -fsSL https://claude.ai/install.sh | bash || say "installing Claude Code failed" ;;
+    3|4)
+      package="@openai/codex"
+      [ "$pick" = 4 ] && package="@google/gemini-cli"
+      if command -v npm >/dev/null 2>&1; then
+        npm install -g --prefix "$HOME/.local" "$package" || say "installing $package failed"
+      else
+        say "npm is missing: install Node.js and npm first, or use the Install button in Settings → Harnesses"
+      fi ;;
+  esac
+  found="$("$bin_dir/archonui" --detect 2>/dev/null || true)"
+fi
 if [ -n "$found" ]; then
   say "agents found:"
   echo "$found" | sed 's/^/  /'
+  say "sign in from Settings → Harnesses in the app"
 else
-  say "no agent CLI found yet. Install at least one, for example:"
+  say "no agent CLI yet. Install one from Settings → Harnesses in the app, or for example:"
   echo "  Claude Code: curl -fsSL https://claude.ai/install.sh | bash"
   echo "  OpenCode:    curl -fsSL https://opencode.ai/install | bash   (works without an account, on free models)"
   echo "  Codex:       npm install -g @openai/codex"

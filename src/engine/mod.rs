@@ -10,6 +10,7 @@ pub mod attach;
 mod detect;
 mod discover;
 pub mod handoff;
+pub mod install;
 pub mod mcp;
 pub mod plugins;
 pub mod skills;
@@ -28,8 +29,6 @@ pub use harness::{permission_rows, ToolSupport};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use discover::AgentCommand;
-#[cfg(test)]
-#[allow(unused_imports)]
 pub use harness::AuthStatus;
 pub use parse::Out;
 pub use session::{start_turn, Event, Turn, TurnOptions};

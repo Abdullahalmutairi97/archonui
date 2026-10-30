@@ -41,6 +41,8 @@ pub struct TerminalUi {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Width of a terminal cell, as of the last render.
     cell_w: Pixels,
+    /// A line to type into a session's shell once it runs, by session id: a sign-in command from Settings.
+    typed: Option<(String, String)>,
 }
 
 struct TermState {
@@ -384,6 +386,11 @@ impl Shell {
             };
             self.tabs.terminal.sessions.insert(id.clone(), state);
         }
+        if let Some((_, line)) = self.tabs.terminal.typed.take_if(|(for_id, _)| *for_id == id) {
+            if let Some(Ok(state)) = self.tabs.terminal.sessions.get(&id) {
+                state.term.write(format!("{line}\r").as_bytes());
+            }
+        }
         if let (Some(size), Some(Ok(state))) = (grid, self.tabs.terminal.sessions.get_mut(&id)) {
             if state.size != size {
                 state.term.resize(size.0, size.1);
@@ -435,6 +442,16 @@ impl Shell {
     /// Ends a drag-selection when the keyboard leaves the Terminal tab.
     pub(in crate::ui) fn terminal_blur(&mut self, cx: &mut Context<Self>) {
         self.term_drag_end(cx);
+    }
+
+    /// Opens the Terminal tab on the focused chat and runs `line` in its shell, starting the shell if
+    /// needed. False when no chat of this device is focused, so there is no shell to run it in.
+    pub(in crate::ui) fn run_in_terminal(&mut self, line: &str, cx: &mut Context<Self>) -> bool {
+        let Some(id) = self.terminal_session() else { return false };
+        self.tabs.terminal.typed = Some((id, line.to_string()));
+        self.show_tool_tab(RightTab::Terminal, cx);
+        cx.notify();
+        true
     }
 
     fn write_terminal(&self, bytes: &[u8]) {
