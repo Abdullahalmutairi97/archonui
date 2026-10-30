@@ -97,15 +97,15 @@ impl Shell {
             return blocks;
         }
 
-        blocks.push(self.device_list(&sync, &weak, cx));
+        blocks.push(self.device_list(&sync, &weak));
         if sync.cloud.is_some() {
-            blocks.push(self.cloud_section(&weak, cx));
+            blocks.push(self.cloud_section(&weak));
         }
         blocks
     }
 
     /// Every device on the tailnet: this one, the shared ones, the online ones, and the offline ones on request.
-    fn device_list(&mut self, sync: &SyncSettings, weak: &WeakEntity<Shell>, _cx: &mut Context<Self>) -> AnyElement {
+    fn device_list(&mut self, sync: &SyncSettings, weak: &WeakEntity<Shell>) -> AnyElement {
         let theme = self.theme.clone();
         let refresh = div()
             .id("devices-refresh")
@@ -130,12 +130,12 @@ impl Shell {
         let header = section_head("Your devices", None, vec![refresh.into_any_element()], &theme);
         let list = section_card(Vec::new(), &theme);
         let net = match self.settings.tailnet.clone() {
-            None => return div().child(header).child(list.child(note("Looking for Tailscale devices…", &theme))).into_any_element(),
+            Some(Ok(net)) => net,
             Some(Err(message)) => {
                 let text = format!("{message}. Then press Refresh.");
                 return div().child(header).child(list.child(note(&text, &theme))).into_any_element();
             }
-            Some(Ok(net)) => net,
+            None => return div().child(header).child(list.child(note("Looking for Tailscale devices…", &theme))).into_any_element(),
         };
 
         let asking = self.devices_asking();
@@ -310,7 +310,7 @@ impl Shell {
     }
 
     /// What the cloud holds: its status, each project copy with a button that opens it here, and the secrets switch.
-    fn cloud_section(&mut self, weak: &WeakEntity<Shell>, _cx: &mut Context<Self>) -> AnyElement {
+    fn cloud_section(&mut self, weak: &WeakEntity<Shell>) -> AnyElement {
         let theme = self.theme.clone();
         self.ask_cloud_list_once();
         let sync = self.state.settings.sync.clone();
