@@ -100,6 +100,20 @@ impl Live {
             *self.thought.get_or_insert_default() += since.elapsed();
         }
     }
+
+    /// Clears what the previous turn left behind, as a new turn starts. Pending files stay.
+    fn reset_for_turn(&mut self) {
+        self.status = None;
+        self.cancelled = false;
+        self.started = Some(Instant::now());
+        self.activity.clear();
+        self.tools.clear();
+        self.thought = None;
+        self.thinking_since = None;
+        self.after_tool = false;
+        self.final_start = None;
+        self.usage = None;
+    }
 }
 
 pub struct AppState {
@@ -290,16 +304,21 @@ impl AppState {
     /// Removes a chat, its live turn (which stops the agent) and its tile.
     pub fn delete_session(&mut self, id: &str) {
         let remote = self.is_remote(id).is_some();
-        self.live.remove(id);
+        self.forget_running(id);
         self.sessions.retain(|s| s.id != id);
         self.workspace.layout.close(id);
-        self.dirty.remove(id);
-        self.remote_busy.remove(id);
         self.requested.remove(id);
         // A remote chat has no file here to delete.
         if !remote {
             self.removed.push(id.to_string());
         }
+    }
+
+    /// Drops a chat's live state, busy mark and pending save. The chat itself stays.
+    fn forget_running(&mut self, id: &str) {
+        self.live.remove(id);
+        self.remote_busy.remove(id);
+        self.dirty.remove(id);
     }
 
     // Remote chats: chats that live on another device, shown here as a live copy. Never saved here.
@@ -328,9 +347,7 @@ impl AppState {
     pub fn remove_remote(&mut self, origin: &str) {
         let gone: Vec<String> = self.sessions.iter().filter(|s| s.origin.as_deref() == Some(origin)).map(|s| s.id.clone()).collect();
         for id in &gone {
-            self.live.remove(id);
-            self.remote_busy.remove(id);
-            self.dirty.remove(id);
+            self.forget_running(id);
         }
         self.sessions.retain(|s| s.origin.as_deref() != Some(origin));
         let layout = &mut self.workspace.layout;
@@ -344,9 +361,7 @@ impl AppState {
     pub fn remote_away(&mut self, origin: &str) {
         let away: Vec<String> = self.sessions.iter().filter(|s| s.origin.as_deref() == Some(origin)).map(|s| s.id.clone()).collect();
         for id in &away {
-            self.live.remove(id);
-            self.remote_busy.remove(id);
-            self.dirty.remove(id);
+            self.forget_running(id);
         }
     }
 
@@ -367,17 +382,7 @@ impl AppState {
         s.push(Role::User, text);
         s.draft.clear();
         s.push(Role::Agent, "");
-        let live = self.live.entry(id.to_string()).or_default();
-        live.status = None;
-        live.cancelled = false;
-        live.started = Some(Instant::now());
-        live.activity.clear();
-        live.tools.clear();
-        live.thought = None;
-        live.thinking_since = None;
-        live.after_tool = false;
-        live.final_start = None;
-        live.usage = None;
+        self.live.entry(id.to_string()).or_default().reset_for_turn();
         self.remote_busy.insert(id.to_string());
     }
 
@@ -429,10 +434,7 @@ impl AppState {
         self.remote_busy.remove(id);
         // Stopped on any device shows as stopped here too, not as the agent failing.
         self.live.entry(id.to_string()).or_default().cancelled = stopped;
-        let result = match error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        };
+        let result = error.map_or(Ok(()), Err);
         let mut applied = self.apply(id, Event::Finished(result));
         applied.preview = None;
         applied
@@ -544,9 +546,7 @@ impl AppState {
     /// closes with it. A chat another device started here is kept until its first message. Returns
     /// the ids that went.
     pub fn drop_abandoned(&mut self) -> Vec<String> {
-        // Once it has a message, a chat another device asked for is like any other.
-        let sessions = &self.sessions;
-        self.requested.retain(|id, _| sessions.iter().any(|s| &s.id == id && !s.visible()));
+        self.prune_requested();
         let focus = self.workspace.layout.focus.as_deref();
         let doomed: Vec<String> = self
             .sessions
@@ -565,8 +565,7 @@ impl AppState {
     /// (`open` says false), or nothing was sent or typed in them for `idle` up to `now`. Chats that
     /// got a message are ordinary chats and stay. Returns the ids that went.
     pub fn expire_requested(&mut self, open: impl Fn(u64) -> bool, idle: Duration, now: Instant) -> Vec<String> {
-        let sessions = &self.sessions;
-        self.requested.retain(|id, _| sessions.iter().any(|s| &s.id == id && !s.visible()));
+        self.prune_requested();
         let doomed: Vec<String> = self
             .requested
             .iter()
@@ -591,11 +590,15 @@ impl AppState {
 
     /// Drops the pending file at `index`, if there is one.
     pub fn remove_pending(&mut self, id: &str, index: usize) {
-        if let Some(live) = self.live.get_mut(id) {
-            if index < live.pending.len() {
-                live.pending.remove(index);
-            }
+        if let Some(live) = self.live.get_mut(id).filter(|l| index < l.pending.len()) {
+            live.pending.remove(index);
         }
+    }
+
+    /// Forgets the chat requests (`requested`) whose chat has since got a message: those are ordinary chats.
+    fn prune_requested(&mut self) {
+        let sessions = &self.sessions;
+        self.requested.retain(|id, _| sessions.iter().any(|s| &s.id == id && !s.visible()));
     }
 
     /// Whether a turn is running in `id`, here or on the chat's device.
@@ -632,8 +635,8 @@ impl AppState {
         let agent = agents.iter().find(|a| a.harness.id() == session.agent)?;
         // A chat filed under a project works in that project's folder. Only before the agent has a
         // session of its own: agents keep resumable sessions per folder, so a started chat stays put.
-        if let Some(dir) = project_dir.clone().filter(|_| session.agent_session.is_none() && session.messages.is_empty()) {
-            session.cwd = dir;
+        if let Some(dir) = project_dir.as_ref().filter(|_| session.agent_session.is_none() && session.messages.is_empty()) {
+            session.cwd = dir.clone();
         }
         let files = self.live.get_mut(id).map(|l| std::mem::take(&mut l.pending)).unwrap_or_default();
         let (files, file_errors) = keep_files(id, files);
@@ -705,16 +708,7 @@ impl AppState {
                 }
                 let live = self.live.entry(id.to_string()).or_default();
                 live.turn = Some(turn);
-                live.status = None;
-                live.cancelled = false;
-                live.started = Some(Instant::now());
-                live.activity.clear();
-                live.tools.clear();
-                live.thought = None;
-                live.thinking_since = None;
-                live.after_tool = false;
-                live.final_start = None;
-                live.usage = None;
+                live.reset_for_turn();
                 live.log(sent);
                 Some(events)
             }
