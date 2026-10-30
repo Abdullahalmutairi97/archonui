@@ -2,7 +2,7 @@
 
 use super::{
     colour::{token_colour, HSL_CHANNELS},
-    controls::{caption, listen, section, segmented_row, toggle_row},
+    controls::{act_button, caption, icon, listen, section, segmented_row, toggle_row},
     FontSlot, Slide,
 };
 use crate::{
@@ -575,13 +575,13 @@ impl Shell {
                             .right(px(5.))
                             .flex()
                             .gap(px(4.))
-                            .child(corner_button(("theme-rename", i), super::controls::icon::EDIT, 20., 11., 0.65).on_click(cx.listener(
+                            .child(corner_button(("theme-rename", i), icon::EDIT, 20., 11., 0.65).on_click(cx.listener(
                                 move |this, _: &gpui::ClickEvent, window, cx| {
                                     cx.stop_propagation();
                                     this.start_theme_rename(&rid, window, cx);
                                 },
                             )))
-                            .child(corner_button(("theme-remove", i), super::controls::icon::X, 20., 10., 0.65).on_click(cx.listener(
+                            .child(corner_button(("theme-remove", i), icon::X, 20., 10., 0.65).on_click(cx.listener(
                                 move |this, _: &gpui::ClickEvent, _, cx| {
                                     cx.stop_propagation();
                                     this.remove_theme(&did, cx);
@@ -630,7 +630,7 @@ impl Shell {
                     .child(label),
             );
         }
-        let save = super::controls::act_button("theme-save", "Save as theme", Some(super::controls::icon::PLUS), &theme, listen(cx, |this, cx| this.save_as_theme(cx)));
+        let save = act_button("theme-save", "Save as theme", Some(icon::PLUS), &theme, listen(cx, |this, cx| this.save_as_theme(cx)));
         div()
             .flex()
             .flex_col()
@@ -668,7 +668,7 @@ impl Shell {
         let image_row = SettingRow::new("Image", "", &theme).below(images);
         let filters = self.filter_grid(cx);
         let filter_row = SettingRow::new("Filter", "", &theme).below(filters);
-        let fade_row = super::controls::toggle_row(
+        let fade_row = toggle_row(
             "bg-fade",
             "Fade at the bottom",
             "",
@@ -681,15 +681,18 @@ impl Shell {
             },
             None,
         );
-        let mut rows = vec![style_row, image_row, filter_row, fade_row];
         let dim_slider = self.slide(Slide::Dim, dim, range(WALLPAPER_DIM, 5.), "%", cx);
         let blur_slider = self.slide(Slide::Blur, blur, range(PANEL_BLUR, 1.), "px", cx);
         let opacity_slider = self.slide(Slide::Opacity, opacity, range(crate::app::settings::WINDOW_OPACITY, 5.), "%", cx);
-        rows.push(SettingRow::new("Wallpaper dim", "", &theme).control(dim_slider));
-        rows.push(SettingRow::new("Panel blur", "", &theme).control(blur_slider));
-        rows.push(
+        let rows = vec![
+            style_row,
+            image_row,
+            filter_row,
+            fade_row,
+            SettingRow::new("Wallpaper dim", "", &theme).control(dim_slider),
+            SettingRow::new("Panel blur", "", &theme).control(blur_slider),
             SettingRow::new("Window opacity", "Text stays solid", &theme).control(opacity_slider),
-        );
+        ];
         section("Background", rows, &theme)
     }
 
@@ -853,12 +856,8 @@ impl Shell {
                     Some(Arc::new(Image::from_bytes(ImageFormat::Png, source.preview_png(208)?)))
                 })
             });
-            let picture = match thumb {
-                Some(t) => img(t).size_full().object_fit(ObjectFit::Cover).into_any_element(),
-                None => gradient_thumb(theme.gradient).into_any_element(),
-            };
             grid = grid.child(
-                pic_tile(("bg-filter", i), filter == current, Some(name), &theme, picture, None)
+                pic_tile(("bg-filter", i), filter == current, Some(name), &theme, thumb_picture(thumb, theme.gradient), None)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.state.settings.filter = filter;
                         this.refresh_theme(cx);
@@ -878,10 +877,7 @@ impl Shell {
         let mut grid = div().flex().flex_wrap().gap(px(12.));
         // The theme's own background: its image, or its gradient.
         let own = Some(PathBuf::from(&theme.wallpaper)).filter(|p| p.is_file()).and_then(|p| self.wall_thumb(&p));
-        let picture = match own {
-            Some(thumb) => img(thumb).size_full().object_fit(ObjectFit::Cover).into_any_element(),
-            None => gradient_thumb(theme.gradient).into_any_element(),
-        };
+        let picture = thumb_picture(own, theme.gradient);
         grid = grid.child(pic_tile("wall-theme", picked.is_none(), Some("Theme"), &dialog, picture, None).on_click(cx.listener(|this, _, _, cx| {
             this.state.settings.wallpaper = None;
             this.refresh_theme(cx);
@@ -890,7 +886,7 @@ impl Shell {
             let Some(thumb) = self.wall_thumb(&path) else { continue };
             let active = picked.as_ref() == Some(&path);
             let gone = path.clone();
-            let remove = corner_button(("wall-remove", i), super::controls::icon::X, 18., 10., 0.62).on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+            let remove = corner_button(("wall-remove", i), icon::X, 18., 10., 0.62).on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
                 cx.stop_propagation();
                 this.remove_background(&gone, cx);
             }));
@@ -922,7 +918,7 @@ impl Shell {
                 .cursor_pointer()
                 .hover(|s| s.bg(dialog.line.to_hsla()))
                 .on_click(cx.listener(|this, _, _, cx| this.pick_wall_file(cx)))
-                .child(crate::ui::composer::icons::stroke_icon(super::controls::icon::PLUS, 14., 1.4, muted))
+                .child(crate::ui::composer::icons::stroke_icon(icon::PLUS, 14., 1.4, muted))
                 .child("Upload"),
         );
         grid.into_any_element()
@@ -1115,7 +1111,7 @@ impl Shell {
                 )
                 .children(channels)
         });
-        let reset = super::controls::act_button("colours-reset", "Reset", None, &theme, listen(cx, |this, cx| {
+        let reset = act_button("colours-reset", "Reset", None, &theme, listen(cx, |this, cx| {
             let key = theme_key(&this.state.settings.theme);
             this.state.settings.custom_colours.remove(key);
             this.settings.picker = None;
@@ -1243,7 +1239,6 @@ impl Shell {
     }
 }
 
-
 /// The settings a saved theme brings back with it, as `AppSettings` names them.
 const APPEARANCE_KEYS: [&str; 14] = [
     "background", "filter", "filter_pixel", "wallpaper_fade", "gaps", "radius", "panel_blur", "wallpaper_dim", "window_opacity",
@@ -1336,6 +1331,14 @@ fn pic_tile(
                     .child(name.to_string()),
             )
         })
+}
+
+/// A tile's picture: the image filling the box, or the theme's gradient when there is no image.
+fn thumb_picture(image: Option<Arc<Image>>, gradient: [crate::ui::theme::Rgba; 3]) -> AnyElement {
+    match image {
+        Some(image) => img(image).size_full().object_fit(ObjectFit::Cover).into_any_element(),
+        None => gradient_thumb(gradient).into_any_element(),
+    }
 }
 
 /// The colour swatches by group, with the names the page shows. Every one opens the colour editor.

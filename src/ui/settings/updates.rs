@@ -46,6 +46,11 @@ fn source() -> Source {
     update::locate(|k| std::env::var(k).ok(), &home())
 }
 
+/// The branch this build updates from.
+fn followed_branch() -> String {
+    update::follow_branch(update::BUILD_BRANCH)
+}
+
 impl Shell {
     fn last_check_path(&self) -> PathBuf {
         self.paths.data.join("update-check.json")
@@ -77,7 +82,7 @@ impl Shell {
             let status = cx
                 .background_executor()
                 .spawn(async move {
-                    let status = update::check(&update::follow_branch(update::BUILD_BRANCH));
+                    let status = update::check(&followed_branch());
                     let last = LastCheck { at: update::now_secs(), commit: update::BUILD_COMMIT.into(), status: Some(status.clone()) };
                     update::write_last(&path, &last);
                     status
@@ -104,7 +109,7 @@ impl Shell {
         u.outcome = None;
         cx.notify();
         let (tx, rx) = smol::channel::unbounded::<String>();
-        let branch = update::follow_branch(update::BUILD_BRANCH);
+        let branch = followed_branch();
         let job = std::thread::spawn(move || {
             let say = |line: String| {
                 let _ = tx.send_blocking(line);
