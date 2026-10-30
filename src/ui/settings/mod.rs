@@ -196,6 +196,13 @@ impl Slide {
 type Field = (Entity<TextInput>, Subscription);
 
 /// Settings modal state, not persisted.
+/// What the Harnesses page is doing to an agent CLI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AgentJob {
+    Install,
+    Update,
+}
+
 #[derive(Default)]
 pub struct SettingsUi {
     pub(super) open: bool,
@@ -241,6 +248,8 @@ pub struct SettingsUi {
     pub(super) testing: Option<&'static str>,
     /// The harness whose test just passed, shown as "Works ✓" for a moment.
     pub(super) tested: Option<&'static str>,
+    /// The harness being installed or updated, and which. One at a time.
+    pub(super) agent_job: Option<(&'static str, AgentJob)>,
     /// Tailnet devices from Tailscale on the Devices page; `None` until the first search finishes.
     pub(super) tailnet: Option<Result<crate::remote::tailscale::Tailnet, String>>,
     /// Whether a Tailscale search is running.

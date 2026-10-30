@@ -54,7 +54,8 @@ there). From a terminal: `archonui --check-update`, `archonui --update`, or run 
 
 **You need:**
 - A C compiler, `git`, `pkg-config` and the usual desktop libraries. The installer checks and, if
-  something is missing, prints the one command for your distro. For reference:
+  something is missing, offers to install it (`sudo` asks for your password), or prints the one command
+  for your distro. For reference:
   - Arch: `sudo pacman -S --needed base-devel git pkgconf curl libxkbcommon-x11 libxcb freetype2 fontconfig wayland vulkan-icd-loader`
   - Debian/Ubuntu: `sudo apt install build-essential git pkg-config curl libxkbcommon-x11-dev libxkbcommon-dev libxcb1-dev libx11-xcb-dev libfreetype-dev libfontconfig-dev libwayland-dev libvulkan1 mesa-vulkan-drivers`
   - Fedora: `sudo dnf install gcc git pkgconf-pkg-config curl libxkbcommon-x11-devel libxkbcommon-devel libxcb-devel freetype-devel fontconfig-devel wayland-devel vulkan-loader mesa-vulkan-drivers`
@@ -62,7 +63,10 @@ there). From a terminal: `archonui --check-update`, `archonui --update`, or run 
 - A Wayland or X11 desktop with a Vulkan driver (already there on most desktops).
 - At least one agent CLI: `claude`, `codex`, `gemini`, `opencode` or `pi`. ArchonUI finds them on your
   `PATH` and in the usual install folders (npm, nvm, fnm, volta, bun, pnpm, `~/.local/bin`, …), also
-  when opened from the app launcher. OpenCode works without an account, on its free models.
+  when opened from the app launcher. OpenCode works without an account, on its free models. If none is
+  found, the installer offers to install one. In the app, Settings → Harnesses has **Install**, **Update**
+  and **Sign in** for each agent: they install for your user only, and only a step that needs root (Node
+  itself, say) shows your desktop's password prompt.
 
 **Other ways to install**
 - **Prebuilt:** download the `.tar.gz` from [Releases](https://github.com/Abdullahalmutairi97/archonui/releases),

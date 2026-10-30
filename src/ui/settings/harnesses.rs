@@ -2,7 +2,7 @@
 
 use super::{
     controls::{link, listen, status},
-    HARNESS_IDS,
+    AgentJob, HARNESS_IDS,
 };
 use crate::{
     engine,
@@ -12,7 +12,7 @@ use crate::{
         theme::{AMBER, GREEN},
     },
 };
-use gpui::{div, prelude::*, AnyElement, Context, SharedString};
+use gpui::{div, prelude::*, AnyElement, Context, SharedString, Stateful};
 use crate::ui::scale::px;
 
 /// Who makes each harness, under its name.
@@ -79,7 +79,22 @@ impl Shell {
                         )
                         .child(status(dot, word, &theme)),
                 );
-            // Not installed: the status says so, and there is nothing else to show or press.
+            let job = self.settings.agent_job.filter(|(job_id, _)| *job_id == id).map(|(_, job)| job);
+            // Not installed: one button installs it.
+            if agent.is_none() {
+                let word = if job == Some(AgentJob::Install) { "Installing…" } else { "Install" };
+                card = card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(14.))
+                        .pt(px(12.))
+                        .border_t_1()
+                        .border_color(theme.line.to_hsla())
+                        .child(div().flex_1().min_w(px(0.)).text_size(px(12.)).text_color(theme.muted.to_hsla()).child("Installs for your user only"))
+                        .child(card_button(SharedString::from(format!("harness-install-{id}")), word, &theme).on_click(cx.listener(move |this, _, _, cx| this.agent_job(id, AgentJob::Install, cx)))),
+                );
+            }
             if let Some(agent) = agent {
                 let path = format!("{} · {}", super::general::tilde(&agent.path), agent.version);
                 let auth = agent.auth.label().to_string();
@@ -102,7 +117,12 @@ impl Shell {
                                 .whitespace_nowrap()
                                 .child(path),
                         ))
-                        .child(key_row("Auth", div().flex_1().min_w(px(0.)).child(auth))),
+                        .child(key_row(
+                            "Auth",
+                            div().flex_1().min_w(px(0.)).flex().gap(px(10.)).child(auth).when(agent.auth == engine::AuthStatus::Missing, |d| {
+                                d.child(link(SharedString::from(format!("sign-in-{id}")), "Sign in", theme.acc2, listen(cx, move |this, cx| this.sign_in(id, cx))))
+                            }),
+                        )),
                 );
                 let testing = self.settings.testing == Some(id);
                 let worked = self.settings.tested == Some(id);
@@ -113,7 +133,6 @@ impl Shell {
                 } else {
                     ("Test", theme.acc2)
                 };
-                let line = theme.line.to_hsla();
                 card = card.child(
                     div()
                         .flex()
@@ -124,19 +143,15 @@ impl Shell {
                         .border_color(theme.line.to_hsla())
                         .child(div().flex_1().min_w(px(0.)).text_size(px(12.)).text_color(theme.muted.to_hsla()).child(self.model_summary(id, true)))
                         .when(on, |d| d.child(link(SharedString::from(format!("test-{id}")), test_word, test_colour, listen(cx, move |this, cx| this.test_harness(id, cx)))))
+                        .child(link(
+                            SharedString::from(format!("update-{id}")),
+                            if job == Some(AgentJob::Update) { "Updating…" } else { "Update" },
+                            theme.acc2,
+                            listen(cx, move |this, cx| this.agent_job(id, AgentJob::Update, cx)),
+                        ))
                         .child(
-                            div()
-                                .id(SharedString::from(format!("harness-action-{id}")))
-                                .px(px(12.))
-                                .py(px(5.))
-                                .rounded(px(7.))
-                                .text_size(px(12.))
-                                .border_1()
-                                .border_color(theme.line2.to_hsla())
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(line))
-                                .on_click(cx.listener(move |this, _, _, cx| this.harness_action(id, true, on, cx)))
-                                .child(if on { "Disable" } else { "Enable" }),
+                            card_button(SharedString::from(format!("harness-action-{id}")), if on { "Disable" } else { "Enable" }, &theme)
+                                .on_click(cx.listener(move |this, _, _, cx| this.harness_action(id, true, on, cx))),
                         ),
                 );
             }
@@ -205,6 +220,59 @@ impl Shell {
         .detach();
     }
 
+    /// Installs or updates harness `id` off the UI thread, then says how it went and rescans. A step that
+    /// needs root shows the desktop's password prompt (pkexec); everything else runs as this user.
+    fn agent_job(&mut self, id: &'static str, job: AgentJob, cx: &mut Context<Self>) {
+        let name = engine::agent_name(id);
+        if let Some((busy, _)) = self.settings.agent_job {
+            self.toast(format!("Wait for {} to finish", engine::agent_name(busy)), cx);
+            return;
+        }
+        let steps = match job {
+            AgentJob::Install => engine::install::install_steps(id, &engine::install::Host::here()),
+            AgentJob::Update => match self.agents.iter().find(|a| a.harness.id() == id) {
+                Some(agent) => engine::install::update_steps(id, &agent.path),
+                None => return,
+            },
+        };
+        let steps = match steps {
+            Ok(steps) => steps,
+            Err(e) => return self.toast(e, cx),
+        };
+        if steps.iter().any(|s| s.root) {
+            self.toast("Your system will ask for your password", cx);
+        }
+        self.settings.agent_job = Some((id, job));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { engine::install::run(&steps, &|line| eprintln!("archonui: {id}: {line}")) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.settings.agent_job = None;
+                match (result, job) {
+                    (Ok(()), AgentJob::Install) => this.toast(format!("Installed {name}. Sign in from its card"), cx),
+                    (Ok(()), AgentJob::Update) => this.toast(format!("Updated {name}"), cx),
+                    (Err(e), _) => this.toast(e, cx),
+                }
+                this.rescan(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Runs harness `id`'s sign-in in the Terminal tab of the focused chat, and closes Settings so it shows.
+    fn sign_in(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        let Some(command) = engine::install::sign_in_command(id) else { return };
+        if self.run_in_terminal(command, cx) {
+            self.settings_close(cx);
+        } else {
+            self.toast(format!("Open a chat, then Sign in again, or run `{command}` in a terminal"), cx);
+        }
+    }
+
     /// Enable or disable a harness, or explain how to install one that isn't on PATH. Enabling rescans.
     fn harness_action(&mut self, id: &'static str, installed: bool, on: bool, cx: &mut Context<Self>) {
         let name = engine::harness(id).map_or(id, |h| h.name());
@@ -218,4 +286,20 @@ impl Shell {
         self.save(cx);
         self.rescan(cx);
     }
+}
+
+/// The small bordered button at the bottom right of a card.
+fn card_button(id: SharedString, text: &'static str, theme: &crate::ui::theme::Theme) -> Stateful<gpui::Div> {
+    let line = theme.line.to_hsla();
+    div()
+        .id(id)
+        .px(px(12.))
+        .py(px(5.))
+        .rounded(px(7.))
+        .text_size(px(12.))
+        .border_1()
+        .border_color(theme.line2.to_hsla())
+        .cursor_pointer()
+        .hover(move |s| s.bg(line))
+        .child(text)
 }
