@@ -41,7 +41,8 @@ pub fn local_host_name() -> Option<String> {
         return None;
     }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    Some(String::from_utf8_lossy(&buf[..len]).into_owned()).filter(|n| !n.is_empty())
+    let name = String::from_utf8_lossy(&buf[..len]).into_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 /// A device on the tailnet, as saved in settings.

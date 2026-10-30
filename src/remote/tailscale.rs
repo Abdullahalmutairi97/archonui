@@ -14,6 +14,7 @@ const BINARY: &str = "tailscale";
 const MAC_BINARY: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 /// How long `tailscale status` may take. A stuck daemon must not hold up the app or `--serve`.
 const TIMEOUT: Duration = Duration::from_secs(5);
+const NOT_INSTALLED: &str = "Tailscale is not installed. Get it from tailscale.com/download, sign in, and open this page again";
 
 /// One peer as Tailscale reports it.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,8 +54,6 @@ pub fn discover() -> Result<Tailnet, String> {
     }
     parse(&String::from_utf8_lossy(&output.stdout))
 }
-
-const NOT_INSTALLED: &str = "Tailscale is not installed. Get it from tailscale.com/download, sign in, and open this page again";
 
 /// What a `BackendState` other than `Running` means, and what to do about it.
 pub fn explain_state(state: &str) -> String {
@@ -201,17 +200,8 @@ fn status(program: &str) -> io::Result<Output> {
 /// The output is read while it runs, so a long one can't fill the pipe and stall it.
 fn output_within(mut cmd: Command, timeout: Duration) -> io::Result<Output> {
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    let read = |pipe: Option<Box<dyn Read + Send>>| {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut buf);
-            }
-            buf
-        })
-    };
-    let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let stderr = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
     let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -228,6 +218,17 @@ fn output_within(mut cmd: Command, timeout: Duration) -> io::Result<Output> {
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
     Ok(Output { status, stdout, stderr })
+}
+
+/// Reads `pipe` to its end on a thread of its own. Joins to the bytes read.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
 }
 
 /// A string field of a JSON object, or "" when missing or not a string.
@@ -247,8 +248,9 @@ fn ipv4_of(node: &Value) -> Option<String> {
 
 /// The first IPv6 address in a node's `TailscaleIPs`, or "" when it has none.
 fn ipv6_of(node: &Value) -> String {
-    let ips = node.get("TailscaleIPs").and_then(Value::as_array);
-    ips.into_iter()
+    node.get("TailscaleIPs")
+        .and_then(Value::as_array)
+        .into_iter()
         .flatten()
         .filter_map(Value::as_str)
         .find(|ip| ip.parse::<Ipv6Addr>().is_ok())
