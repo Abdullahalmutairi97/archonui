@@ -78,14 +78,11 @@ impl Shell {
         let capturing = self.settings.capture == Some(action);
         let keys = &self.state.settings.keys;
         let spec = keys.get(&action).cloned().unwrap_or_default();
-        let other = (!spec.is_empty())
-            .then(|| {
-                [TILING.as_slice(), APP.as_slice()]
-                    .concat()
-                    .into_iter()
-                    .find(|(b, _)| *b != action && keys.get(b).is_some_and(|k| *k == spec))
-            })
-            .flatten();
+        let other = if spec.is_empty() {
+            None
+        } else {
+            TILING.iter().chain(&APP).copied().find(|(b, _)| *b != action && keys.get(b).is_some_and(|k| *k == spec))
+        };
         let label = key_label(&spec);
         let parts: Vec<&str> = if spec.is_empty() { Vec::new() } else { label.split(' ').collect() };
         let state = if capturing { Some("Press new shortcut") } else if spec.is_empty() { Some("Unset") } else { None };

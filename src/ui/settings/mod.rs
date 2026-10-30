@@ -25,7 +25,7 @@ use super::{
     },
 };
 use crate::{
-    app::settings::Action,
+    app::settings::{Action, AppSettings},
     engine::{self, mcp::McpStatus, plugins::Extension, skills::Skill},
 };
 use gpui::{
@@ -116,21 +116,21 @@ const NAV: [(&str, &[Page]); 3] = [
 ];
 
 impl Page {
+    const ALL: [Page; 9] = [
+        Page::General,
+        Page::Appearance,
+        Page::Keyboard,
+        Page::Harnesses,
+        Page::Models,
+        Page::Tools,
+        Page::Skills,
+        Page::Extensions,
+        Page::Devices,
+    ];
+
     /// The page whose label is `name`, in any case.
     pub fn from_label(name: &str) -> Option<Self> {
-        [
-            Page::General,
-            Page::Appearance,
-            Page::Keyboard,
-            Page::Harnesses,
-            Page::Models,
-            Page::Tools,
-            Page::Skills,
-            Page::Extensions,
-            Page::Devices,
-        ]
-        .into_iter()
-            .find(|p| p.label().eq_ignore_ascii_case(name))
+        Self::ALL.into_iter().find(|p| p.label().eq_ignore_ascii_case(name))
     }
 
     fn label(self) -> &'static str {
@@ -555,31 +555,7 @@ impl Shell {
                     .child(spaced_caps(group)),
             );
             for &page in pages {
-                let is_active = page == active;
-                let count = counts.get(&page).copied();
-                nav = nav.child(
-                    div()
-                        .id(("settings-nav", page as usize))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .px(px(10.))
-                        .py(px(8.))
-                        .rounded(px(7.))
-                        .cursor_pointer()
-                        .when(is_active, |d| d.bg(selected.to_hsla()).text_color(theme.fg.to_hsla()))
-                        .when(!is_active, |d| d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla())))
-                        .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
-                        .child(
-                            div().flex().items_center().gap(px(6.)).child(page.label()).when(
-                                page == Page::General && self.settings.update.dot(),
-                                |d| d.child(update_dot(&theme)),
-                            ),
-                        )
-                        .when_some(count, |row, n| {
-                            row.child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(n.to_string()))
-                        }),
-                );
+                nav = nav.child(self.nav_item(page, page == active, counts.get(&page).copied(), &selected, cx));
             }
         }
         let name = &self.state.settings.app_name;
@@ -597,6 +573,30 @@ impl Shell {
                         channel_name(self.state.settings.update_channel)
                     )),
             )
+            .into_any_element()
+    }
+
+    /// One page's row in the nav: its label, the update dot on General, and its count when it has one.
+    fn nav_item(&self, page: Page, is_active: bool, count: Option<usize>, selected: &crate::ui::theme::Rgba, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        div()
+            .id(("settings-nav", page as usize))
+            .flex()
+            .items_center()
+            .justify_between()
+            .px(px(10.))
+            .py(px(8.))
+            .rounded(px(7.))
+            .cursor_pointer()
+            .when(is_active, |d| d.bg(selected.to_hsla()).text_color(theme.fg.to_hsla()))
+            .when(!is_active, |d| d.text_color(theme.muted.to_hsla()).hover(|s| s.text_color(theme.fg.to_hsla())))
+            .on_click(cx.listener(move |this, _, _, cx| this.settings_go(page, cx)))
+            .child(
+                div().flex().items_center().gap(px(6.)).child(page.label()).when(page == Page::General && self.settings.update.dot(), |d| {
+                    d.child(update_dot(theme))
+                }),
+            )
+            .when_some(count, |row, n| row.child(div().text_size(px(12.)).text_color(theme.muted.to_hsla()).child(n.to_string())))
             .into_any_element()
     }
 
@@ -789,13 +789,7 @@ const X_ICON: &str = "M4.5 4.5l7 7M11.5 4.5l-7 7";
 /// `text` in capitals with a thin space between letters, as letter-spaced headings read: GPUI has
 /// no letter-spacing.
 fn spaced_caps(text: &str) -> String {
-    let caps: Vec<String> = text.chars().map(|c| c.to_uppercase().collect()).collect();
-    caps.join("\u{200a}")
-}
-
-/// The theme logo `name`, or `None` for an unknown name or a missing file.
-fn glass_logo(name: &str) -> Option<Arc<[u8]>> {
-    super::glass::logo_bytes(name)
+    text.chars().map(|c| c.to_uppercase().to_string()).collect::<Vec<_>>().join("\u{200a}")
 }
 
 /// The update channel's label in the nav footer.
@@ -829,6 +823,31 @@ fn search_config(placeholder: &str) -> TextInputConfig {
         line_height: px(18.),
         ..Default::default()
     }
+}
+
+/// A toggle row for one boolean in the app's settings: `set` stores the new value, then the settings are saved.
+fn flag_row(
+    id: &'static str,
+    name: &str,
+    desc: &str,
+    on: bool,
+    shell: &gpui::WeakEntity<Shell>,
+    theme: &crate::ui::theme::Theme,
+    set: fn(&mut AppSettings, bool),
+) -> crate::ui::widgets::section::SettingRow {
+    controls::toggle_row(
+        id,
+        name,
+        desc,
+        on,
+        shell,
+        theme,
+        move |this, value, cx| {
+            set(&mut this.state.settings, value);
+            this.save(cx);
+        },
+        None,
+    )
 }
 
 /// The small "update available" dot, on the sidebar's Settings button and the General page.

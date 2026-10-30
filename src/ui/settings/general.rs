@@ -1,8 +1,8 @@
 //! The General page: startup, projects in the sidebar, agent behaviour, notifications and data.
 
 use super::{
-    controls::{button_row, empty_box, icon, listen, path_label, section, segmented_row, toggle_row},
-    Slide,
+    controls::{button_row, empty_box, icon, listen, path_label, section, segmented_row},
+    flag_row, Slide,
 };
 use crate::{
     app::settings::{AppSettings, McpTransport, MAX_STEPS},
@@ -155,19 +155,7 @@ impl Shell {
         let startup = section(
             "Startup",
             vec![
-                toggle_row(
-                    "restore",
-                    "Restore sessions on launch",
-                    "",
-                    restore,
-                    &weak,
-                    &theme,
-                    |this, on, cx| {
-                        this.state.settings.restore = on;
-                        this.save(cx);
-                    },
-                    None,
-                ),
+                flag_row("restore", "Restore sessions on launch", "", restore, &weak, &theme, |s, on| s.restore = on),
                 folder_row,
             ],
             &theme,
@@ -192,51 +180,10 @@ impl Shell {
                     },
                     None,
                 ),
-                toggle_row(
-                    "sandbox",
-                    "Run commands in sandbox",
-                    "No network by default",
-                    sandbox,
-                    &weak,
-                    &theme,
-                    |this, on, cx| {
-                        this.state.settings.sandbox = on;
-                        this.save(cx);
-                    },
-                    None,
-                ),
-                toggle_row(
-                    "ask-network",
-                    "Ask before network access",
-                    "",
-                    ask_network,
-                    &weak,
-                    &theme,
-                    |this, on, cx| {
-                        this.state.settings.ask_network = on;
-                        this.save(cx);
-                    },
-                    None,
-                ),
-                toggle_row(
-                    "show-tools",
-                    "Show tool calls in chat",
-                    "",
-                    show_tools,
-                    &weak,
-                    &theme,
-                    |this, on, cx| {
-                        this.state.settings.show_tools = on;
-                        this.save(cx);
-                    },
-                    None,
-                ),
-                SettingRow::new(
-                    "Max steps per turn",
-                    "",
-                    &theme,
-                )
-                .control(steps),
+                flag_row("sandbox", "Run commands in sandbox", "No network by default", sandbox, &weak, &theme, |s, on| s.sandbox = on),
+                flag_row("ask-network", "Ask before network access", "", ask_network, &weak, &theme, |s, on| s.ask_network = on),
+                flag_row("show-tools", "Show tool calls in chat", "", show_tools, &weak, &theme, |s, on| s.show_tools = on),
+                SettingRow::new("Max steps per turn", "", &theme).control(steps),
             ],
             &theme,
         );
@@ -244,50 +191,22 @@ impl Shell {
         let notifications = section(
             "Notifications",
             vec![
-                toggle_row(
-                    "notify",
-                    "Notify when a session finishes",
-                    "Only when in the background",
-                    notify,
-                    &weak,
-                    &theme,
-                    |this, on, cx| {
-                        this.state.settings.notify = on;
-                        this.save(cx);
-                    },
-                    None,
-                ),
-                toggle_row(
-                    "sound",
-                    "Play a sound",
-                    "",
-                    sound,
-                    &weak,
-                    &theme,
-                    |this, on, cx| {
-                        this.state.settings.sound = on;
-                        this.save(cx);
-                    },
-                    None,
-                ),
+                flag_row("notify", "Notify when a session finishes", "Only when in the background", notify, &weak, &theme, |s, on| s.notify = on),
+                flag_row("sound", "Play a sound", "", sound, &weak, &theme, |s, on| s.sound = on),
             ],
             &theme,
         );
 
         let update_check = self.state.settings.update_check;
         let mut update_rows = self.update_rows(cx);
-        update_rows.push(toggle_row(
+        update_rows.push(flag_row(
             "update-check",
             "Check for updates daily",
             "Looks at GitHub once a day when ArchonUI starts and shows a dot. It never installs without a click.",
             update_check,
             &weak,
             &theme,
-            |this, on, cx| {
-                this.state.settings.update_check = on;
-                this.save(cx);
-            },
-            None,
+            |s, on| s.update_check = on,
         ));
         let updates = section("Updates", update_rows, &theme);
 

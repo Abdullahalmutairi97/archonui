@@ -83,26 +83,26 @@ impl Shell {
             if let Some(agent) = agent {
                 let path = format!("{} · {}", super::general::tilde(&agent.path), agent.version);
                 let auth = agent.auth.label().to_string();
-                let label = |t: &str| div().text_color(theme.muted.to_hsla()).child(t.to_string());
+                let label = |t: &str| div().text_color(theme.muted.to_hsla()).child(t.to_string()).w(px(44.)).flex_none();
+                let key_row = |key: &str, value: gpui::Div| div().flex().gap(px(12.)).child(label(key)).child(value);
                 card = card.child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(6.))
                         .text_size(px(12.))
-                        .child(
-                            div().flex().gap(px(12.)).child(label("Path").w(px(44.)).flex_none()).child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .font_family(theme.code_font.clone())
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .child(path),
-                            ),
-                        )
-                        .child(div().flex().gap(px(12.)).child(label("Auth").w(px(44.)).flex_none()).child(div().flex_1().min_w(px(0.)).child(auth))),
+                        .child(key_row(
+                            "Path",
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .font_family(theme.code_font.clone())
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(path),
+                        ))
+                        .child(key_row("Auth", div().flex_1().min_w(px(0.)).child(auth))),
                 );
                 let testing = self.settings.testing == Some(id);
                 let worked = self.settings.tested == Some(id);
