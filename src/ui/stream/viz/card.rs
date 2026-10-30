@@ -200,9 +200,10 @@ impl VizCard {
         if self.mermaid {
             return mermaid_kind(&self.body).to_string();
         }
-        match &self.spec {
-            Ok(_) => self.view.kind().to_string(),
-            Err(_) => "Chart".to_string(),
+        if self.spec.is_ok() {
+            self.view.kind().to_string()
+        } else {
+            "Chart".to_string()
         }
     }
 
@@ -337,10 +338,7 @@ impl VizCard {
         if text.is_empty() {
             return;
         }
-        let title = match self.shown_title() {
-            t if t.is_empty() => self.kind(),
-            t => t,
-        };
+        let title = Some(self.shown_title()).filter(|t| !t.is_empty()).unwrap_or_else(|| self.kind());
         self.ask = None;
         if self.big {
             (self.actions.expand)(None, cx);
@@ -576,15 +574,7 @@ impl VizCard {
         let spec = match &self.spec {
             Ok(spec) => spec.clone(),
             Err(_) if self.streaming => return placeholder("Drawing…", &t),
-            Err(e) => {
-                return div()
-                    .p(px(14.))
-                    .text_size(px(12.))
-                    .font_family(t.code_font.clone())
-                    .text_color(RED.to_hsla())
-                    .child(format!("Could not draw this chart: {e}"))
-                    .into_any_element();
-            }
+            Err(e) => return draw_error("chart", e, &t),
         };
         match self.view {
             View::Table => self.table_view(&spec.as_table(), cx),
@@ -601,14 +591,13 @@ impl VizCard {
         let t = self.theme.clone();
         let h = self.plot_height();
         let hover = self.hover;
-        let legend: Vec<(String, Rgba)> = match (self.view, spec) {
-            (View::Scatter, Spec::Scatter(s)) if s.series.len() > 1 => s.series.iter().enumerate().map(|(j, x)| (x.name.clone(), self.ink.series(j))).collect(),
-            (View::Bar | View::Line | View::Area, _) => match spec.as_xy() {
-                Some(xy) if xy.series.len() > 1 => xy.series.iter().enumerate().map(|(j, x)| (x.name.clone(), self.ink.series(j))).collect(),
-                _ => Vec::new(),
-            },
+        // One legend entry per series, shown only when there is more than one.
+        let names: Vec<String> = match (self.view, spec) {
+            (View::Scatter, Spec::Scatter(s)) => s.series.iter().map(|x| x.name.clone()).collect(),
+            (View::Bar | View::Line | View::Area, _) => spec.as_xy().map(|xy| xy.series.into_iter().map(|x| x.name).collect()).unwrap_or_default(),
             _ => Vec::new(),
         };
+        let legend: Vec<(String, Rgba)> = if names.len() > 1 { names.into_iter().enumerate().map(|(j, name)| (name, self.ink.series(j))).collect() } else { Vec::new() };
         // GPUI can't turn text, so a scatter plot's y label sits over the plot instead of beside it.
         let y_label = match (self.view, spec) {
             (View::Scatter, Spec::Scatter(s)) if !s.y_label.is_empty() => Some(s.y_label.clone()),
@@ -627,7 +616,7 @@ impl VizCard {
         )
         .w_full()
         .h(px(h));
-        let tip = self.tooltip(spec, h);
+        let tip = self.tooltip(spec);
         let plot_cell = self.plot.clone();
         div()
             .flex()
@@ -684,7 +673,7 @@ impl VizCard {
     }
 
     /// The tooltip for an XY position or a scatter point, placed like the prototype's.
-    fn tooltip(&self, spec: &Spec, _h: f32) -> Option<AnyElement> {
+    fn tooltip(&self, spec: &Spec) -> Option<AnyElement> {
         let t = &self.theme;
         let w = f32::from(self.plot.get().size.width) / zoom();
         if w <= 0. {
@@ -806,13 +795,7 @@ impl VizCard {
         let t = &self.theme;
         match &self.drawing {
             Drawing::Waiting => placeholder("Drawing…", t),
-            Drawing::Failed { error, .. } => div()
-                .p(px(14.))
-                .text_size(px(12.))
-                .font_family(t.code_font.clone())
-                .text_color(RED.to_hsla())
-                .child(format!("Could not draw this diagram: {error}"))
-                .into_any_element(),
+            Drawing::Failed { error, .. } => draw_error("diagram", error, t),
             Drawing::Ready { image, size, .. } => {
                 let max_h = if self.big { 1400. } else { 520. };
                 let scale = (max_h / size.1).min(1.);
@@ -997,6 +980,17 @@ fn stats_view(s: &super::spec::Stats, t: &Theme) -> AnyElement {
     grid.into_any_element()
 }
 
+/// The note in place of a chart or diagram that did not draw: what, and why.
+fn draw_error(what: &str, error: &str, t: &Theme) -> AnyElement {
+    div()
+        .p(px(14.))
+        .text_size(px(12.))
+        .font_family(t.code_font.clone())
+        .text_color(RED.to_hsla())
+        .child(format!("Could not draw this {what}: {error}"))
+        .into_any_element()
+}
+
 fn placeholder(text: &str, t: &Theme) -> AnyElement {
     div().h(px(160.)).flex().items_center().justify_center().text_size(px(12.)).text_color(t.muted.to_hsla()).child(text.to_string()).into_any_element()
 }
@@ -1044,7 +1038,7 @@ pub fn fit_svg(svg: &str, bg: Rgba) -> (String, (f32, f32)) {
         }
     }
     root.push_str(rest);
-    let colour = format!("#{:02x}{:02x}{:02x}", bg.r, bg.g, bg.b);
+    let colour = scene::css(bg);
     let x0 = view_box.first().copied().unwrap_or(0.);
     let y0 = view_box.get(1).copied().unwrap_or(0.);
     let fixed = format!(

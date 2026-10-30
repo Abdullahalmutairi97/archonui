@@ -2,7 +2,7 @@
 //! so a copied chart is the chart on screen. The layout follows the prototype's viz.js: margins, grid,
 //! band widths, slice radii and legend rows. Pure, so the geometry is tested without GPUI.
 
-use super::spec::{fmt, nice_max, Cell, Pie, Scatter, Stats, Table, View, Xy};
+use super::spec::{cell_text, fmt, nice_max, Pie, Scatter, Series, Stats, Table, View, Xy};
 use crate::ui::theme::{mix, Rgba, Theme};
 use std::f32::consts::PI;
 
@@ -75,7 +75,7 @@ fn text(x: f32, y: f32, s: impl Into<String>, size: f32, color: Rgba, anchor: An
 fn xy_max(xy: &Xy, stacked: bool) -> f64 {
     let peak = (0..xy.x.len())
         .map(|i| {
-            let at = |s: &super::spec::Series| s.data.get(i).copied().unwrap_or(0.);
+            let at = |s: &Series| s.data.get(i).copied().unwrap_or(0.);
             if stacked { xy.series.iter().map(at).sum() } else { xy.series.iter().map(at).fold(f64::MIN, f64::max) }
         })
         .fold(f64::MIN, f64::max);
@@ -336,7 +336,7 @@ pub fn table(t: &Table, w: f32, ink: &Ink) -> (Vec<Shape>, f32) {
         let y = row_h * (r + 1) as f32;
         for c in 0..cols {
             let n = t.numeric(c);
-            let s = super::spec::cell_text(row.get(c));
+            let s = cell_text(row.get(c));
             out.push(text(x_of(c, n), y + 22., s, if n { 12.5 } else { 13. }, ink.fg, if n { Anchor::End } else { Anchor::Start }));
         }
         out.push(Shape::Line { a: (12., y + row_h), b: (w - 12., y + row_h), color: ink.line, width: 1., dashed: false });
@@ -381,12 +381,18 @@ pub fn stats(s: &Stats, w: f32, ink: &Ink) -> (Vec<Shape>, f32) {
     (out, 12. + rows as f32 * (tile_h + gap) + 2.)
 }
 
-fn css(c: Rgba) -> String {
+/// A colour as `#rrggbb`, for SVG and mermaid's theme.
+pub fn css(c: Rgba) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
 }
 
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Points as the `x,y x,y` list an SVG polygon or polyline takes.
+fn svg_points(points: &[(f32, f32)]) -> String {
+    points.iter().map(|p| format!("{:.1},{:.1}", p.0, p.1)).collect::<Vec<_>>().join(" ")
 }
 
 /// The shapes as an SVG document `w` × `h`, on the theme's background.
@@ -408,18 +414,16 @@ pub fn to_svg(shapes: &[Shape], w: f32, h: f32, ink: &Ink) -> String {
                 css(*color), color.a * alpha
             ),
             Shape::Poly { points, closed, fill, stroke, alpha } => {
-                let pts: Vec<String> = points.iter().map(|p| format!("{:.1},{:.1}", p.0, p.1)).collect();
                 let tag = if *closed { "polygon" } else { "polyline" };
                 let fill = fill.map_or("fill=\"none\"".to_string(), |f| format!(r#"fill="{}" fill-opacity="{}""#, css(f), f.a));
                 let stroke = stroke.map_or(String::new(), |(c, w)| format!(r#" stroke="{}" stroke-opacity="{}" stroke-width="{w}" stroke-linejoin="round" stroke-linecap="round""#, css(c), c.a));
-                s += &format!(r#"<{tag} points="{}" {fill}{stroke} opacity="{alpha}"/>"#, pts.join(" "));
+                s += &format!(r#"<{tag} points="{}" {fill}{stroke} opacity="{alpha}"/>"#, svg_points(points));
             }
             Shape::Fade { points, color, top, bottom, y0, y1 } => {
                 gradients += 1;
-                let pts: Vec<String> = points.iter().map(|p| format!("{:.1},{:.1}", p.0, p.1)).collect();
                 s += &format!(
                     r#"<defs><linearGradient id="f{gradients}" gradientUnits="userSpaceOnUse" x1="0" y1="{y0}" x2="0" y2="{y1}"><stop offset="0" stop-color="{c}" stop-opacity="{top}"/><stop offset="1" stop-color="{c}" stop-opacity="{bottom}"/></linearGradient></defs><polygon points="{}" fill="url(#f{gradients})"/>"#,
-                    pts.join(" "),
+                    svg_points(points),
                     c = css(*color)
                 );
             }
@@ -461,11 +465,6 @@ pub fn svg_to_png(svg: &str) -> Result<Vec<u8>, String> {
     let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("Too large to draw")?;
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(2., 2.), &mut pixmap.as_mut());
     pixmap.encode_png().map_err(|e| e.to_string())
-}
-
-/// The number shown in a table cell, as text.
-pub fn cell(c: &Cell) -> String {
-    super::spec::cell_text(Some(c))
 }
 
 #[cfg(test)]
