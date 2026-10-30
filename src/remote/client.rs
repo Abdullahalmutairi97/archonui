@@ -68,7 +68,7 @@ impl Client {
 
     /// Queues `msg` for the host.
     pub fn send(&self, msg: &ClientMsg) -> Result<(), String> {
-        self.tx.send(encode(msg)).map_err(|_| "connection closed".to_string())
+        self.send_frame(encode(msg))
     }
 
     /// Queues a message already encoded, e.g. by `proto::put_project_frame` off the UI thread.
@@ -110,23 +110,24 @@ fn set_read_timeout(ws: &Socket, timeout: Option<Duration>) -> Result<(), String
 
 /// Reads the host's answer to `Hello` and returns its device name and whether it is `--serve`.
 fn read_welcome(ws: &mut Socket) -> Result<(String, bool), String> {
-    loop {
-        let text = match ws.read() {
-            Ok(Message::Text(text)) => text,
-            Ok(_) => continue,
+    // Frames other than text (pings, say) are skipped.
+    let text = loop {
+        match ws.read() {
+            Ok(Message::Text(text)) => break text,
+            Ok(_) => {}
             Err(tungstenite::Error::Io(e))
                 if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
             {
                 return Err("the host did not answer within 5 s".into());
             }
             Err(e) => return Err(format!("handshake failed: {e}")),
-        };
-        return match decode::<HostMsg>(text.as_str())? {
-            HostMsg::Welcome { device, version, serve } if version == VERSION => Ok((device, serve)),
-            HostMsg::Welcome { version, .. } => Err(format!("host speaks protocol {version}, this client {VERSION}")),
-            HostMsg::Error { message, .. } => Err(message),
-            _ => Err("the host did not send Welcome".into()),
-        };
+        }
+    };
+    match decode::<HostMsg>(text.as_str())? {
+        HostMsg::Welcome { device, version, serve } if version == VERSION => Ok((device, serve)),
+        HostMsg::Welcome { version, .. } => Err(format!("host speaks protocol {version}, this client {VERSION}")),
+        HostMsg::Error { message, .. } => Err(message),
+        _ => Err("the host did not send Welcome".into()),
     }
 }
 
@@ -255,17 +256,13 @@ pub fn devices() -> i32 {
 /// Splits `pc`, `pc:9000` or `100.1.2.3:81` into a host and a port. Without a port the
 /// default is used. A bare IPv6 address (several colons) is taken whole; `[fd7a::1]:81` has a port.
 fn parse_target(s: &str) -> (String, u16) {
-    if let Some(rest) = s.strip_prefix('[') {
-        if let Some((host, after)) = rest.split_once(']') {
-            let port = after.strip_prefix(':').and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT);
-            return (host.to_string(), port);
-        }
+    if let Some((host, after)) = s.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+        let port = after.strip_prefix(':').and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT);
+        return (host.to_string(), port);
     }
-    if let Some((host, port)) = s.rsplit_once(':') {
-        if !host.contains(':') {
-            if let Ok(port) = port.parse() {
-                return (host.to_string(), port);
-            }
+    if let Some((host, port)) = s.rsplit_once(':').filter(|(host, _)| !host.contains(':')) {
+        if let Ok(port) = port.parse() {
+            return (host.to_string(), port);
         }
     }
     (s.to_string(), DEFAULT_PORT)
